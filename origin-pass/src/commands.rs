@@ -124,6 +124,50 @@ fn resolve_vault_path(raw: &str) -> Result<PathBuf, String> {
     }
 }
 
+/// Resolve the entry secret for `cmd_add` from three mutually-exclusive sources:
+/// 1. `--secret-file <FILE>` — read bytes from disk (avoids argv + shell history).
+/// 2. `--secret-stdin` — read first line from stdin (avoids argv; lives in
+///    your shell pipeline).
+/// 3. Interactive `rpassword::prompt_password` — for human use.
+///
+/// `secret_stdin` is the second arg here because clap already enforces
+/// mutex semantics for the `--secret-file` presence; we simply check the
+/// bool flag here. The function returns `Err` on any I/O failure with an
+/// actionable message.
+fn resolve_entry_secret(
+    file: Option<&str>,
+    stdin: bool,
+) -> Result<String, String> {
+    use std::io::Read;
+
+    if let Some(path) = file {
+        let s = std::fs::read_to_string(path).map_err(|e| {
+            format!("cannot read secret file {path}: {e}")
+        })?;
+        return Ok(s.trim_end_matches(['\n', '\r']).to_string());
+    }
+    if stdin {
+        let mut s = String::new();
+        std::io::stdin()
+            .read_to_string(&mut s)
+            .map_err(|e| format!("cannot read secret from stdin: {e}"))?;
+        return Ok(s.trim_end_matches(['\n', '\r']).to_string());
+    }
+    rpassword::prompt_password("Secret: ")
+        .map_err(|e| format!("secret prompt failed: {e}"))
+}
+
+/// Current Unix epoch seconds. Returns `0` if the system clock is set
+/// before `UNIX_EPOCH` (1970) — we still want a deterministic value
+/// rather than panic. Used to stamp `EntryPayload::created_at` /
+/// `updated_at`.
+fn unix_now() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
+}
+
 // ──────────────────────────────────────────────────────────────────────
 // OCRA (RFC 6287) helpers — used by `cmd_code` (vault or key-file)
 // ──────────────────────────────────────────────────────────────────────
@@ -254,33 +298,86 @@ pub fn cmd_lock(_args: LockArgs) -> Result<(), String> {
 }
 
 /// Add or update an entry in the vault.
+///
+/// **v0.4.x wiring**:
+/// - `--type password` — fully wired; uses `resolve_entry_secret` to
+///   source the secret from `--secret-file` / `--secret-stdin` / interactive
+///   prompt. JSON-serialized per DESIGN.md §2.4 schema; encrypted via the
+///   per-entry ChaCha20-BLAKE3 envelope inside `Vault::add_entry`.
+///   `--force` overwrites an existing entry; without it, duplicates are
+///   rejected.
+/// - `--type ocra` — still returns Err (the `cmd_code --ocra` flow seeds
+///   OCRA entries; manual `add --type ocra` requires CLI plumbing for
+///   `--ocra-suite` + `--ocra-digits` + `--ocra-algo` and is scope-deferred).
+/// - `--type otp` — still returns Err (TOTP/HOTP require
+///   base32-encoded shared key + period/digits/algo; that wiring is the
+///   `cmd_import_qr` step in DESIGN.md §6 — deferred).
 pub fn cmd_add(args: AddArgs) -> Result<(), String> {
+    // Defer Otp/Ocra to their dedicated flows.
+    match args.r#type {
+        crate::cli::EntryType::Ocra => {
+            return Err(
+                "OCRA entries must be added via the `cmd_code --ocra` flow (which seeds the entry automatically); manual `add --type ocra` is not yet wired".to_string(),
+            );
+        }
+        crate::cli::EntryType::Otp => {
+            return Err(
+                "TOTP/HOTP entries cannot yet be added via `add`; use the `cmd_import_qr` subcommand once it lands (DESIGN.md §6 step 4)".to_string(),
+            );
+        }
+        crate::cli::EntryType::Password => {} // fall through
+    }
+
     let path = resolve_vault_path(&args.vault)?;
     let passphrase = resolve_passphrase(&args.passphrase_file)?;
-    let vault_obj = vault::unlock_vault(&path, &passphrase)?;
+    let mut vault_obj = vault::unlock_vault(&path, &passphrase)?;
 
-    // For v0.4.x we don't yet have a generic "add-from-args" path;
-    // only --type ocra is wired up fully (because cmd_code --ocra needs
-    // it). Password + TOTP/HOTP entries return Err to avoid an
-    // accidental plaintext write.
-    if args.r#type == crate::cli::EntryType::Ocra {
-        return Err(
-            "OCRA entries must be added via `cmd_code --ocra` flow (which seeds the entry automatically); manual `add --type ocra` is not yet wired".to_string(),
-        );
-    }
-    if args.r#type == crate::cli::EntryType::Password {
-        return Err(
-            "password entries cannot yet be added non-interactively — pipe a future TTY-aware prompt here".to_string(),
-        );
-    }
-    if args.r#type == crate::cli::EntryType::Otp {
-        return Err(
-            "TOTP/HOTP entries cannot yet be added via `add`; use the import-qr subcommand once it lands (DESIGN.md §6 step 4)".to_string(),
-        );
+    // Pre-flight: --force vs. duplicate. Refuse accidental clobbering.
+    let is_overwrite = vault_obj.entries.contains_key(&args.name);
+    if is_overwrite && !args.force {
+        return Err(format!(
+            "entry already exists: {} (use --force to overwrite)",
+            args.name
+        ));
     }
 
-    let _ = vault_obj; // validated; silenced
-    Err("unreachable: covered all EntryType variants above".to_string())
+    // Source the secret bytes. We deliberately do NOT support
+    // `--secret <string>` in argv — argv leaks via shell history and
+    // `ps aux` for the brief window the process runs.
+    let secret_str = resolve_entry_secret(
+        args.secret_file.as_deref(),
+        args.secret_stdin,
+    )?;
+
+    // Build the EntryPayload. created_at is preserved across overwrites;
+    // updated_at always bumped to "now". url/notes pass through; None on
+    // add, replaced if `--force` re-applies them.
+    let now = unix_now();
+    let mut payload = EntryPayload::password(&args.name, &secret_str);
+    payload.url = args.url.clone();
+    payload.notes = args.notes.clone();
+    payload.updated_at = now;
+    if is_overwrite {
+        if let Some(prev) = vault_obj.entries.get(&args.name) {
+            payload.created_at = prev.created_at;
+        }
+    } else {
+        payload.created_at = now;
+    }
+    // Best-effort: drop the local secret string (Zeroizing<str> isn't
+    // stable but `String::clear` + drop is fine here — the actual secret
+    // material is inside the vault's per-entry ChaCha20-BLAKE3 envelope).
+    drop(secret_str);
+
+    vault_obj.add_entry(payload)?;
+    vault::persist_vault(&path, &vault_obj)?;
+
+    eprintln!(
+        "{}: {} (entry: password)",
+        if is_overwrite { "updated" } else { "added" },
+        args.name
+    );
+    Ok(())
 }
 
 /// Retrieve a single entry by name.

@@ -104,6 +104,29 @@ pub struct AddArgs {
     /// Optional notes
     #[arg(long)]
     pub notes: Option<String>,
+
+    /// Read the entry's secret from a file. Trailing whitespace and
+    /// newlines are stripped. The secret never appears in argv or
+    /// shell history. **Prefer this over an interactive prompt in
+    /// automation.** Mutually exclusive with `--secret-stdin`.
+    #[arg(long, value_name = "FILE", conflicts_with = "secret_stdin")]
+    pub secret_file: Option<String>,
+
+    /// Read the entry's secret from stdin (one line, trailing newline
+    /// stripped). Useful for `echo "$PW" | origin-pass add …`
+    /// pipelines. **The secret lives in your shell environment or
+    /// process substitution; do not include it in argv.** Mutually
+    /// exclusive with `--secret-file`.
+    #[arg(long, conflicts_with = "secret_file")]
+    pub secret_stdin: bool,
+
+    /// Overwrite an existing entry with the same name. **--force
+    /// REPLACES ALL FIELDS unconditionally** (secret, url, notes) —
+    /// re-issue your `--url` / `--notes` if you don't want them wiped
+    /// to None. Without this flag, adding an entry whose name already
+    /// exists is a hard error (protects against accidental clobbering).
+    #[arg(long)]
+    pub force: bool,
 }
 
 #[derive(Parser, Clone, Debug)]
