@@ -81,16 +81,17 @@ real UX dead-end.
 
 Reuses the SDK design doc §4 verbatim — file magic `OVLT`, ChaCha20-BLAKE3
 committing AEAD, per-entry nonces, encrypted entry index inside the header.
-**Deviation**: `origin-pass` adds one optional entry-type tag field (4 bytes)
-that the SDK design doc does not pin down:
+**Deviation**: `origin-pass` reuses the existing 16-byte `entry_reserved` block
+of `EntryMetadata` to add 5 bytes of entry-type metadata. The struct stays
+76 bytes total — the new fields fit within the reserved block:
 
 ```
-EntryMetadata (76 bytes)  →  EntryMetadataV2 (80 bytes)
+EntryMetadata (76 bytes) — layout unchanged; new fields repurpose reserved
 ─────────────────────────────────────────────────────────────────
  0      32   name_hash                 name_hash
 32      24   entry_nonce               entry_nonce
 56       4   entry_ct_len              entry_ct_len
-60      16   entry_reserved            type_tag (1B) + algo (1B) + period_secs (2B) + digits (1B) + 11B reserved
+60      16   entry_reserved            type_tag (1B) + algo (1B) + period_secs (2B) + digits (1B) + 11B still-zeroed
 ─────────────────────────────────────────────────────────────────
 ```
 
@@ -176,26 +177,32 @@ AEAD, mlock for Sovereign tier). `origin-pass` adds:
 
 ### 3.1 `origin-pass` specific threats
 
+Note: T-codes in this section are numbered from **T5.x** to avoid collision
+with the SDK doc's T2.x (origin-vault) and T3.x (origin-auth) prefixes.
+
 | ID    | Threat                                         | Mitigation                                                                                                  |
 |-------|------------------------------------------------|-------------------------------------------------------------------------------------------------------------|
-| T2.1  | Vault file stolen                              | Header AEAD + per-entry AEAD with independent nonces (inherited from SDK §6)                              |
-| T2.2  | Brute-force vault passphrase                   | Argon2id configurable up to Sovereign tier (inherited)                                                       |
-| T2.3  | Coerced decryption                              | No `origin-pass` self-destruct primitive — see SDK duress-pattern application guidance                       |
-| T2.4  | TOTP secret read by screen scraper             | Vault payload is encrypted at rest; secrets never written to stdout in cleartext (always via `get` only)   |
-| T2.5  | TOTP code captured by screen-capture malware   | `code` output auto-clears from terminal after `--auto-clear` seconds (default 30s, configurable via `config.toml`) |
-| T2.6  | Replay of an old TOTP code                     | TOTP counter is `(timestamp / period)`; a code older than `±1` step is rejected by RFC 6238 verifier       |
-| T2.7  | Shoulder-surfing during `code`                 | `code --quiet` suppresses echo; `--auto-clear` truncates display                                              |
-| T2.8  | `import-qr` from an untrusted source           | The `otpauth://` URI is parsed; the secret is stored encrypted; no callback / fetch ever happens              |
-| T2.9  | Session token theft (if `--session-token` used)| Token is a random 32B value in `~/.origin/pass.session` with mode `0600`; expired on `lock` or process exit  |
-| T2.10 | `origin-pass code` shows secret in error       | Errors never include the secret material; only `code <name>` with successful decryption prints                |
+| T5.1  | Vault file stolen                              | Header AEAD + per-entry AEAD with independent nonces (inherited from SDK §6)                              |
+| T5.2  | Brute-force vault passphrase                   | Argon2id configurable up to Sovereign tier (inherited)                                                       |
+| T5.3  | Coerced decryption                              | No `origin-pass` self-destruct primitive — see SDK duress-pattern application guidance                       |
+| T5.4  | TOTP secret read by screen scraper             | Vault payload is encrypted at rest; secrets never written to stdout in cleartext (always via `get` only)   |
+| T5.5  | TOTP code captured by screen-capture malware   | `code` output auto-clears from terminal after `--auto-clear` seconds (default 30s, configurable via `config.toml`) |
+| T5.6  | Replay of an old TOTP code                     | TOTP counter is `(timestamp / period)`; a code older than `±1` step is rejected by RFC 6238 verifier       |
+| T5.7  | Shoulder-surfing during `code`                 | `code --quiet` suppresses echo; `--auto-clear` truncates display                                              |
+| T5.8  | `import-qr` from an untrusted source           | The `otpauth://` URI is parsed; the secret is stored encrypted; no callback / fetch ever happens              |
+| T5.9  | Session token theft (if `--session-token` used)| Token is a random 32B value in `~/.origin/pass.session` with mode `0600`; expired on `lock` or process exit  |
+| T5.10 | `origin-pass code` shows secret in error       | Errors never include the secret material; only `code <name>` with successful decryption prints                |
 
 ### 3.2 Cross-tool threats (in addition to SDK §6 cross-tool)
 
+Note: T-codes in this section are numbered from **T6.x** to avoid collision
+with the SDK doc's T4.x prefix.
+
 | ID    | Threat                                          | Mitigation                                                                                                  |
 |-------|-------------------------------------------------|-------------------------------------------------------------------------------------------------------------|
-| T4.6  | `~/.origin/pass.vault` co-located with identity  | Different file names; different salts; tooling cannot enumerate one from the other                            |
-| T4.7  | `origin-pass` reads identity's passphrase file  | Reads only via `--passphrase-file <path>`, no implicit coupling                                                |
-| T4.8  | `code` output captured by shell history         | `code` writes to stderr (not stdout) and to a tty-only pty if `--tty-only` is set                              |
+| T6.1  | `~/.origin/pass.vault` co-located with identity  | Different file names; different salts; tooling cannot enumerate one from the other                            |
+| T6.2  | `origin-pass` reads identity's passphrase file  | Reads only via `--passphrase-file <path>`, no implicit coupling                                                |
+| T6.3  | `code` output captured by shell history         | `code` writes to stderr (not stdout) and to a tty-only pty if `--tty-only` is set                              |
 
 ---
 

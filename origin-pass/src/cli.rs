@@ -43,7 +43,7 @@ pub enum Commands {
     ChangePassphrase(ChangePassphraseArgs),
 }
 
-#[derive(Parser)]
+#[derive(Parser, Clone, Debug)]
 pub struct InitArgs {
     /// Vault file path
     #[arg(short, long, default_value = "~/.origin/pass.vault")]
@@ -58,7 +58,7 @@ pub struct InitArgs {
     pub passphrase_file: Option<String>,
 }
 
-#[derive(Parser)]
+#[derive(Parser, Clone, Debug)]
 pub struct UnlockArgs {
     /// Vault file path
     #[arg(short, long, default_value = "~/.origin/pass.vault")]
@@ -77,10 +77,10 @@ pub struct UnlockArgs {
     pub session_token: Option<PathBuf>,
 }
 
-#[derive(Parser)]
+#[derive(Parser, Clone, Debug)]
 pub struct LockArgs {}
 
-#[derive(Parser)]
+#[derive(Parser, Clone, Debug)]
 pub struct AddArgs {
     /// Vault file path
     #[arg(short, long, default_value = "~/.origin/pass.vault")]
@@ -106,7 +106,7 @@ pub struct AddArgs {
     pub notes: Option<String>,
 }
 
-#[derive(Parser)]
+#[derive(Parser, Clone, Debug)]
 pub struct GetArgs {
     /// Vault file path
     #[arg(short, long, default_value = "~/.origin/pass.vault")]
@@ -120,7 +120,7 @@ pub struct GetArgs {
     pub passphrase_file: Option<String>,
 }
 
-#[derive(Parser)]
+#[derive(Parser, Clone, Debug)]
 pub struct ListArgs {
     /// Vault file path
     #[arg(short, long, default_value = "~/.origin/pass.vault")]
@@ -131,7 +131,7 @@ pub struct ListArgs {
     pub passphrase_file: Option<String>,
 }
 
-#[derive(Parser)]
+#[derive(Parser, Clone, Debug)]
 pub struct RmArgs {
     /// Vault file path
     #[arg(short, long, default_value = "~/.origin/pass.vault")]
@@ -145,7 +145,7 @@ pub struct RmArgs {
     pub passphrase_file: Option<String>,
 }
 
-#[derive(Parser)]
+#[derive(Parser, Clone, Debug)]
 pub struct CodeArgs {
     /// Vault file path
     #[arg(short, long, default_value = "~/.origin/pass.vault")]
@@ -175,7 +175,7 @@ pub struct CodeArgs {
     pub quiet: bool,
 }
 
-#[derive(Parser)]
+#[derive(Parser, Clone, Debug)]
 pub struct ExportQrArgs {
     /// Vault file path
     #[arg(short, long, default_value = "~/.origin/pass.vault")]
@@ -189,7 +189,7 @@ pub struct ExportQrArgs {
     pub passphrase_file: Option<String>,
 }
 
-#[derive(Parser)]
+#[derive(Parser, Clone, Debug)]
 pub struct ImportQrArgs {
     /// Vault file path
     #[arg(short, long, default_value = "~/.origin/pass.vault")]
@@ -203,7 +203,7 @@ pub struct ImportQrArgs {
     pub passphrase_file: Option<String>,
 }
 
-#[derive(Parser)]
+#[derive(Parser, Clone, Debug)]
 pub struct ChangePassphraseArgs {
     /// Vault file path
     #[arg(short, long, default_value = "~/.origin/pass.vault")]
