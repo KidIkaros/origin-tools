@@ -1,0 +1,20 @@
+[workspace]
+members = [
+    "origin-identity",
+]
+resolver = "2"
+
+[workspace.package]
+version = "0.3.0"
+edition = "2021"
+license = "Apache-2.0"
+authors = ["Origin SDK Contributors"]
+
+[workspace.dependencies]
+origin-crypto-sdk = { path = "../origin-crypto-sdk" }
+clap = { version = "4", features = ["derive"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+hex = "0.4"
+rpassword = "7"
+ed25519-dalek = "2"

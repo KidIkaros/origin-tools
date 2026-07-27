@@ -1,0 +1,15 @@
+[package]
+name = "origin-identity"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Identity key management — generate master seeds, hybrid sign/verify with Ed25519 + Falcon-1024"
+
+[dependencies]
+origin-crypto-sdk.workspace = true
+clap.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+hex.workspace = true
+rpassword.workspace = true
+ed25519-dalek.workspace = true
