@@ -1,6 +1,7 @@
 [workspace]
 members = [
     "origin-identity",
+    "origin-pass",
 ]
 resolver = "2"
 
