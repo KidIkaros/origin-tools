@@ -227,12 +227,20 @@ pub struct ExportQrArgs {
     #[arg(short, long, default_value = "~/.origin/pass.vault")]
     pub vault: String,
 
-    /// Entry name (must be an OTP entry)
+    /// Entry name (must be an OTP/TOTP/HOTP entry)
     pub name: String,
 
     /// Read passphrase from file instead of prompting
     #[arg(long)]
     pub passphrase_file: Option<String>,
+
+    /// Override the issuer embedded in the otpauth:// URI. Defaults to the
+    /// entry name when omitted — matching how Google Authenticator labels
+    /// one-entry-per-app vaults. Use this flag to produce a multi-entry
+    /// export where all entries share one issuer (e.g. `Acme Corp`) but
+    /// keep distinct account names.
+    #[arg(long)]
+    pub issuer: Option<String>,
 }
 
 #[derive(Parser, Clone, Debug)]
@@ -241,12 +249,21 @@ pub struct ImportQrArgs {
     #[arg(short, long, default_value = "~/.origin/pass.vault")]
     pub vault: String,
 
-    /// otpauth:// URI (literal, or @file to read from a file)
+    /// otpauth:// URI (literal, or @file to read from a file). Mirrors
+    /// origin-identity's @file semantics: a leading `@` reads the URI
+    /// content from disk (handy for QR-PNG OCR pipelines or sharing
+    /// via signed messages).
     pub uri: String,
 
     /// Read passphrase from file instead of prompting
     #[arg(long)]
     pub passphrase_file: Option<String>,
+
+    /// Overwrite an existing entry with the same name. Without this flag,
+    /// importing a URI whose label maps to an existing entry is a hard
+    /// error (matches `cmd_add --force` semantics).
+    #[arg(long)]
+    pub force: bool,
 }
 
 #[derive(Parser, Clone, Debug)]

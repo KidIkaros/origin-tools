@@ -389,3 +389,96 @@ fn cmd_add_password_secret_file_and_stdin_is_rejected_by_clap_mutex() {
         "expected clap mutex error mentioning the conflicted flags, got: {stderr}"
     );
 }
+
+// ──────────────────────────────────────────────────────────────────────
+// Test 5: cmd_import_qr + cmd_export_qr round-trip
+// Imports a hardcoded otpauth://totp URI, then exports the same entry,
+// and asserts the re-exported URI contains the same secret + algorithm +
+// digits + period + issuer. Locks the wire format end-to-end through the
+// shell-out path (init -> import-qr -> export-qr -> stdout -> grep).
+// ──────────────────────────────────────────────────────────────────────
+
+#[test]
+fn cmd_import_qr_then_export_qr_recovers_uri_via_shell_out() {
+    let dir = TempDir::new().expect("tempdir");
+    let vault_pw = write_secret(&dir, "vault-pw", "v");
+    init_vault(&dir, &vault_pw, "nano");
+
+    let vault_path = dir.path().join("test.vault");
+    let uri = "otpauth://totp/Test?secret=JBSWY3DPEHPK3PXP&issuer=Test&algorithm=SHA1&digits=6&period=30";
+
+    // Import the hardcoded URI.
+    let import_status = Command::new(origin_pass_bin())
+        .args([
+            "import-qr",
+            "--vault",
+            vault_path.to_str().unwrap(),
+            uri,
+            "--passphrase-file",
+            vault_pw.to_str().unwrap(),
+        ])
+        .status()
+        .expect("spawn origin-pass import-qr");
+    assert!(
+        import_status.success(),
+        "cmd_import_qr must succeed (exit={import_status})"
+    );
+
+    // Export the same entry. The "uri: ..." header line lets us grep
+    // without accidentally matching the QR block.
+    let export_output = Command::new(origin_pass_bin())
+        .args([
+            "export-qr",
+            "--vault",
+            vault_path.to_str().unwrap(),
+            "Test",
+            "--passphrase-file",
+            vault_pw.to_str().unwrap(),
+        ])
+        .output()
+        .expect("spawn origin-pass export-qr");
+    assert!(
+        export_output.status.success(),
+        "cmd_export_qr must succeed (exit={}); stderr={}",
+        export_output.status,
+        String::from_utf8_lossy(&export_output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&export_output.stdout);
+    assert!(
+        stdout.starts_with("uri: "),
+        "expected output to begin with `uri: ` marker line, got: {}",
+        &stdout[..stdout.len().min(200)]
+    );
+    let uri_line = stdout
+        .lines()
+        .next()
+        .expect("at least one output line")
+        .trim_start_matches("uri: ");
+
+    // Round-trip assertions: every parameter survives the import/export
+    // cycle (no lossy codec, no JSON drift).
+    assert!(
+        uri_line.contains("secret=JBSWY3DPEHPK3PXP"),
+        "secret must round-trip byte-exact, got URI: {uri_line}"
+    );
+    assert!(
+        uri_line.contains("issuer=Test"),
+        "issuer must round-trip, got URI: {uri_line}"
+    );
+    assert!(
+        uri_line.contains("algorithm=SHA1"),
+        "algorithm must round-trip, got URI: {uri_line}"
+    );
+    assert!(
+        uri_line.contains("digits=6"),
+        "digits must round-trip, got URI: {uri_line}"
+    );
+    assert!(
+        uri_line.contains("period=30"),
+        "period must round-trip, got URI: {uri_line}"
+    );
+    assert!(
+        uri_line.contains("otpauth://totp/Test"),
+        "URI scheme + type + label must round-trip, got: {uri_line}"
+    );
+}

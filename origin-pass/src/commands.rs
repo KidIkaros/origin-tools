@@ -169,6 +169,60 @@ fn unix_now() -> i64 {
 }
 
 // ──────────────────────────────────────────────────────────────────────
+// RFC 3986 percent-encoding helpers for otpauth:// URI building
+// ──────────────────────────────────────────────────────────────────────
+
+/// Percent-encode `s` per RFC 3986 §2.1: only `A-Z a-z 0-9 - _ . ~`
+/// pass through. Used by `cmd_export_qr` to safely embed issuer /
+/// account names that may contain `:`, `@`, `&`, etc. into a query
+/// value (the original SDK `pub fn url_encode` is `pub(crate)` so we
+/// write our own minimal 8-line encoder here).
+pub fn url_encode(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for byte in s.as_bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(*byte as char);
+            }
+            _ => {
+                out.push_str(&format!("%{:02X}", byte));
+            }
+        }
+    }
+    out
+}
+
+/// Pad-and-tight RFC 3986 percent-decode. Also accepts `+` (form-encoded
+/// space) for cross-tool compatibility with Google Authenticator's QR
+/// exports which sometimes use `+` for space in issuer.
+pub fn url_decode(s: &str) -> Result<String, String> {
+    let bytes = s.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'+' => {
+                out.push(b' ');
+                i += 1;
+            }
+            b'%' if i + 2 < bytes.len() => {
+                let hex = std::str::from_utf8(&bytes[i + 1..i + 3])
+                    .map_err(|_| format!("invalid %XX in URL at offset {i}"))?;
+                let v = u8::from_str_radix(hex, 16)
+                    .map_err(|_| format!("invalid hex after `%` at offset {i}: `{hex}`"))?;
+                out.push(v);
+                i += 3;
+            }
+            b => {
+                out.push(b);
+                i += 1;
+            }
+        }
+    }
+    String::from_utf8(out).map_err(|e| format!("invalid UTF-8 after URL-decode: {e}"))
+}
+
+// ──────────────────────────────────────────────────────────────────────
 // OCRA (RFC 6287) helpers — used by `cmd_code` (vault or key-file)
 // ──────────────────────────────────────────────────────────────────────
 
@@ -513,12 +567,303 @@ pub fn cmd_code(args: CodeArgs) -> Result<(), String> {
     print_ocra_code(&code, args.quiet)
 }
 
-pub fn cmd_export_qr(_args: ExportQrArgs) -> Result<(), String> {
-    todo!("origin-pass export-qr — see DESIGN.md §6 step 4 (OTP)")
+pub fn cmd_export_qr(args: ExportQrArgs) -> Result<(), String> {
+    let path = resolve_vault_path(&args.vault)?;
+    let passphrase = resolve_passphrase(&args.passphrase_file)?;
+    let vault_obj = vault::unlock_vault(&path, &passphrase)?;
+
+    let entry = vault_obj
+        .entries
+        .get(&args.name)
+        .ok_or_else(|| format!("entry not found: {}", args.name))?;
+
+    // Reject non-OTP entries (password, OCRA). Only totp/hotp have an
+    // otpauth:// representation.
+    let is_totp = entry.totp.is_some();
+    let is_hotp = entry.hotp.is_some();
+    if !is_totp && !is_hotp {
+        return Err(format!(
+            "entry '{}' is type '{}'; only otp entries can be exported as QR",
+            args.name,
+            entry_kind(entry)
+        ));
+    }
+
+    // Pull algorithm/digits/period/counter from the JSON payload —
+    // this is the source of truth (EntryMetadata is a redundant cache).
+    let algo = {
+        let v = if is_totp { &entry.totp } else { &entry.hotp };
+        v.as_ref()
+            .and_then(|j| j.get("algo"))
+            .and_then(|a| a.as_str())
+            .unwrap_or("SHA1")
+            .to_string()
+    };
+    let digits: u32 = {
+        let v = if is_totp { &entry.totp } else { &entry.hotp };
+        v.as_ref()
+            .and_then(|j| j.get("digits"))
+            .and_then(|a| a.as_u64())
+            .unwrap_or(6) as u32
+    };
+    let period: u32 = {
+        if is_totp {
+            entry
+                .totp
+                .as_ref()
+                .and_then(|j| j.get("period"))
+                .and_then(|a| a.as_u64())
+                .unwrap_or(30) as u32
+        } else {
+            0 // HOTP has no period.
+        }
+    };
+    let counter: u64 = if is_hotp {
+        entry
+            .hotp
+            .as_ref()
+            .and_then(|j| j.get("counter"))
+            .and_then(|a| a.as_u64())
+            .unwrap_or(0)
+    } else {
+        0
+    };
+
+    // The secret in `entry.secret` is a UTF-8 base32 string (the
+    // convention enforced by `EntryPayload::totp` / `::hotp` and
+    // `cmd_import_qr`'s decoder-validates-then-stores path). We do
+    // NOT round-trip it through base32_encode here — that would
+    // treat the existing base32 string as raw bytes and produce a
+    // different output for inputs ≥ 16 chars.
+    let secret_bytes = entry
+        .secret
+        .as_ref()
+        .ok_or_else(|| format!("entry '{}' has no secret bytes stored", args.name))?;
+    let secret_str = std::str::from_utf8(secret_bytes).map_err(|e| {
+        format!(
+            "entry '{}' secret is not a UTF-8 base32 string (data corruption): {e}",
+            args.name
+        )
+    })?;
+
+    // Issuer fallback chain (precedence):
+    //   1. --issuer CLI flag (caller override)
+    //   2. `issuer=` prefix stored in entry.notes by `cmd_import_qr`
+    //   3. The entry name itself (matches Google Authenticator's
+    //      single-entry-per-account convention)
+    let stored_issuer = entry
+        .notes
+        .as_ref()
+        .and_then(|n| n.strip_prefix("issuer=").map(|s| s.to_string()));
+    let issuer = args
+        .issuer
+        .clone()
+        .or(stored_issuer)
+        .unwrap_or_else(|| args.name.clone());
+
+    // Issuer + account can contain URL-special chars (':', '@', '&',
+    // '+'). Percent-encode them per RFC 3986 §2.1. The secret is
+    // already base32 (RFC 4648 A-Z + 2-7 + '='), algorithm is one of
+    // "SHA1|SHA256|SHA512", digits/period/counter are decimal ints —
+    // none of those need encoding.
+    let issuer_enc = url_encode(&issuer);
+    let account_enc = url_encode(&args.name);
+    let kind = if is_totp { "totp" } else { "hotp" };
+    let mut uri = format!(
+        "otpauth://{kind}/{issuer_enc}:{account_enc}?secret={secret}&issuer={issuer_enc}&algorithm={algo}&digits={digits}",
+        kind = kind,
+        issuer_enc = issuer_enc,
+        account_enc = account_enc,
+        secret = secret_str,
+        algo = algo,
+        digits = digits,
+    );
+    if is_totp {
+        uri.push_str(&format!("&period={period}"));
+    } else {
+        uri.push_str(&format!("&counter={counter}"));
+    }
+
+    // Print URI on its own line (so `head -1` works for diagnostics),
+    // then a blank line, then the QR block.
+    println!("uri: {uri}");
+    println!();
+
+    let qr = qrcode::QrCode::new(uri.as_bytes())
+        .map_err(|e| format!("QR generation failed: {e}"))?;
+    let block = qr
+        .render::<qrcode::render::unicode::Dense1x2>()
+        .quiet_zone(true)
+        .build();
+    print!("{block}");
+
+    Ok(())
 }
 
-pub fn cmd_import_qr(_args: ImportQrArgs) -> Result<(), String> {
-    todo!("origin-pass import-qr — see DESIGN.md §6 step 4 (OTP)")
+pub fn cmd_import_qr(args: ImportQrArgs) -> Result<(), String> {
+    let path = resolve_vault_path(&args.vault)?;
+
+    // Resolve the URI: literal, or @file prefix mirroring origin-identity.
+    let raw_uri = if let Some(file_path) = args.uri.strip_prefix('@') {
+        std::fs::read_to_string(file_path)
+            .map_err(|e| format!("cannot read URI file {file_path}: {e}"))?
+            .trim_end_matches(|c: char| c.is_whitespace())
+            .to_string()
+    } else {
+        args.uri.clone()
+    };
+
+    let passphrase = resolve_passphrase(&args.passphrase_file)?;
+    let mut vault_obj = vault::unlock_vault(&path, &passphrase)?;
+
+    // Parse `otpauth://<type>/<label>?<query>`.
+    let after_scheme = raw_uri
+        .strip_prefix("otpauth://")
+        .ok_or_else(|| "URI must begin with `otpauth://`".to_string())?;
+    let (type_and_label, query) = match after_scheme.split_once('?') {
+        Some((tl, q)) => (tl, q),
+        None => (after_scheme, ""),
+    };
+    let (kind, label_enc) = type_and_label.split_once('/').ok_or_else(|| {
+        format!("URI malformed: missing `/<label>` after type: `{type_and_label}`")
+    })?;
+    // Label is percent-encoded in real Google Authenticator exports
+    // ("Acme%20Corp:Bob%40example.com"). Decode before parsing.
+    let label = url_decode(label_enc).map_err(|e| format!("invalid URI label: {e}"))?;
+
+    // Validate kind.
+    if kind != "totp" && kind != "hotp" {
+        return Err(format!(
+            "URI type must be `totp` or `hotp`, got `{kind}`"
+        ));
+    }
+
+    // Parse + URL-decode query parameters. Reject bare-key pairs
+    // (e.g. `?issuer&digits=6`) per RFC 3986 — that form is invalid
+    // and silently accepting it was producing empty-value params.
+    let mut params = std::collections::HashMap::<String, String>::new();
+    for pair in query.split('&') {
+        if pair.is_empty() {
+            continue;
+        }
+        let (k_enc, v_enc) = pair.split_once('=').ok_or_else(|| {
+            format!("URI query pair missing `=`: `{pair}`")
+        })?;
+        let k = url_decode(k_enc).map_err(|e| format!("invalid URI query key: {e}"))?;
+        let v = url_decode(v_enc).map_err(|e| format!("invalid URI query value: {e}"))?;
+        params.insert(k, v);
+    }
+
+    // Required: secret. Validate via base32_decode (rejects invalid
+    // base32 strings) but store the URI's base32 string form directly
+    // — matches the existing EntryPayload::totp / ::hotp convention.
+    let secret_b32 = params
+        .get("secret")
+        .ok_or_else(|| "URI missing required `secret` query parameter".to_string())?;
+    origin_crypto_sdk::drbg::otp::base32_decode(secret_b32)
+        .map_err(|e| format!("URI `secret` is not valid base32: {e}"))?;
+
+    // Issuer: prefer query, fallback to label's `Issuer:` prefix.
+    let issuer = params
+        .get("issuer")
+        .cloned()
+        .or_else(|| label.split_once(':').map(|(i, _)| i.to_string()))
+        .unwrap_or_default();
+
+    // accountname: label minus optional "Issuer:" prefix.
+    let accountname = label
+        .split_once(':')
+        .map(|(_, a)| a.to_string())
+        .unwrap_or_else(|| label.to_string());
+    if accountname.is_empty() {
+        return Err("URI label resolves to empty accountname".to_string());
+    }
+
+    // Algorithm: default SHA1, normalize to uppercase.
+    let algo = params
+        .get("algorithm")
+        .map(|s| s.to_uppercase())
+        .unwrap_or_else(|| "SHA1".to_string());
+    if algo != "SHA1" && algo != "SHA256" && algo != "SHA512" {
+        return Err(format!(
+            "unsupported algorithm `{algo}` (must be SHA1, SHA256, or SHA512)"
+        ));
+    }
+
+    // Digits: default 6, valid range 4..=10.
+    let digits: u32 = match params.get("digits") {
+        Some(s) => s
+            .parse()
+            .map_err(|_| format!("digits not a valid integer: `{s}`"))?,
+        None => 6,
+    };
+    if !(4..=10).contains(&digits) {
+        return Err(format!("digits out of range (4..=10): {digits}"));
+    }
+
+    // Period (TOTP only): default 30.
+    let period: u32 = if kind == "totp" {
+        match params.get("period") {
+            Some(p) => p
+                .parse()
+                .map_err(|_| format!("period not a valid integer: `{p}`"))?,
+            None => 30,
+        }
+    } else {
+        0
+    };
+
+    // Counter (HOTP only): REQUIRED per RFC 4226 §5.3.
+    let counter: u64 = if kind == "hotp" {
+        match params.get("counter") {
+            Some(c) => c
+                .parse()
+                .map_err(|_| format!("counter not a valid integer: `{c}`"))?,
+            None => {
+                return Err(
+                    "HOTP URI missing required `counter` query parameter".to_string(),
+                )
+            }
+        }
+    } else {
+        0
+    };
+
+    // Pre-flight: duplicate entry check; --force overwrites.
+    let is_overwrite = vault_obj.entries.contains_key(&accountname);
+    if is_overwrite && !args.force {
+        return Err(format!(
+            "entry already exists: {accountname} (use --force to overwrite)"
+        ));
+    }
+
+    let now = unix_now();
+    let mut payload = if kind == "totp" {
+        EntryPayload::totp(&accountname, secret_b32, period, digits, &algo)
+    } else {
+        EntryPayload::hotp(&accountname, secret_b32, counter, digits, &algo)
+    };
+    // Stash issuer in `notes` so the export round-trip can recover it
+    // without needing --issuer (matches Google Authenticator's
+    // self-describing QR exports).
+    payload.notes = if issuer.is_empty() {
+        None
+    } else {
+        Some(format!("issuer={issuer}"))
+    };
+    payload.updated_at = now;
+    if is_overwrite {
+        if let Some(prev) = vault_obj.entries.get(&accountname) {
+            payload.created_at = prev.created_at;
+        }
+    } else {
+        payload.created_at = now;
+    }
+
+    vault_obj.add_entry(payload)?;
+    vault::persist_vault(&path, &vault_obj)?;
+    eprintln!("imported: {accountname} (entry: {kind})");
+    Ok(())
 }
 
 pub fn cmd_change_passphrase(args: ChangePassphraseArgs) -> Result<(), String> {

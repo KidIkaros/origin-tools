@@ -20,9 +20,17 @@ hex = { workspace = true }
 rpassword = { workspace = true }
 rand = "0.8"
 zeroize = "1"
+# `qrcode` 0.14 — terminal block-character QR rendering for
+# `cmd_export_qr`. The crate's `render::unicode::Dense1x2` produces
+# half-block ▀▄█ characters that modern phone cameras scan reliably
+# through phone-camera apps (Google Authenticator, etc.). No PNG
+# dependency tree pulled in (text-only mode = no `image`/`png`).
+qrcode = "0.14"
+
 # base32 encoding for otpauth:// URI generation reuses the SDK's
-# `origin_crypto_sdk::drbg::otp::base32_encode` helper (see src/cli.rs /
-# future commands.rs) — no crate-local base32 dep needed.
+# `origin_crypto_sdk::drbg::otp::base32_encode` helper that was just
+# promoted to `pub` on the SDK's `release/0.6.4` branch (commit
+# `1452070`). No crate-local base32 dep needed.
 
 [dev-dependencies]
 tempfile = "3"

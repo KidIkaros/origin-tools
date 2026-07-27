@@ -356,6 +356,29 @@ impl EntryPayload {
         }
     }
 
+    /// Build an HOTP entry. `counter` is required by RFC 4226 / RFC 6238;
+    /// importing a `otpauth://hotp/?counter=0` URI stores counter=0 and the
+    /// verifier is responsible for incrementing per use.
+    pub fn hotp(name: &str, secret: &str, counter: u64, digits: u32, algo: &str) -> Self {
+        Self {
+            name: name.to_string(),
+            entry_type: "otp".to_string(),
+            secret: Some(secret.as_bytes().to_vec()),
+            url: None,
+            notes: None,
+            created_at: 0,
+            updated_at: 0,
+            totp: None,
+            hotp: Some(serde_json::json!({
+                "kind": "hotp",
+                "counter": counter,
+                "digits": digits,
+                "algo": algo,
+            })),
+            ocra: None,
+        }
+    }
+
     /// Build an OCRA entry. The `secret` is the raw OCRA key (≥ 16 bytes).
     pub fn ocra(name: &str, key: &[u8], suite: &str, digits: u32, algo: &str) -> Self {
         Self {
