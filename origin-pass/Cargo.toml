@@ -1,0 +1,24 @@
+[package]
+name = "origin-pass"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Encrypted password vault + 2FA authenticator (TOTP/HOTP) built on origin-crypto-sdk"
+readme = "README.md"
+
+[[bin]]
+name = "origin-pass"
+path = "src/main.rs"
+
+[dependencies]
+origin-crypto-sdk = { workspace = true }
+clap = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+hex = { workspace = true }
+rpassword = { workspace = true }
+base32 = "0.5"
+
+[dev-dependencies]
+tempfile = "3"
