@@ -20,15 +20,32 @@ use crate::cli::{
 /// Result of an OCRA computation — the formatted code + algorithm metadata
 /// so callers (cmd_code, future vault-backed paths, and integration tests)
 /// can render or compare without re-deriving inputs.
-#[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// `Debug` is **hand-rolled** (not derived) so that `format!("{:?}", code)`
+/// never prints the response code. A leaked OCRA response is a one-time
+/// password — if it shows up in a log line, panic message, or assertion
+/// error, an attacker who can read the log can impersonate the user. The
+/// pattern mirrors `origin_crypto_sdk::ocra::OcraResponse::fmt` which
+/// likewise redacts the numeric value.
+#[derive(Clone, PartialEq, Eq)]
 pub struct OcraCode {
     /// RFC 4226 §5.3 dynamic-truncated value, rendered with `digits`
-    /// leading zeros.
+    /// leading zeros. Redacted in `Debug` output.
     pub value: String,
-    /// Numeric value (unguarded for downstream /QA tooling; do NOT log).
+    /// Numeric value. Redacted in `Debug` output.
     pub numeric: u64,
     /// Digit width (4..=10).
     pub digits: u32,
+}
+
+impl std::fmt::Debug for OcraCode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("OcraCode")
+            .field("value", &format!("<{} digits redacted>", self.digits))
+            .field("numeric", &"<redacted>")
+            .field("digits", &self.digits)
+            .finish()
+    }
 }
 
 /// Conversion from the CLI-facing enum (a `clap::ValueEnum` so clap can

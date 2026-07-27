@@ -225,9 +225,7 @@ with the SDK doc's T2.x (origin-vault) and T3.x (origin-auth) prefixes.
 | T5.8  | `import-qr` from an untrusted source           | The `otpauth://` URI is parsed; the secret is stored encrypted; no callback / fetch ever happens              |
 | T5.9  | Session token theft (if `--session-token` used)| Token is a random 32B value in `~/.origin/pass.session` with mode `0600`; expired on `lock` or process exit  |
 | T5.10 | `origin-pass code` shows secret in error       | Errors never include the secret material; only `code <name>` with successful decryption prints                |
-| T5.11 | OCRA key file leaked via `--key-file`          | `--key-file` is a testing escape hatch for v0.1.x — removed once `unlock` lands and OCRA entries are loaded by name; file mode is `0600` per Unix default and never logged |
-| T5.12 | OCRA challenge replay                          | RFC 6287 §10 mandates that verifiers track challenge nonce + bounds; `origin-pass` records each challenge in a `~/.origin/pass.ocra-nonces` ledger and rejects replays within a 5-min window |
-| T5.13 | OCRA brute-force counter increment             | Counter is auto-advanced by the verifier; `--counter` override is rate-limited (max once per second per entry) |
+| T5.11 | OCRA key file leaked via `--key-file`          | `--key-file` is a v0.1.x **testing escape hatch** — removed once `unlock` lands. `OcraCode`'s `Debug` is hand-rolled to redact both `value` and `numeric`; `cmd_code` never logs the response. Until `unlock` lands, the only way to exercise OCRA is `code --ocra --key-file`, which puts the secret bytes in a path the user controls. Document loudly that this path mode is for development only. |
 
 ### 3.2 Cross-tool threats (in addition to SDK §6 cross-tool)
 
@@ -239,6 +237,19 @@ with the SDK doc's T4.x prefix.
 | T6.1  | `~/.origin/pass.vault` co-located with identity  | Different file names; different salts; tooling cannot enumerate one from the other                            |
 | T6.2  | `origin-pass` reads identity's passphrase file  | Reads only via `--passphrase-file <path>`, no implicit coupling                                                |
 | T6.3  | `code` output captured by shell history         | `code` writes to stderr (not stdout) and to a tty-only pty if `--tty-only` is set                              |
+
+### 3.3 OCRA-specific threats — PLANNED (not yet enforced)
+
+The mitigations below are **not yet implemented in `origin-pass` v0.1.x**.
+Including them in the shipped threat model would over-promise; once the
+defenses land, they move into §3.1 with their T-code.
+
+| ID      | Threat                            | Future mitigation                                                                  |
+|---------|-----------------------------------|------------------------------------------------------------------------------------|
+| T5.12\* | OCRA challenge replay             | Persist each challenge to `~/.origin/pass.ocra-nonces` (append-only, mode `0600`); reject replays within a 5-min window |
+| T5.13\* | OCRA brute-force counter increment | Counter is auto-advanced by the verifier; `--counter` override is rate-limited (max once per second per entry)            |
+
+\* — superseded by the corresponding non-`*` T-code once the mitigation ships.
 
 ---
 
@@ -304,5 +315,5 @@ Each step is a separate PR.
   base threat model, CLI conventions
 - RFC 4226 — HOTP
 - RFC 6238 — TOTP
-- RFC 6287 — OCRA (deferred from v1)
+- RFC 6287 — OCRA (shipped as compute-only branch in v0.1.x; Suite-string parser + QR provisioning + replay-nonceledger deferred to v1.x)
 - Key URI format: `otpauth://` (Google Authenticator compatible)
