@@ -20,7 +20,7 @@ design and adds per-binary details that the SDK doc does not pin down.
 | Tool             | Crate              | Purpose                                                      | Status  |
 |------------------|--------------------|--------------------------------------------------------------|---------|
 | `origin-identity`| `origin-identity/` | Identity key generation, hybrid sign/verify, blob lifecycle  | v0.3.0  |
-| `origin-pass`    | `origin-pass/`     | Encrypted password vault + 2FA authenticator (TOTP/HOTP)    | design  |
+| `origin-pass`    | `origin-pass/`     | Encrypted password vault + 2FA authenticator (TOTP/HOTP, **OCRA in v0.1.x**) | scaffold |
 | `origin-vault`   | _deferred_         | Standalone encrypted file vault (no 2FA)                    | backlog |
 | `origin-backup`  | _deferred_         | Reed-Solomon sharded backup for identity + vault            | backlog |
 
@@ -64,10 +64,14 @@ real UX dead-end.
 
 ### 2.2 What v1 does NOT include
 
-- **OCRA (RFC 6287)**: deferred. The SDK has `origin_crypto_sdk::ocra::ocra`
-  implemented but adding `origin-pass code --ocra` doubles the entry-type
-  state machine without unlocking a use case that TOTP/HOTP cannot serve
-  today. Tracked as a v1.x addition.
+- **OCRA (RFC 6287)**: **shipped as a compute-only branch in v0.1.x** —
+  `origin-pass code --ocra <name> --challenge <challenge> --key-file <path>`.
+  The wrapper is a thin OCRA-request-builder + RFC 6287 §7.1 caller on top
+  of the SDK's `origin_crypto_sdk::ocra::ocra`. The `--key-file` flag is a
+  **testing escape hatch** (raw bytes from disk) that lands ahead of vault
+  unlock; it will be removed once `unlock` lets us look up entries by name.
+  Full Suite-string parsing (`OCRA-1:HOTP-SHA1-6:QN08`), QR provisioning,
+  and the OCRA-replay nonces ledger are still v1.x work.
 - **Sync / remote storage**: vault format is file-local; cloud sync would
   require conflict resolution (CRDTs or last-writer-wins) and a transport
   layer that is out of scope.
@@ -97,11 +101,11 @@ EntryMetadata (76 bytes) — layout unchanged; new fields repurpose reserved
 
 | Field            | Bytes | Meaning                                                                |
 |------------------|-------|------------------------------------------------------------------------|
-| `type_tag`       | 1     | `0x00` = password, `0x01` = TOTP, `0x02` = HOTP                        |
-| `algo`           | 1     | `0x01` = SHA1, `0x02` = SHA256, `0x03` = SHA512 (for OTP secrets)        |
-| `period_secs`    | 2     | TOTP period (typically 30); unused for password / HOTP                   |
-| `digits`         | 1     | OTP code width (typically 6 or 8)                                        |
-| `reserved`       | 11    | Zeroed for future use                                                   |
+| `type_tag`       | 1     | `0x00` = password, `0x01` = TOTP, `0x02` = HOTP, **`0x03` = OCRA (v0.1.x)** |
+| `algo`           | 1     | `0x01` = SHA1, `0x02` = SHA256, `0x03` = SHA512 (for OTP/OCRA secrets) |
+| `period_secs`    | 2     | TOTP period (typically 30); unused for password / HOTP / OCRA           |
+| `digits`         | 1     | OTP code width (typically 6 or 8); OCRA digits 4..=10 per RFC 6287 §7.2 |
+| `reserved`       | 11    | Zeroed for future use (10B left after OCRA consumes digits/periods of 0)|
 
 This addition is **backward compatible** with the SDK's V1 metadata (the 16B
 reserved block is reused). Older readers ignore the new fields; newer writers
@@ -141,6 +145,35 @@ per-type config object:
   "hotp": { "counter": 0, "digits": 6, "algo": "SHA256" }
 }
 ```
+
+For OCRA entries (v0.1.x compute branch), `password` is `null` and `ocra`
+holds the Suite parameters; the secret lives in the standard encrypted
+`secret` field as raw bytes (not base32) per RFC 6287 §10:
+
+```json
+{
+  "name": "bank-ocra",
+  "type": "ocra",
+  "secret": null,
+  "url": null,
+  "notes": null,
+  "created_at": 1753632000,
+  "updated_at": 1753632000,
+  "totp": null,
+  "hotp": null,
+  "ocra": {
+    "suite": "OCRA-1:HOTP-SHA1-6:QN08",
+    "algo": "SHA1",
+    "digits": 6,
+    "counter": 0
+  }
+}
+```
+
+The `secret` field is reserved for the entry's primary credential and is
+deliberately left null in the OCRA schema above — once vault unlock lands,
+the OCRA raw key (≥ 16 bytes per `OCRA_MIN_KEY_LEN`) replaces the null and
+serves as `K` in `OCRA = Truncate(HMAC(K, M))`.
 
 JSON (vs. a binary struct) keeps the wire format human-debuggable and
 forward-compatible. Backward compat: a field that a future reader does not
@@ -192,6 +225,9 @@ with the SDK doc's T2.x (origin-vault) and T3.x (origin-auth) prefixes.
 | T5.8  | `import-qr` from an untrusted source           | The `otpauth://` URI is parsed; the secret is stored encrypted; no callback / fetch ever happens              |
 | T5.9  | Session token theft (if `--session-token` used)| Token is a random 32B value in `~/.origin/pass.session` with mode `0600`; expired on `lock` or process exit  |
 | T5.10 | `origin-pass code` shows secret in error       | Errors never include the secret material; only `code <name>` with successful decryption prints                |
+| T5.11 | OCRA key file leaked via `--key-file`          | `--key-file` is a testing escape hatch for v0.1.x — removed once `unlock` lands and OCRA entries are loaded by name; file mode is `0600` per Unix default and never logged |
+| T5.12 | OCRA challenge replay                          | RFC 6287 §10 mandates that verifiers track challenge nonce + bounds; `origin-pass` records each challenge in a `~/.origin/pass.ocra-nonces` ledger and rejects replays within a 5-min window |
+| T5.13 | OCRA brute-force counter increment             | Counter is auto-advanced by the verifier; `--counter` override is rate-limited (max once per second per entry) |
 
 ### 3.2 Cross-tool threats (in addition to SDK §6 cross-tool)
 
@@ -212,13 +248,17 @@ Inherits SDK §7 verbatim. Additions specific to `origin-pass`:
 
 | Flag                    | Description                                                                |
 |-------------------------|----------------------------------------------------------------------------|
-| `--type password\|otp`  | Specify entry type at `add` time                                          |
+| `--type password\|otp\|ocra` | Specify entry type at `add` time                                    |
 | `--period <secs>`       | TOTP period (default 30, RFC 6238)                                         |
-| `--digits <n>`          | OTP digit count (default 6)                                                |
-| `--algo sha1\|sha256\|sha512` | OTP hash algorithm (default sha256)                                   |
+| `--digits <n>`          | OTP digit count (default 6); OCRA range 4..=10                             |
+| `--algo sha1\|sha256\|sha512` | OTP/OCRA hash algorithm (default sha256)                              |
 | `--auto-clear <secs>`   | Clear `code` output after N seconds (default 30)                           |
 | `--quiet`               | Suppress `code` echo                                                       |
 | `--session-token <path>`| Persist unlock to a token file for non-interactive shells                  |
+| `--ocra`                | Switch `code` into OCRA mode (RFC 6287); requires `--challenge`             |
+| `--challenge <string>`  | OCRA: server-provided challenge bytes (UTF-8); `--ocra` required            |
+| `--counter <n>`         | OCRA: override the C counter value (default 0); `--ocra` required           |
+| `--key-file <path>`     | OCRA: testing escape hatch — read the raw binary key from a file; `--ocra` required |
 
 ---
 

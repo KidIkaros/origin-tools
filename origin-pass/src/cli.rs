@@ -173,6 +173,29 @@ pub struct CodeArgs {
     /// Suppress echo (codes go to stderr only, briefly)
     #[arg(long)]
     pub quiet: bool,
+
+    /// Compute an OCRA (RFC 6287) challenge-response code instead of TOTP/HOTP.
+    /// Entry must have been stored with `--type ocra`. Triggers OCRA mode
+    /// for the duration of this invocation.
+    #[arg(long)]
+    pub ocra: bool,
+
+    /// OCRA: server-provided challenge string (e.g. `"00000000"` for QN08).
+    /// Required when `--ocra` is set; the UTF-8 bytes of this string are
+    /// fed into OCRA's Q slot (RFC 6287 §6.1).
+    #[arg(long, value_name = "STRING", requires = "ocra")]
+    pub challenge: Option<String>,
+
+    /// OCRA: override the C counter value (default 0).
+    #[arg(long, value_name = "N", requires = "ocra")]
+    pub counter: Option<u64>,
+
+    /// OCRA: read the binary OCRA key from a file instead of the vault.
+    /// **Testing escape hatch** — the raw bytes of the file are used as
+    /// `K`. Removed once `origin-pass unlock` lands and entries can be
+    /// looked up by name through the unlocked vault.
+    #[arg(long, value_name = "PATH", requires = "ocra")]
+    pub key_file: Option<PathBuf>,
 }
 
 #[derive(Parser, Clone, Debug)]
@@ -224,6 +247,11 @@ pub enum EntryType {
     Password,
     /// TOTP entry (secret is base32-encoded shared key)
     Otp,
+    /// OCRA challenge-response entry (RFC 6287).
+    /// Stored payload includes the raw OCRA key + suite parameters
+    /// (algorithm, digits, default counter); entries of this type are
+    /// consumed by `origin-pass code --ocra <name> --challenge <challenge>`.
+    Ocra,
 }
 
 #[derive(ValueEnum, Clone, Debug, PartialEq, Eq)]
