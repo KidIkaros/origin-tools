@@ -1,7 +1,11 @@
 use clap::{Parser, Subcommand};
 
 #[derive(Parser)]
-#[command(name = "origin-schnorr", version, about = "EC Schnorr zero-knowledge proofs")]
+#[command(
+    name = "origin-schnorr",
+    version,
+    about = "EC Schnorr zero-knowledge proofs"
+)]
 pub struct Cli {
     #[command(subcommand)]
     pub command: Commands,
@@ -15,6 +19,8 @@ pub enum Commands {
     Prove(ProveArgs),
     /// Verify a Schnorr proof
     Verify(VerifyArgs),
+    /// Batch verify multiple Schnorr proofs from a JSON array file
+    BatchVerify(BatchVerifyArgs),
 }
 
 #[derive(Parser, Clone, Debug)]
@@ -76,4 +82,11 @@ pub struct VerifyArgs {
     /// Passphrase file for identity
     #[arg(long)]
     pub passphrase_file: Option<String>,
+}
+
+#[derive(Parser, Clone, Debug)]
+pub struct BatchVerifyArgs {
+    /// JSON file containing an array of {proof, public_key, message} objects
+    #[arg(short, long)]
+    pub input: String,
 }

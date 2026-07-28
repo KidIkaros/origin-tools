@@ -1,7 +1,11 @@
 use clap::{Parser, Subcommand};
 
 #[derive(Parser)]
-#[command(name = "origin-entropy", version, about = "Entropy auditing — Shannon, chi-squared, quality")]
+#[command(
+    name = "origin-entropy",
+    version,
+    about = "Entropy auditing — Shannon, chi-squared, quality"
+)]
 pub struct Cli {
     #[command(subcommand)]
     pub command: Commands,

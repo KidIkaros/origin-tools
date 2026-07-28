@@ -385,7 +385,9 @@ fn cmd_add_password_secret_file_and_stdin_is_rejected_by_clap_mutex() {
     // clap emits a usage-error string; we don't pin the exact text but
     // assert it mentions both flag names so users can diagnose.
     assert!(
-        stderr.contains("secret-file") || stderr.contains("secret-stdin") || stderr.contains("cannot be used with"),
+        stderr.contains("secret-file")
+            || stderr.contains("secret-stdin")
+            || stderr.contains("cannot be used with"),
         "expected clap mutex error mentioning the conflicted flags, got: {stderr}"
     );
 }
@@ -405,7 +407,8 @@ fn cmd_import_qr_then_export_qr_recovers_uri_via_shell_out() {
     init_vault(&dir, &vault_pw, "nano");
 
     let vault_path = dir.path().join("test.vault");
-    let uri = "otpauth://totp/Test?secret=JBSWY3DPEHPK3PXP&issuer=Test&algorithm=SHA1&digits=6&period=30";
+    let uri =
+        "otpauth://totp/Test?secret=JBSWY3DPEHPK3PXP&issuer=Test&algorithm=SHA1&digits=6&period=30";
 
     // Import the hardcoded URI.
     let import_status = Command::new(origin_pass_bin())
@@ -685,6 +688,12 @@ fn cmd_add_hotp_then_code_increments_counter() {
     let out2 = String::from_utf8_lossy(&code2.stdout).trim().to_string();
 
     // RFC 4226: counter 0 → 755224, counter 1 → 287082.
-    assert_eq!(out1, "755224", "HOTP counter=0 must produce 755224, got: {out1}");
-    assert_eq!(out2, "287082", "HOTP counter=1 must produce 287082, got: {out2}");
+    assert_eq!(
+        out1, "755224",
+        "HOTP counter=0 must produce 755224, got: {out1}"
+    );
+    assert_eq!(
+        out2, "287082",
+        "HOTP counter=1 must produce 287082, got: {out2}"
+    );
 }

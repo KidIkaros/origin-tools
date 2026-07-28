@@ -13,25 +13,20 @@
 //! (`target/debug/origin-proof`), so this works under `cargo test` without
 //! hard-coding absolute paths.
 
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::io::Write;
 
 use tempfile::TempDir;
 
-/// Set up a real suite identity at ~/.origin/identity.seed so the
-/// `--identity` cross-tool paths have something to load.
-///
-/// Uses the public `origin-common` API so we don't re-implement the blob
-/// crypto in the test. Safe to call repeatedly (overwrites).
-fn ensure_identity(passphrase: &str) {
-    use origin_common::{IdentityStore, OriginHome, MemoryTier};
-    let home = OriginHome::load().expect("origin home");
-    // Remove any stale seed so create() writes fresh.
+/// Set up a suite identity inside an isolated ORIGIN_HOME directory.
+/// Returns the home dir path so tests can pass it as ORIGIN_HOME to child processes.
+fn ensure_identity(home_dir: &Path, passphrase: &str) {
+    use origin_common::{IdentityStore, MemoryTier, OriginHome};
+    let home = OriginHome::with_root(home_dir.to_path_buf()).expect("origin home");
     let path = home.identity_seed_path();
     let _ = std::fs::remove_file(&path);
-    IdentityStore::create(&home, passphrase, MemoryTier::Standard)
-        .expect("create identity");
+    IdentityStore::create(&home, passphrase, MemoryTier::Standard).expect("create identity");
 }
 
 /// Locate a sibling `origin-*` binary next to the current test executable.
@@ -55,27 +50,35 @@ fn bin(name: &str) -> PathBuf {
     panic!("could not locate binary {name} near {exe:?}");
 }
 
-fn run(bin: &Path, args: &[&str]) -> std::process::Output {
-    Command::new(bin)
-        .args(args)
-        .output()
+/// Run a binary with an optional ORIGIN_HOME override.
+fn run(bin: &Path, args: &[&str], origin_home: Option<&Path>) -> std::process::Output {
+    let mut cmd = Command::new(bin);
+    cmd.args(args);
+    if let Some(home) = origin_home {
+        cmd.env("ORIGIN_HOME", home);
+    }
+    cmd.output()
         .unwrap_or_else(|e| panic!("failed to run {bin:?} {args:?}: {e}"))
 }
 
-fn run_stdin(bin: &Path, args: &[&str], stdin_data: &[u8]) -> std::process::Output {
-    let mut child = Command::new(bin)
-        .args(args)
+fn _run_stdin(
+    bin: &Path,
+    args: &[&str],
+    stdin_data: &[u8],
+    origin_home: Option<&Path>,
+) -> std::process::Output {
+    let mut cmd = Command::new(bin);
+    cmd.args(args)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
+        .stderr(Stdio::piped());
+    if let Some(home) = origin_home {
+        cmd.env("ORIGIN_HOME", home);
+    }
+    let mut child = cmd
         .spawn()
         .unwrap_or_else(|e| panic!("failed to spawn {bin:?}: {e}"));
-    child
-        .stdin
-        .as_mut()
-        .unwrap()
-        .write_all(stdin_data)
-        .unwrap();
+    child.stdin.as_mut().unwrap().write_all(stdin_data).unwrap();
     child.wait_with_output().unwrap()
 }
 
@@ -101,8 +104,10 @@ fn stdout_of(out: &std::process::Output) -> String {
 fn identity_seed_derivation_is_deterministic() {
     let seed = bin("origin-seed");
     let dir = TempDir::new().unwrap();
+    let home = dir.path().join("origin_home");
     let pw = write_file(&dir, "pw.txt", b"test-passphrase");
-    ensure_identity("test-passphrase");
+    ensure_identity(&home, "test-passphrase");
+    let oh = Some(home.as_path());
 
     let a = run(
         &seed,
@@ -114,6 +119,7 @@ fn identity_seed_derivation_is_deterministic() {
             "--passphrase-file",
             &path_str(&pw),
         ],
+        oh,
     );
     assert!(a.status.success(), "derive a: {}", stdout_of(&a));
 
@@ -127,6 +133,7 @@ fn identity_seed_derivation_is_deterministic() {
             "--passphrase-file",
             &path_str(&pw),
         ],
+        oh,
     );
     assert!(b.status.success(), "derive b: {}", stdout_of(&b));
     assert_eq!(
@@ -146,6 +153,7 @@ fn identity_seed_derivation_is_deterministic() {
             "--passphrase-file",
             &path_str(&pw),
         ],
+        oh,
     );
     assert!(c.status.success());
     assert_ne!(
@@ -163,33 +171,43 @@ fn identity_seed_derivation_is_deterministic() {
 fn identity_seal_sign_verify_roundtrip() {
     let seal = bin("origin-seal");
     let dir = TempDir::new().unwrap();
+    let home = dir.path().join("origin_home");
     let pw = write_file(&dir, "pw.txt", b"test-passphrase");
     let msg = write_file(&dir, "msg.txt", b"hello from the suite");
-    ensure_identity("test-passphrase");
+    ensure_identity(&home, "test-passphrase");
+    let oh = Some(home.as_path());
 
-    let sig = run(&seal, &[
-        "sign",
-        "--identity",
-        "--input",
-        &path_str(&msg),
-        "--passphrase-file",
-        &path_str(&pw),
-        "--format",
-        "hex",
-    ]);
+    let sig = run(
+        &seal,
+        &[
+            "sign",
+            "--identity",
+            "--input",
+            &path_str(&msg),
+            "--passphrase-file",
+            &path_str(&pw),
+            "--format",
+            "hex",
+        ],
+        oh,
+    );
     assert!(sig.status.success(), "sign: {}", stdout_of(&sig));
     let sig_path = write_file(&dir, "sig.bin", &sig.stdout);
 
-    let v = run(&seal, &[
-        "verify",
-        "--identity",
-        "--input",
-        &path_str(&msg),
-        "--signature",
-        &path_str(&sig_path),
-        "--passphrase-file",
-        &path_str(&pw),
-    ]);
+    let v = run(
+        &seal,
+        &[
+            "verify",
+            "--identity",
+            "--input",
+            &path_str(&msg),
+            "--signature",
+            &path_str(&sig_path),
+            "--passphrase-file",
+            &path_str(&pw),
+        ],
+        oh,
+    );
     assert!(v.status.success(), "verify: {}", stdout_of(&v));
     assert_eq!(stdout_of(&v), "OK");
 }
@@ -198,38 +216,48 @@ fn identity_seal_sign_verify_roundtrip() {
 fn identity_seal_encrypt_decrypt_roundtrip() {
     let seal = bin("origin-seal");
     let dir = TempDir::new().unwrap();
+    let home = dir.path().join("origin_home");
     let pw = write_file(&dir, "pw.txt", b"test-passphrase");
     let pt = write_file(&dir, "pt.txt", b"top secret payload");
     let ct = dir.path().join("ct.bin");
     let out = dir.path().join("out.txt");
-    ensure_identity("test-passphrase");
+    ensure_identity(&home, "test-passphrase");
+    let oh = Some(home.as_path());
 
-    let enc = run(&seal, &[
-        "encrypt",
-        "--identity",
-        "--input",
-        &path_str(&pt),
-        "--output",
-        &path_str(&ct),
-        "--passphrase-file",
-        &path_str(&pw),
-        "--tier",
-        "nano",
-    ]);
+    let enc = run(
+        &seal,
+        &[
+            "encrypt",
+            "--identity",
+            "--input",
+            &path_str(&pt),
+            "--output",
+            &path_str(&ct),
+            "--passphrase-file",
+            &path_str(&pw),
+            "--tier",
+            "nano",
+        ],
+        oh,
+    );
     assert!(enc.status.success(), "encrypt: {}", stdout_of(&enc));
 
-    let dec = run(&seal, &[
-        "decrypt",
-        "--identity",
-        "--input",
-        &path_str(&ct),
-        "--output",
-        &path_str(&out),
-        "--passphrase-file",
-        &path_str(&pw),
-        "--tier",
-        "nano",
-    ]);
+    let dec = run(
+        &seal,
+        &[
+            "decrypt",
+            "--identity",
+            "--input",
+            &path_str(&ct),
+            "--output",
+            &path_str(&out),
+            "--passphrase-file",
+            &path_str(&pw),
+            "--tier",
+            "nano",
+        ],
+        oh,
+    );
     assert!(dec.status.success(), "decrypt: {}", stdout_of(&dec));
     assert_eq!(std::fs::read(&out).unwrap(), b"top secret payload");
 }
@@ -242,35 +270,45 @@ fn identity_seal_encrypt_decrypt_roundtrip() {
 fn identity_schnorr_prove_verify() {
     let schnorr = bin("origin-schnorr");
     let dir = TempDir::new().unwrap();
+    let home = dir.path().join("origin_home");
     let pw = write_file(&dir, "pw.txt", b"test-passphrase");
     let challenge = write_file(&dir, "challenge.bin", b"auth-challenge-123");
-    ensure_identity("test-passphrase");
+    ensure_identity(&home, "test-passphrase");
+    let oh = Some(home.as_path());
 
     // Prove with the suite identity (keys derived from identity).
-    let proof = run(&schnorr, &[
-        "prove",
-        "--identity",
-        "--input",
-        &path_str(&challenge),
-        "--passphrase-file",
-        &path_str(&pw),
-    ]);
+    let proof = run(
+        &schnorr,
+        &[
+            "prove",
+            "--identity",
+            "--input",
+            &path_str(&challenge),
+            "--passphrase-file",
+            &path_str(&pw),
+        ],
+        oh,
+    );
     assert!(proof.status.success(), "prove: {}", stdout_of(&proof));
     let proof_path = write_file(&dir, "proof.json", &proof.stdout);
 
     // Verify with the suite identity (pubkey derived from same identity) and the
     // same challenge. The message arg is the hex of the challenge bytes.
     let challenge_hex = hex::encode(b"auth-challenge-123");
-    let v = run(&schnorr, &[
-        "verify",
-        "--identity",
-        "--proof",
-        &path_str(&proof_path),
-        "--message",
-        &challenge_hex,
-        "--passphrase-file",
-        &path_str(&pw),
-    ]);
+    let v = run(
+        &schnorr,
+        &[
+            "verify",
+            "--identity",
+            "--proof",
+            &path_str(&proof_path),
+            "--message",
+            &challenge_hex,
+            "--passphrase-file",
+            &path_str(&pw),
+        ],
+        oh,
+    );
     assert!(v.status.success(), "verify: {}", stdout_of(&v));
     assert_eq!(stdout_of(&v), "OK");
 }
@@ -284,55 +322,66 @@ fn seal_then_shard_roundtrip() {
     let seal = bin("origin-seal");
     let shard = bin("origin-shard");
     let dir = TempDir::new().unwrap();
+    let home = dir.path().join("origin_home");
     let pw = write_file(&dir, "pw.txt", b"test-passphrase");
     let pt = write_file(&dir, "pt.txt", b"data that must survive lossy transport");
     let ct = dir.path().join("ct.bin");
     let shards = dir.path().join("shards");
     let recovered_ct = dir.path().join("recovered_ct.bin");
     let recovered_pt = dir.path().join("recovered_pt.txt");
+    ensure_identity(&home, "test-passphrase");
+    let oh = Some(home.as_path());
 
-    let enc = run(&seal, &[
-        "encrypt",
-        "--identity",
-        "--input",
-        &path_str(&pt),
-        "--output",
-        &path_str(&ct),
-        "--passphrase-file",
-        &path_str(&pw),
-        "--tier",
-        "nano",
-    ]);
+    let enc = run(
+        &seal,
+        &[
+            "encrypt",
+            "--identity",
+            "--input",
+            &path_str(&pt),
+            "--output",
+            &path_str(&ct),
+            "--passphrase-file",
+            &path_str(&pw),
+            "--tier",
+            "nano",
+        ],
+        oh,
+    );
     assert!(enc.status.success());
 
-    let split = run(&shard, &[
-        "split",
-        "--input",
-        &path_str(&ct),
-        "--output",
-        &path_str(&shards),
-        "--data-shards",
-        "3",
-        "--parity-shards",
-        "2",
-    ]);
+    let split = run(
+        &shard,
+        &[
+            "split",
+            "--input",
+            &path_str(&ct),
+            "--output",
+            &path_str(&shards),
+            "--data-shards",
+            "3",
+            "--parity-shards",
+            "2",
+        ],
+        None,
+    );
     assert!(split.status.success(), "split: {}", stdout_of(&split));
 
-    // NOTE: the SDK Reed-Solomon `decode` supports a clean round-trip
-    // (split -> recover all shards) but its erasure-recovery path for
-    // missing shards is untested in the SDK. We exercise the valid
-    // composition here; lossy recovery would need a tested RS layer.
-    let recover = run(&shard, &[
-        "recover",
-        "--input",
-        &path_str(&shards),
-        "--output",
-        &path_str(&recovered_ct),
-        "--data-shards",
-        "3",
-        "--parity-shards",
-        "2",
-    ]);
+    let recover = run(
+        &shard,
+        &[
+            "recover",
+            "--input",
+            &path_str(&shards),
+            "--output",
+            &path_str(&recovered_ct),
+            "--data-shards",
+            "3",
+            "--parity-shards",
+            "2",
+        ],
+        None,
+    );
     assert!(recover.status.success(), "recover: {}", stdout_of(&recover));
     assert_eq!(
         std::fs::read(&ct).unwrap(),
@@ -340,18 +389,22 @@ fn seal_then_shard_roundtrip() {
         "recovered ciphertext must be byte-identical"
     );
 
-    let dec = run(&seal, &[
-        "decrypt",
-        "--identity",
-        "--input",
-        &path_str(&recovered_ct),
-        "--output",
-        &path_str(&recovered_pt),
-        "--passphrase-file",
-        &path_str(&pw),
-        "--tier",
-        "nano",
-    ]);
+    let dec = run(
+        &seal,
+        &[
+            "decrypt",
+            "--identity",
+            "--input",
+            &path_str(&recovered_ct),
+            "--output",
+            &path_str(&recovered_pt),
+            "--passphrase-file",
+            &path_str(&pw),
+            "--tier",
+            "nano",
+        ],
+        oh,
+    );
     assert!(dec.status.success());
     assert_eq!(
         std::fs::read(&recovered_pt).unwrap(),
@@ -373,32 +426,38 @@ fn shard_then_proof_append_verify() {
     let recovered = dir.path().join("recovered.bin");
     let mmr_store = dir.path().join("mmr.json");
 
-    let split = run(&shard, &[
-        "split",
-        "--input",
-        &path_str(&data),
-        "--output",
-        &path_str(&shards),
-        "--data-shards",
-        "2",
-        "--parity-shards",
-        "1",
-    ]);
+    let split = run(
+        &shard,
+        &[
+            "split",
+            "--input",
+            &path_str(&data),
+            "--output",
+            &path_str(&shards),
+            "--data-shards",
+            "2",
+            "--parity-shards",
+            "1",
+        ],
+        None,
+    );
     assert!(split.status.success());
-    // NOTE: see `seal_then_shard_roundtrip` — the SDK RS `decode` only
-    // supports a clean (no-loss) round-trip in practice; lossy recovery
-    // is untested upstream, so we exercise the valid composition.
-    let recover = run(&shard, &[
-        "recover",
-        "--input",
-        &path_str(&shards),
-        "--output",
-        &path_str(&recovered),
-        "--data-shards",
-        "2",
-        "--parity-shards",
-        "1",
-    ]);
+
+    let recover = run(
+        &shard,
+        &[
+            "recover",
+            "--input",
+            &path_str(&shards),
+            "--output",
+            &path_str(&recovered),
+            "--data-shards",
+            "2",
+            "--parity-shards",
+            "1",
+        ],
+        None,
+    );
     assert!(recover.status.success());
     assert_eq!(
         std::fs::read(&recovered).unwrap(),
@@ -407,42 +466,48 @@ fn shard_then_proof_append_verify() {
 
     // Append the recovered data's BLAKE3 hash to a fresh MMR.
     let leaf_hex = hex::encode(b"integrity-sensitive record");
-    let append = run(&proof, &[
-        "append",
-        "--state",
-        &path_str(&mmr_store),
-        "--data",
-        &leaf_hex,
-        "--output",
-        &path_str(&mmr_store),
-    ]);
+    let append = run(
+        &proof,
+        &[
+            "append",
+            "--state",
+            &path_str(&mmr_store),
+            "--data",
+            &leaf_hex,
+            "--output",
+            &path_str(&mmr_store),
+        ],
+        None,
+    );
     assert!(append.status.success(), "append: {}", stdout_of(&append));
 
     // Root must be a well-formed 32-byte (64 hex) BLAKE3 digest.
-    let root = run(&proof, &["root", "--state", &path_str(&mmr_store)]);
+    let root = run(&proof, &["root", "--state", &path_str(&mmr_store)], None);
     assert!(root.status.success(), "root: {}", stdout_of(&root));
     let root_hex = stdout_of(&root);
     assert!(!root_hex.is_empty(), "MMR root must not be empty");
     assert_eq!(root_hex.len(), 64, "BLAKE3 root is 32 bytes / 64 hex chars");
 
     // Generate a membership proof for leaf 0 and verify it against the root.
-    let prove = run(&proof, &[
-        "prove",
-        "--state",
-        &path_str(&mmr_store),
-        "--index",
-        "0",
-    ]);
+    let prove = run(
+        &proof,
+        &["prove", "--state", &path_str(&mmr_store), "--index", "0"],
+        None,
+    );
     assert!(prove.status.success(), "prove: {}", stdout_of(&prove));
     let proof_path = write_file(&dir, "proof.json", &prove.stdout);
 
-    let verify = run(&proof, &[
-        "verify",
-        "--proof",
-        &path_str(&proof_path),
-        "--root",
-        &root_hex,
-    ]);
+    let verify = run(
+        &proof,
+        &[
+            "verify",
+            "--proof",
+            &path_str(&proof_path),
+            "--root",
+            &root_hex,
+        ],
+        None,
+    );
     assert!(verify.status.success(), "verify: {}", stdout_of(&verify));
     assert_eq!(stdout_of(&verify), "OK");
 }

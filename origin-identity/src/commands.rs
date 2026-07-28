@@ -5,13 +5,12 @@
 //! Each `cmd_*` function returns `Result<(), String>` — a single error
 //! channel keeps the dispatch in main.rs trivial.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use origin_crypto_sdk::{
-    blake3, blob::{create_blob, recover_seed},
-    recovery::unicode_cipher::{
-        decode_phrase, encode_phrase, PhraseLength, UnicodeWordlist,
-    },
+    blake3,
+    blob::{create_blob, recover_seed},
+    recovery::unicode_cipher::{decode_phrase, encode_phrase, PhraseLength, UnicodeWordlist},
     seed::gen::{generate, SeedVariant},
     signing::hybrid::{Ed25519Falcon1024, HybridSigningKeyBundle},
     tier::MemoryTier,
@@ -60,7 +59,7 @@ pub fn read_blob(name: &str, dir: &str) -> Result<Vec<u8>, String> {
     std::fs::read(&path).map_err(|e| format!("cannot read {}: {}", path.display(), e))
 }
 
-pub fn ensure_dir(path: &PathBuf) -> Result<(), String> {
+pub fn ensure_dir(path: &Path) -> Result<(), String> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)
             .map_err(|e| format!("cannot create {}: {}", parent.display(), e))
@@ -112,8 +111,7 @@ pub fn read_bytes(s: &str, hex: bool) -> Result<Vec<u8>, String> {
     if hex {
         hex::decode(s).map_err(|e| format!("invalid hex: {e}"))
     } else if let Some(stripped) = s.strip_prefix('@') {
-        std::fs::read(stripped)
-            .map_err(|e| format!("cannot read {}: {}", stripped, e))
+        std::fs::read(stripped).map_err(|e| format!("cannot read {}: {}", stripped, e))
     } else {
         Ok(s.as_bytes().to_vec())
     }
@@ -201,8 +199,7 @@ pub fn write_phrase_file(phrase: &[char], path: &std::path::Path) -> Result<(), 
 /// Each whitespace-delimited token must be exactly one codepoint.
 pub fn read_phrase(s: &str) -> Result<Vec<char>, String> {
     let mut text = if let Some(stripped) = s.strip_prefix('@') {
-        std::fs::read_to_string(stripped)
-            .map_err(|e| format!("cannot read {}: {}", stripped, e))?
+        std::fs::read_to_string(stripped).map_err(|e| format!("cannot read {}: {}", stripped, e))?
     } else {
         s.to_string()
     };
@@ -218,9 +215,9 @@ pub fn read_phrase(s: &str) -> Result<Vec<char>, String> {
     let mut chars = Vec::new();
     for token in text.split_whitespace() {
         let mut iter = token.chars();
-        let c = iter.next().ok_or_else(|| {
-            format!("empty token in phrase (extra whitespace?)")
-        })?;
+        let c = iter
+            .next()
+            .ok_or_else(|| "empty token in phrase (extra whitespace?)".to_string())?;
         if iter.next().is_some() {
             return Err(format!(
                 "phrase token {:?} has more than one codepoint; each word must be one Unicode character",
@@ -303,8 +300,7 @@ pub fn cmd_keygen(args: KeygenArgs) -> Result<(), String> {
     let blob = create_blob(passphrase.as_bytes(), tier, Some(&seed))
         .map_err(|e| format!("blob encryption failed: {e}"))?;
 
-    std::fs::write(&path, &blob)
-        .map_err(|e| format!("cannot write {}: {}", path.display(), e))?;
+    std::fs::write(&path, &blob).map_err(|e| format!("cannot write {}: {}", path.display(), e))?;
 
     eprintln!("Created identity '{}' at {}", args.name, path.display());
     Ok(())
@@ -375,9 +371,8 @@ pub fn cmd_verify(args: VerifyArgs) -> Result<(), String> {
         let falcon_bytes = hex::decode(falcon_hex).map_err(|e| format!("falcon hex: {e}"))?;
         let ed = ed25519_dalek::Signature::from_slice(&ed_bytes)
             .map_err(|e| format!("invalid ed25519 signature: {e}"))?;
-        let falcon =
-            origin_crypto_sdk::pqc::falcon1024::FalconSignature::from_bytes(&falcon_bytes)
-                .map_err(|e| format!("invalid falcon signature: {e}"))?;
+        let falcon = origin_crypto_sdk::pqc::falcon1024::FalconSignature::from_bytes(&falcon_bytes)
+            .map_err(|e| format!("invalid falcon signature: {e}"))?;
         CombinedSignature { ed, falcon }
     };
 
@@ -394,12 +389,7 @@ pub fn cmd_verify(args: VerifyArgs) -> Result<(), String> {
         falcon_sig: combined_sig.falcon,
     };
 
-    match Ed25519Falcon1024::verify(
-        bundle.ed25519_pk(),
-        bundle.falcon1024_pk(),
-        &msg,
-        &combined,
-    ) {
+    match Ed25519Falcon1024::verify(bundle.ed25519_pk(), bundle.falcon1024_pk(), &msg, &combined) {
         Ok(()) => {
             println!("valid");
             Ok(())
@@ -458,9 +448,7 @@ impl CombinedSignature {
     }
 
     /// Parse the canonical wire byte format.
-    pub fn from_wire(
-        raw: &[u8],
-    ) -> Result<Self, String> {
+    pub fn from_wire(raw: &[u8]) -> Result<Self, String> {
         let min = Self::LEN_PREFIX + Self::ED_LEN;
         if raw.len() < min {
             return Err(format!(
@@ -468,8 +456,7 @@ impl CombinedSignature {
                 raw.len()
             ));
         }
-        let falcon_len =
-            u32::from_be_bytes([raw[0], raw[1], raw[2], raw[3]]) as usize;
+        let falcon_len = u32::from_be_bytes([raw[0], raw[1], raw[2], raw[3]]) as usize;
         let expected_len = min + falcon_len;
         if raw.len() != expected_len {
             return Err(format!(
@@ -481,11 +468,10 @@ impl CombinedSignature {
             &raw[Self::LEN_PREFIX..Self::LEN_PREFIX + Self::ED_LEN],
         )
         .map_err(|e| format!("invalid ed25519 signature: {e}"))?;
-        let falcon =
-            origin_crypto_sdk::pqc::falcon1024::FalconSignature::from_bytes(
-                &raw[Self::LEN_PREFIX + Self::ED_LEN..],
-            )
-            .map_err(|e| format!("invalid falcon signature: {e}"))?;
+        let falcon = origin_crypto_sdk::pqc::falcon1024::FalconSignature::from_bytes(
+            &raw[Self::LEN_PREFIX + Self::ED_LEN..],
+        )
+        .map_err(|e| format!("invalid falcon signature: {e}"))?;
         Ok(Self { ed, falcon })
     }
 }
@@ -493,7 +479,10 @@ impl CombinedSignature {
 pub fn cmd_list(args: ListArgs) -> Result<(), String> {
     let dir = resolve_dir(&args.dir)?;
     if !dir.exists() {
-        return Err(format!("identity directory does not exist: {}", dir.display()));
+        return Err(format!(
+            "identity directory does not exist: {}",
+            dir.display()
+        ));
     }
     let entries = std::fs::read_dir(&dir)
         .map_err(|e| format!("cannot read directory {}: {}", dir.display(), e))?;
@@ -508,9 +497,15 @@ pub fn cmd_list(args: ListArgs) -> Result<(), String> {
         if !path.is_file() {
             continue;
         }
-        let Some(name_os) = path.file_name() else { continue };
-        let Some(name_str) = name_os.to_str() else { continue };
-        let Some(stem) = name_str.strip_suffix(".id") else { continue };
+        let Some(name_os) = path.file_name() else {
+            continue;
+        };
+        let Some(name_str) = name_os.to_str() else {
+            continue;
+        };
+        let Some(stem) = name_str.strip_suffix(".id") else {
+            continue;
+        };
 
         let meta = match entry.metadata() {
             Ok(m) => m,
@@ -520,8 +515,8 @@ pub fn cmd_list(args: ListArgs) -> Result<(), String> {
             }
         };
 
-        let bytes = std::fs::read(&path)
-            .map_err(|e| format!("cannot read {}: {}", path.display(), e))?;
+        let bytes =
+            std::fs::read(&path).map_err(|e| format!("cannot read {}: {}", path.display(), e))?;
         if bytes.len() < 40 {
             // salt+nonce = 40. Anything smaller is malformed.
             rows.push(ListRow {
@@ -549,7 +544,10 @@ pub fn cmd_list(args: ListArgs) -> Result<(), String> {
     rows.sort_by(|a, b| a.name.cmp(&b.name));
 
     if !skipped_metadata.is_empty() {
-        eprintln!("(warning: skipped {} entries with unreadable metadata)", skipped_metadata.len());
+        eprintln!(
+            "(warning: skipped {} entries with unreadable metadata)",
+            skipped_metadata.len()
+        );
         for s in &skipped_metadata {
             eprintln!("  - {s}");
         }
@@ -593,10 +591,7 @@ fn system_time_to_rfc3339(t: Option<std::time::SystemTime>) -> String {
             // (Avoids pulling in `chrono` for one column.)
             let secs = dur.as_secs();
             let (y, mo, d, h, mi, s) = epoch_to_ymdhms(secs);
-            format!(
-                "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}Z",
-                y, mo, d, h, mi, s
-            )
+            format!("{:04}-{:02}-{:02}T{:02}:{:02}:{:02}Z", y, mo, d, h, mi, s)
         }
         None => "unknown".to_string(),
     }
@@ -620,7 +615,11 @@ fn epoch_to_ymdhms(secs: u64) -> (i32, u32, u32, u32, u32, u32) {
     let mdays = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
     let mut month = 0usize;
     while month < 12 {
-        let dm = if month == 1 && is_leap(year) { 29 } else { mdays[month] };
+        let dm = if month == 1 && is_leap(year) {
+            29
+        } else {
+            mdays[month]
+        };
         if days >= dm {
             days -= dm;
             month += 1;
@@ -639,7 +638,10 @@ fn print_table(rows: &[ListRow]) {
     if rows.is_empty() {
         return;
     }
-    println!("{:<24} {:>10}  {:<20}  {}", "NAME", "SIZE", "MODIFIED", "FINGERPRINT");
+    println!(
+        "{:<24} {:>10}  {:<20}  FINGERPRINT",
+        "NAME", "SIZE", "MODIFIED"
+    );
     for r in rows {
         println!(
             "{:<24} {:>10}  {:<20}  {}",
@@ -695,10 +697,7 @@ pub fn cmd_import(args: ImportArgs) -> Result<(), String> {
             chars.len()
         ));
     }
-    let seed: [u8; 32] = entropy
-        .as_slice()
-        .try_into()
-        .expect("length checked above");
+    let seed: [u8; 32] = entropy.as_slice().try_into().expect("length checked above");
 
     // 2. Resolve target path; refuse to overwrite unless --force.
     let path = identity_path(&args.name, &args.dir)?;
@@ -716,8 +715,7 @@ pub fn cmd_import(args: ImportArgs) -> Result<(), String> {
     let blob = create_blob(passphrase.as_bytes(), tier, Some(&seed))
         .map_err(|e| format!("blob encryption failed: {e}"))?;
 
-    std::fs::write(&path, &blob)
-        .map_err(|e| format!("cannot write {}: {}", path.display(), e))?;
+    std::fs::write(&path, &blob).map_err(|e| format!("cannot write {}: {}", path.display(), e))?;
 
     eprintln!(
         "Imported identity '{}' from {}-word phrase → {}",
@@ -735,10 +733,10 @@ pub fn cmd_import(args: ImportArgs) -> Result<(), String> {
 /// (8 hex chars), matching `cmd_list` so shell scripts can correlate.
 pub fn cmd_show(args: ShowArgs) -> Result<(), String> {
     let path = identity_path(&args.name, &args.dir)?;
-    let meta = std::fs::metadata(&path)
-        .map_err(|e| format!("cannot stat {}: {}", path.display(), e))?;
-    let bytes = std::fs::read(&path)
-        .map_err(|e| format!("cannot read {}: {}", path.display(), e))?;
+    let meta =
+        std::fs::metadata(&path).map_err(|e| format!("cannot stat {}: {}", path.display(), e))?;
+    let bytes =
+        std::fs::read(&path).map_err(|e| format!("cannot read {}: {}", path.display(), e))?;
     let fingerprint = if bytes.len() >= 40 {
         hex::encode(&blake3::hash(&bytes[..40]).as_bytes()[..4])
     } else {
@@ -842,8 +840,7 @@ pub fn cmd_delete(args: DeleteArgs) -> Result<(), String> {
 
     // Secure overwrite unless --no-overwrite.
     if !args.no_overwrite {
-        let meta =
-            std::fs::metadata(&path).map_err(|e| format!("cannot stat: {e}"))?;
+        let meta = std::fs::metadata(&path).map_err(|e| format!("cannot stat: {e}"))?;
         let len = meta.len() as usize;
         let mut rng_bytes = vec![0u8; len];
         // /dev/urandom is the OS CSPRNG; reads block until len bytes.
@@ -866,8 +863,7 @@ pub fn cmd_delete(args: DeleteArgs) -> Result<(), String> {
             .map_err(|e| format!("seek failed: {e}"))?;
         file.write_all(&rng_bytes)
             .map_err(|e| format!("overwrite write failed: {e}"))?;
-        file.sync_all()
-            .map_err(|e| format!("fsync failed: {e}"))?;
+        file.sync_all().map_err(|e| format!("fsync failed: {e}"))?;
         drop(file);
         // Truncate to 0.
         std::fs::File::create(&path).map_err(|e| format!("truncate failed: {e}"))?;
@@ -956,10 +952,7 @@ pub fn cmd_rotate_passphrase(args: RotatePassphraseArgs) -> Result<(), String> {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_nanos())
         .unwrap_or(0);
-    let base_name = path
-        .file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or("blob");
+    let base_name = path.file_name().and_then(|n| n.to_str()).unwrap_or("blob");
     let tmp = path.with_file_name(format!("{}.{}.{}.tmp", base_name, pid, nano));
 
     use std::io::Write;
@@ -974,8 +967,13 @@ pub fn cmd_rotate_passphrase(args: RotatePassphraseArgs) -> Result<(), String> {
         .map_err(|e| format!("cannot fsync tmp {}: {e}", tmp.display()))?;
     drop(file);
 
-    std::fs::rename(&tmp, &path)
-        .map_err(|e| format!("cannot rename tmp {} \u{2192} {}: {e}", tmp.display(), path.display()))?;
+    std::fs::rename(&tmp, &path).map_err(|e| {
+        format!(
+            "cannot rename tmp {} \u{2192} {}: {e}",
+            tmp.display(),
+            path.display()
+        )
+    })?;
 
     eprintln!(
         "Rotated passphrase for '{}' (tier: {:?} \u{2192} {:?})",
@@ -1007,11 +1005,8 @@ mod tests {
             .map(|d| d.as_nanos())
             .unwrap_or(0);
         let counter = UNIT_COUNTER.fetch_add(1, Ordering::Relaxed);
-        std::env::temp_dir().join(format!(
-            "origin-unit-{label}-{pid}-{nano}-{counter}"
-        ))
+        std::env::temp_dir().join(format!("origin-unit-{label}-{pid}-{nano}-{counter}"))
     }
-
 
     #[test]
     fn fingerprint_changes_after_rotate() {
@@ -1020,7 +1015,11 @@ mod tests {
         let seed_b = [7u8; 32];
         let blob_a = create_blob(b"pw", MemoryTier::Nano, Some(&seed_a)).unwrap();
         let blob_b = create_blob(b"pw", MemoryTier::Nano, Some(&seed_b)).unwrap();
-        assert_ne!(blob_a[..40], blob_b[..40], "salt+nonce must differ between independent calls");
+        assert_ne!(
+            blob_a[..40],
+            blob_b[..40],
+            "salt+nonce must differ between independent calls"
+        );
         let fp_a = hex::encode(&blake3::hash(&blob_a[..40]).as_bytes()[..4]);
         let fp_b = hex::encode(&blake3::hash(&blob_b[..40]).as_bytes()[..4]);
         assert_ne!(fp_a, fp_b, "fingerprints differ after fresh blob");
@@ -1077,7 +1076,7 @@ mod tests {
     #[test]
     fn read_phrase_strips_utf8_bom() {
         // Common when phrases are pasted from Windows editors / email.
-        let with_bom = format!("\u{feff}α β γ δ ε");
+        let with_bom = "\u{feff}α β γ δ ε".to_string();
         let chars = read_phrase(&with_bom).expect("BOM strip");
         assert_eq!(chars, vec!['α', 'β', 'γ', 'δ', 'ε']);
     }
@@ -1137,7 +1136,10 @@ mod tests {
     fn resolve_dir_errors_without_home() {
         let _g = HomeGuard::new();
         let result = resolve_dir("~/identities");
-        assert!(result.is_err(), "expected resolve_dir to error without HOME; got {result:?}");
+        assert!(
+            result.is_err(),
+            "expected resolve_dir to error without HOME; got {result:?}"
+        );
         // HOME is restored automatically when _g drops at end of scope.
     }
 
@@ -1177,10 +1179,12 @@ mod tests {
         let ed = ed25519_dalek::Signature::from_bytes(&ed_bytes);
         let falcon_bytes: Vec<u8> = (0..666).map(|i| (i & 0xff) as u8).collect();
         let falcon =
-            origin_crypto_sdk::pqc::falcon1024::FalconSignature::from_bytes(&falcon_bytes)
-                .unwrap();
+            origin_crypto_sdk::pqc::falcon1024::FalconSignature::from_bytes(&falcon_bytes).unwrap();
 
-        let original = CombinedSignature { ed, falcon: falcon.clone() };
+        let original = CombinedSignature {
+            ed,
+            falcon: falcon.clone(),
+        };
         let wire = original.to_wire_bytes();
         assert_eq!(wire.len(), 4 + 64 + 666);
 
@@ -1217,7 +1221,7 @@ mod tests {
             let mut v = Vec::new();
             v.extend_from_slice(&(2048u32).to_be_bytes());
             v.extend_from_slice(&[0u8; 64]);
-            v.extend_from_slice(&vec![0u8; 100]); // intentionally short
+            v.extend_from_slice(&[0u8; 100]); // intentionally short
             v
         };
         let err = CombinedSignature::from_wire(&bad).unwrap_err();
@@ -1273,7 +1277,7 @@ mod tests {
             ed: sig.ed25519_sig,
             falcon: sig.falcon_sig,
         };
-        let hex_str = hex::encode(&combined.to_wire_bytes());
+        let hex_str = hex::encode(combined.to_wire_bytes());
 
         let decoded = CombinedSignature::from_wire(&hex::decode(&hex_str).unwrap()).unwrap();
         let combined_sig = Ed25519Falcon1024 {
@@ -1324,21 +1328,24 @@ mod tests {
         // This is the foundational contract that the shell-driven restore
         // path depends on.
         let path = fresh_tmp_path("phrase-format");
-        let phrase: Vec<char> = UnicodeWordlist::default()
-            .as_slice()[..24]
-            .to_vec();
+        let phrase: Vec<char> = UnicodeWordlist::default().as_slice()[..24].to_vec();
         super::write_phrase_file(&phrase, &path).expect("write must succeed");
         let body = std::fs::read_to_string(&path).expect("read back");
         let expected: String = {
             let mut s = String::new();
             for (i, c) in phrase.iter().enumerate() {
-                if i > 0 { s.push(' '); }
+                if i > 0 {
+                    s.push(' ');
+                }
                 s.push(*c);
             }
             s.push('\n');
             s
         };
-        assert_eq!(body, expected, "phrase file must be exactly '<c1> … <c24>\\n'");
+        assert_eq!(
+            body, expected,
+            "phrase file must be exactly '<c1> … <c24>\\n'"
+        );
         let _ = std::fs::remove_file(&path);
     }
 
@@ -1354,8 +1361,8 @@ mod tests {
 
         // Use a deterministic 32-byte seed so we can assert equality.
         let seed: [u8; 32] = [0xCCu8; 32];
-        let phrase = encode_phrase(&seed, &UnicodeWordlist::default(), PhraseLength::Words24)
-            .unwrap();
+        let phrase =
+            encode_phrase(&seed, &UnicodeWordlist::default(), PhraseLength::Words24).unwrap();
         super::write_phrase_file(&phrase, &phrase_path).expect("write");
 
         let body = std::fs::read_to_string(&phrase_path).unwrap();
@@ -1385,13 +1392,15 @@ mod tests {
         );
     }
 
-
     // ─── Helper tests ────────────────────────────────────────────
 
     #[test]
     fn identity_path_joins_dir_and_name() {
         let path = identity_path("test-id", "/tmp/origin-test").unwrap();
-        assert_eq!(path, std::path::PathBuf::from("/tmp/origin-test/test-id.id"));
+        assert_eq!(
+            path,
+            std::path::PathBuf::from("/tmp/origin-test/test-id.id")
+        );
     }
 
     #[test]
@@ -1509,10 +1518,17 @@ mod tests {
         cmd_keygen(args).expect("keygen should succeed");
 
         let blob_path = dir.join("unit-test-key.id");
-        assert!(blob_path.exists(), "blob should exist at {}", blob_path.display());
+        assert!(
+            blob_path.exists(),
+            "blob should exist at {}",
+            blob_path.display()
+        );
 
         let blob = std::fs::read(&blob_path).unwrap();
-        assert!(blob.len() > 40, "blob should have salt+nonce+encrypted payload");
+        assert!(
+            blob.len() > 40,
+            "blob should have salt+nonce+encrypted payload"
+        );
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -1559,8 +1575,18 @@ mod tests {
         // Use real wordlist codepoints (not arbitrary Greek letters) so
         // decode_phrase succeeds and the length-check branch is hit.
         let short_seed = [0xABu8; 16];
-        let phrase = encode_phrase(&short_seed, &UnicodeWordlist::default(), PhraseLength::Words12).unwrap();
-        let phrase_str: String = phrase.iter().map(|c| format!(" {c}")).collect::<String>().trim_start().to_string();
+        let phrase = encode_phrase(
+            &short_seed,
+            &UnicodeWordlist::default(),
+            PhraseLength::Words12,
+        )
+        .unwrap();
+        let phrase_str: String = phrase
+            .iter()
+            .map(|c| format!(" {c}"))
+            .collect::<String>()
+            .trim_start()
+            .to_string();
         let err = cmd_import(ImportArgs {
             name: "short".to_string(),
             phrase: phrase_str,
@@ -1598,8 +1624,14 @@ mod tests {
 
         // Generate a valid 24-word phrase from a deterministic seed.
         let seed = [0xABu8; 32];
-        let phrase = encode_phrase(&seed, &UnicodeWordlist::default(), PhraseLength::Words24).unwrap();
-        let phrase_str: String = phrase.iter().map(|c| format!(" {c}")).collect::<String>().trim_start().to_string();
+        let phrase =
+            encode_phrase(&seed, &UnicodeWordlist::default(), PhraseLength::Words24).unwrap();
+        let phrase_str: String = phrase
+            .iter()
+            .map(|c| format!(" {c}"))
+            .collect::<String>()
+            .trim_start()
+            .to_string();
 
         let err = cmd_import(ImportArgs {
             name: "existing-id".to_string(),
@@ -1641,8 +1673,14 @@ mod tests {
         std::fs::write(&pw_path2, "pw-different").unwrap();
 
         let seed2 = [0xCDu8; 32];
-        let phrase = encode_phrase(&seed2, &UnicodeWordlist::default(), PhraseLength::Words24).unwrap();
-        let phrase_str: String = phrase.iter().map(|c| format!(" {c}")).collect::<String>().trim_start().to_string();
+        let phrase =
+            encode_phrase(&seed2, &UnicodeWordlist::default(), PhraseLength::Words24).unwrap();
+        let phrase_str: String = phrase
+            .iter()
+            .map(|c| format!(" {c}"))
+            .collect::<String>()
+            .trim_start()
+            .to_string();
 
         cmd_import(ImportArgs {
             name: "force-id".to_string(),
@@ -1868,7 +1906,6 @@ mod tests {
         assert!(err.contains("ultra"), "got: {err}");
     }
 
-
     // ─── cmd_sign + cmd_verify ─────────────────────────────────────
 
     #[test]
@@ -1969,7 +2006,11 @@ mod tests {
             dir: dir.to_string_lossy().to_string(),
             hex: false,
         });
-        assert!(result.is_ok(), "cmd_verify JSON should succeed: {:?}", result);
+        assert!(
+            result.is_ok(),
+            "cmd_verify JSON should succeed: {:?}",
+            result
+        );
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -1998,7 +2039,7 @@ mod tests {
             ed: sig.ed25519_sig,
             falcon: sig.falcon_sig,
         };
-        let hex_sig = hex::encode(&combined.to_wire_bytes());
+        let hex_sig = hex::encode(combined.to_wire_bytes());
 
         // hex:true mode calls read_bytes(message, true) and read_bytes(signature, true).
         // Both must pass valid hex strings directly (no @-file expansion in hex mode).
@@ -2012,7 +2053,11 @@ mod tests {
             dir: dir.to_string_lossy().to_string(),
             hex: true,
         });
-        assert!(result.is_ok(), "cmd_verify hex should succeed: {:?}", result);
+        assert!(
+            result.is_ok(),
+            "cmd_verify hex should succeed: {:?}",
+            result
+        );
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -2165,13 +2210,15 @@ mod tests {
             dir: dir.to_string_lossy().to_string(),
             hex: false,
         });
-        assert!(result.is_err(), "cmd_verify should reject missing ed25519 field");
+        assert!(
+            result.is_err(),
+            "cmd_verify should reject missing ed25519 field"
+        );
         let err = result.unwrap_err();
         assert!(err.contains("missing ed25519"), "got: {err}");
 
         let _ = std::fs::remove_dir_all(&dir);
     }
-
 
     // ─── print_table / print_csv / print_json empty-row paths ──────
     // These functions are private to commands.rs but accessible via
@@ -2230,7 +2277,6 @@ mod tests {
         }
     }
 
-
     // ─── Coverage round (8 tests) ────────────────────────────────
     // These target 7 real uncovered branches + 1 sentinel trait-impl
     // test. Each `fresh_tmp_path` is cleaned up explicitly.
@@ -2269,18 +2315,32 @@ mod tests {
         // Signature::from_bytes (mirrors round-trip test above).
         let falcon_bytes: Vec<u8> = (0..666).map(|i| (i as u8).wrapping_mul(7)).collect();
         let falcon =
-            origin_crypto_sdk::pqc::falcon1024::FalconSignature::from_bytes(&falcon_bytes)
-                .unwrap();
+            origin_crypto_sdk::pqc::falcon1024::FalconSignature::from_bytes(&falcon_bytes).unwrap();
 
-        let sig = CombinedSignature { ed, falcon: falcon.clone() };
+        let sig = CombinedSignature {
+            ed,
+            falcon: falcon.clone(),
+        };
         let debug_out = format!("{:?}", sig);
 
         // Must include both length fields with correct values.
         assert!(debug_out.contains("ed_len"), "missing ed_len: {debug_out}");
-        assert!(debug_out.contains("falcon_len"), "missing falcon_len: {debug_out}");
-        assert!(debug_out.contains("64"), "missing ed_len value 64: {debug_out}");
-        assert!(debug_out.contains("666"), "missing falcon_len value 666: {debug_out}");
-        assert!(debug_out.contains("CombinedSignature"), "missing struct name: {debug_out}");
+        assert!(
+            debug_out.contains("falcon_len"),
+            "missing falcon_len: {debug_out}"
+        );
+        assert!(
+            debug_out.contains("64"),
+            "missing ed_len value 64: {debug_out}"
+        );
+        assert!(
+            debug_out.contains("666"),
+            "missing falcon_len value 666: {debug_out}"
+        );
+        assert!(
+            debug_out.contains("CombinedSignature"),
+            "missing struct name: {debug_out}"
+        );
     }
 
     #[test]
@@ -2346,9 +2406,17 @@ mod tests {
         cmd_keygen(args).expect("keygen with Standard tier should succeed");
 
         let blob_path = dir.join("standard-id.id");
-        assert!(blob_path.exists(), "blob should exist at {}", blob_path.display());
+        assert!(
+            blob_path.exists(),
+            "blob should exist at {}",
+            blob_path.display()
+        );
         let blob = std::fs::read(&blob_path).unwrap();
-        assert!(blob.len() > 80, "standard-tier blob should be larger than nano: got {} bytes", blob.len());
+        assert!(
+            blob.len() > 80,
+            "standard-tier blob should be larger than nano: got {} bytes",
+            blob.len()
+        );
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -2376,8 +2444,7 @@ mod tests {
         let of1 = OutputFormat::Json;
         let of2 = of1.clone();
         assert_eq!(format!("{:?}", of1), format!("{:?}", of2));
-        drop(of1);
-        drop(of2);
+        // of1/of2 consumed by assert_eq above; no explicit drop needed
 
         let lf1 = ListFormat::Csv;
         let lf2 = lf1.clone();
@@ -2457,14 +2524,13 @@ mod tests {
         };
         let la2 = la.clone();
         assert_eq!(la2.format, ListFormat::Json);
-        assert_eq!(la2.names_only, true);
+        assert!(la2.names_only);
         let _ = format!("{:?}", la);
         let _ = format!("{:?}", la2);
 
         // All values fall out of scope here — Drop runs automatically,
         // exercising the auto-derived Drop (or no-op drop if absent).
     }
-
 
     // ─── v0.3.0 tests: show / rename / delete / export-pubkey / rotate-passphrase ───
 
@@ -2523,7 +2589,10 @@ mod tests {
             format: ShowFormat::Text,
         })
         .unwrap_err();
-        assert!(err.contains("cannot stat") || err.contains("cannot read"), "got: {err}");
+        assert!(
+            err.contains("cannot stat") || err.contains("cannot read"),
+            "got: {err}"
+        );
     }
 
     // ─── cmd_rename ───────────────────────────────────────────────
@@ -2538,7 +2607,7 @@ mod tests {
             force: false,
         });
         assert!(result.is_ok(), "rename should succeed; got: {:?}", result);
-        assert!(dir.join("vid.id").exists() == false);
+        assert!(!dir.join("vid.id").exists());
         assert!(dir.join("renamed.id").exists());
         let _ = std::fs::remove_dir_all(&dir);
         let _ = std::fs::remove_file(&pw_path);
@@ -2623,8 +2692,8 @@ mod tests {
         cmd_delete(DeleteArgs {
             name: "vid".to_string(),
             dir: dir.to_string_lossy().to_string(),
-            force: true,           // skip interactive confirm
-            no_overwrite: true,    // skip /dev/urandom write
+            force: true,        // skip interactive confirm
+            no_overwrite: true, // skip /dev/urandom write
         })
         .expect("delete should succeed");
         assert!(!blob_path.exists(), "blob should be gone after delete");
@@ -2758,7 +2827,10 @@ mod tests {
             format: OutputFormat::Json,
         })
         .unwrap_err();
-        assert!(err.contains("decryption failed"), "old pw should fail: {err}");
+        assert!(
+            err.contains("decryption failed"),
+            "old pw should fail: {err}"
+        );
 
         let _ = std::fs::remove_dir_all(&dir);
         let _ = std::fs::remove_file(&pw_path);
@@ -2832,13 +2904,11 @@ mod tests {
         })
         .expect("rotate with same pw should succeed (salt differs)");
         let after = std::fs::read(&blob_path).unwrap();
-        assert_ne!(before, after, "salt+nonce must differ between runs even with same pw");
+        assert_ne!(
+            before, after,
+            "salt+nonce must differ between runs even with same pw"
+        );
         let _ = std::fs::remove_dir_all(&dir);
         let _ = std::fs::remove_file(&pw_path);
     }
-
-
-
-
-
 }

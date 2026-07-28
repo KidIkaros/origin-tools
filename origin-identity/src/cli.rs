@@ -10,7 +10,7 @@ use clap::{Parser, Subcommand, ValueEnum};
 #[command(
     name = "origin-identity",
     version,
-    about = "Identity key management — hybrid post-quantum signing",
+    about = "Identity key management — hybrid post-quantum signing"
 )]
 pub struct Cli {
     #[command(subcommand)]
@@ -326,10 +326,11 @@ pub struct RotatePassphraseArgs {
 /// identity blobs are never silently written to `/tmp` (a shared,
 /// world-readable directory on many systems).
 pub fn resolve_dir(raw: &str) -> Result<PathBuf, String> {
-    if raw.starts_with("~/") {
-        let home = std::env::var("HOME")
-            .map_err(|_| "$HOME is unset; cannot expand ~/ paths. Pass an absolute path instead.".to_string())?;
-        Ok(PathBuf::from(home).join(&raw[2..]))
+    if let Some(rest) = raw.strip_prefix("~/") {
+        let home = std::env::var("HOME").map_err(|_| {
+            "$HOME is unset; cannot expand ~/ paths. Pass an absolute path instead.".to_string()
+        })?;
+        Ok(PathBuf::from(home).join(rest))
     } else {
         Ok(PathBuf::from(raw))
     }

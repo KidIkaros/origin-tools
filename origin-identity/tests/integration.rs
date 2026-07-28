@@ -47,9 +47,7 @@ static TEMPDIR_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 use origin_crypto_sdk::{
     blob::recover_seed,
-    recovery::unicode_cipher::{
-        decode_phrase, encode_phrase, PhraseLength, UnicodeWordlist,
-    },
+    recovery::unicode_cipher::{decode_phrase, encode_phrase, PhraseLength, UnicodeWordlist},
     seed::gen::{generate, SeedVariant},
     signing::hybrid::HybridSigningKeyBundle,
     tier::MemoryTier,
@@ -89,8 +87,7 @@ impl TempDir {
             .map(|d| d.as_nanos())
             .unwrap_or(0);
         let counter = TEMPDIR_COUNTER.fetch_add(1, Ordering::Relaxed);
-        let path = std::env::temp_dir()
-            .join(format!("origin-it-{label}-{pid}-{nano}-{counter}"));
+        let path = std::env::temp_dir().join(format!("origin-it-{label}-{pid}-{nano}-{counter}"));
         fs::create_dir(&path)
             .unwrap_or_else(|e| panic!("create temp dir {} ({e})", path.display()));
         Self(path)
@@ -162,7 +159,10 @@ fn import_preserves_seed_byte_for_byte() {
         OsString::from(format!("--dir={}", tmp.0.display())),
         OsString::from("--tier=nano"),
         OsString::from(format!("--phrase=@{}", phrase_file.display())),
-        OsString::from(format!("--passphrase-file={}", tmp.join("pw.txt").display())),
+        OsString::from(format!(
+            "--passphrase-file={}",
+            tmp.join("pw.txt").display()
+        )),
     ]);
     assert!(
         status.success(),
@@ -192,10 +192,10 @@ fn import_refuses_overwrite_without_force() {
     let seed_a: [u8; 32] = [0xAAu8; 32];
     let seed_b: [u8; 32] = [0xBBu8; 32];
 
-    let phrase_a = encode_phrase(&seed_a, &UnicodeWordlist::default(), PhraseLength::Words24)
-        .unwrap();
-    let phrase_b = encode_phrase(&seed_b, &UnicodeWordlist::default(), PhraseLength::Words24)
-        .unwrap();
+    let phrase_a =
+        encode_phrase(&seed_a, &UnicodeWordlist::default(), PhraseLength::Words24).unwrap();
+    let phrase_b =
+        encode_phrase(&seed_b, &UnicodeWordlist::default(), PhraseLength::Words24).unwrap();
     write_text(&tmp.join("a.txt"), &phrase_to_string(&phrase_a));
     write_text(&tmp.join("b.txt"), &phrase_to_string(&phrase_b));
     write_text(&tmp.join("pw.txt"), "test-pw");
@@ -207,7 +207,10 @@ fn import_refuses_overwrite_without_force() {
         OsString::from(format!("--dir={}", tmp.0.display())),
         OsString::from("--tier=nano"),
         OsString::from(format!("--phrase=@{}", tmp.join("a.txt").display())),
-        OsString::from(format!("--passphrase-file={}", tmp.join("pw.txt").display())),
+        OsString::from(format!(
+            "--passphrase-file={}",
+            tmp.join("pw.txt").display()
+        )),
     ]);
     assert!(status.success(), "first import should succeed");
 
@@ -218,9 +221,15 @@ fn import_refuses_overwrite_without_force() {
         OsString::from(format!("--dir={}", tmp.0.display())),
         OsString::from("--tier=nano"),
         OsString::from(format!("--phrase=@{}", tmp.join("b.txt").display())),
-        OsString::from(format!("--passphrase-file={}", tmp.join("pw.txt").display())),
+        OsString::from(format!(
+            "--passphrase-file={}",
+            tmp.join("pw.txt").display()
+        )),
     ]);
-    assert!(!status2.success(), "duplicate import without --force must fail");
+    assert!(
+        !status2.success(),
+        "duplicate import without --force must fail"
+    );
     assert!(
         stderr2.contains("already exists") && stderr2.contains("--force"),
         "error should mention --force; got: {stderr2}"
@@ -241,10 +250,10 @@ fn import_force_overwrites_existing_blob() {
     let seed_a: [u8; 32] = [0xA1u8; 32];
     let seed_b: [u8; 32] = [0xB1u8; 32];
 
-    let phrase_a = encode_phrase(&seed_a, &UnicodeWordlist::default(), PhraseLength::Words24)
-        .unwrap();
-    let phrase_b = encode_phrase(&seed_b, &UnicodeWordlist::default(), PhraseLength::Words24)
-        .unwrap();
+    let phrase_a =
+        encode_phrase(&seed_a, &UnicodeWordlist::default(), PhraseLength::Words24).unwrap();
+    let phrase_b =
+        encode_phrase(&seed_b, &UnicodeWordlist::default(), PhraseLength::Words24).unwrap();
     write_text(&tmp.join("a.txt"), &phrase_to_string(&phrase_a));
     write_text(&tmp.join("b.txt"), &phrase_to_string(&phrase_b));
     write_text(&tmp.join("pw.txt"), "test-pw");
@@ -256,7 +265,10 @@ fn import_force_overwrites_existing_blob() {
         OsString::from(format!("--dir={}", tmp.0.display())),
         OsString::from("--tier=nano"),
         OsString::from(format!("--phrase=@{}", tmp.join("a.txt").display())),
-        OsString::from(format!("--passphrase-file={}", tmp.join("pw.txt").display())),
+        OsString::from(format!(
+            "--passphrase-file={}",
+            tmp.join("pw.txt").display()
+        )),
     ]);
     assert!(status.success());
 
@@ -268,9 +280,16 @@ fn import_force_overwrites_existing_blob() {
         OsString::from("--tier=nano"),
         OsString::from("--force"),
         OsString::from(format!("--phrase=@{}", tmp.join("b.txt").display())),
-        OsString::from(format!("--passphrase-file={}", tmp.join("pw.txt").display())),
+        OsString::from(format!(
+            "--passphrase-file={}",
+            tmp.join("pw.txt").display()
+        )),
     ]);
-    assert!(status2.success(), "--force import should succeed; stderr={}", "see above");
+    assert!(
+        status2.success(),
+        "--force import should succeed; stderr={}",
+        "see above"
+    );
 
     // Byte-exact: must now encode seed_b.
     let blob = fs::read(tmp.join("alice.id")).unwrap();
@@ -308,7 +327,10 @@ fn import_refuses_12_word_phrase_with_clear_error() {
         OsString::from(format!("--dir={}", tmp.0.display())),
         OsString::from("--tier=nano"),
         OsString::from(format!("--phrase=@{}", tmp.join("p.txt").display())),
-        OsString::from(format!("--passphrase-file={}", tmp.join("pw.txt").display())),
+        OsString::from(format!(
+            "--passphrase-file={}",
+            tmp.join("pw.txt").display()
+        )),
     ]);
     assert!(!status.success(), "import of 12-word phrase must fail");
     assert!(
@@ -328,8 +350,7 @@ fn import_then_sign_and_verify_end_to_end() {
     let tmp = TempDir::new("e2e-sign-verify");
 
     let seed: [u8; 32] = [0x77u8; 32];
-    let phrase = encode_phrase(&seed, &UnicodeWordlist::default(), PhraseLength::Words24)
-        .unwrap();
+    let phrase = encode_phrase(&seed, &UnicodeWordlist::default(), PhraseLength::Words24).unwrap();
     write_text(&tmp.join("phrase.txt"), &phrase_to_string(&phrase));
     write_text(&tmp.join("pw.txt"), "end-to-end");
     write_text(&tmp.join("msg.txt"), "hello integration test");
@@ -341,7 +362,10 @@ fn import_then_sign_and_verify_end_to_end() {
         OsString::from(format!("--dir={}", tmp.0.display())),
         OsString::from("--tier=nano"),
         OsString::from(format!("--phrase=@{}", tmp.join("phrase.txt").display())),
-        OsString::from(format!("--passphrase-file={}", tmp.join("pw.txt").display())),
+        OsString::from(format!(
+            "--passphrase-file={}",
+            tmp.join("pw.txt").display()
+        )),
     ]);
     assert!(status.success(), "import failed");
 
@@ -352,13 +376,19 @@ fn import_then_sign_and_verify_end_to_end() {
         OsString::from(format!("--dir={}", tmp.0.display())),
         OsString::from("--tier=nano"),
         OsString::from("--message=hello integration test"),
-        OsString::from(format!("--passphrase-file={}", tmp.join("pw.txt").display())),
+        OsString::from(format!(
+            "--passphrase-file={}",
+            tmp.join("pw.txt").display()
+        )),
     ]);
     assert!(status2.success(), "sign failed");
-    let sig_json: serde_json::Value = serde_json::from_str(&sig_stdout)
-        .expect("sign output must be valid JSON in default mode");
+    let sig_json: serde_json::Value =
+        serde_json::from_str(&sig_stdout).expect("sign output must be valid JSON in default mode");
     assert!(sig_json["ed25519"].is_string(), "JSON missing ed25519");
-    assert!(sig_json["falcon1024"].is_string(), "JSON missing falcon1024");
+    assert!(
+        sig_json["falcon1024"].is_string(),
+        "JSON missing falcon1024"
+    );
 
     // Save the JSON to disk so verify can read it back via filesystem.
     let sig_path = tmp.join("sig.json");
@@ -372,7 +402,10 @@ fn import_then_sign_and_verify_end_to_end() {
         OsString::from("--tier=nano"),
         OsString::from("--message=hello integration test"),
         OsString::from(format!("--signature={}", sig_path.display())),
-        OsString::from(format!("--passphrase-file={}", tmp.join("pw.txt").display())),
+        OsString::from(format!(
+            "--passphrase-file={}",
+            tmp.join("pw.txt").display()
+        )),
     ]);
     assert!(
         status3.success(),
@@ -407,13 +440,19 @@ fn import_with_random_seed_works_via_sdk_drbg() {
         OsString::from(format!("--dir={}", tmp.0.display())),
         OsString::from("--tier=nano"),
         OsString::from(format!("--phrase=@{}", tmp.join("p.txt").display())),
-        OsString::from(format!("--passphrase-file={}", tmp.join("pw.txt").display())),
+        OsString::from(format!(
+            "--passphrase-file={}",
+            tmp.join("pw.txt").display()
+        )),
     ]);
     assert!(status.success(), "import of drbg-generated seed failed");
 
     let blob = fs::read(tmp.join("rng_alice.id")).unwrap();
     let recovered = recover_seed(&blob, b"random-pw", MemoryTier::Nano).unwrap();
-    assert_eq!(recovered, seed, "drbg → phrase → import → recover must round-trip");
+    assert_eq!(
+        recovered, seed,
+        "drbg → phrase → import → recover must round-trip"
+    );
 
     // Sanity: a sign/verify cycle over the import also works.
     // Build the `Ed25519Falcon1024` explicitly because `sign_hybrid`
@@ -443,8 +482,7 @@ fn import_with_bom_prefixed_phrase_file_still_works() {
     let tmp = TempDir::new("bom-prefix");
 
     let seed: [u8; 32] = [0xB0u8; 32];
-    let phrase = encode_phrase(&seed, &UnicodeWordlist::default(), PhraseLength::Words24)
-        .unwrap();
+    let phrase = encode_phrase(&seed, &UnicodeWordlist::default(), PhraseLength::Words24).unwrap();
 
     // Prefix the phrase content with U+FEFF (UTF-8: EF BB BF).
     let mut text = String::from("\u{feff}");
@@ -463,9 +501,15 @@ fn import_with_bom_prefixed_phrase_file_still_works() {
         OsString::from(format!("--dir={}", tmp.0.display())),
         OsString::from("--tier=nano"),
         OsString::from(format!("--phrase=@{}", tmp.join("p.txt").display())),
-        OsString::from(format!("--passphrase-file={}", tmp.join("pw.txt").display())),
+        OsString::from(format!(
+            "--passphrase-file={}",
+            tmp.join("pw.txt").display()
+        )),
     ]);
-    assert!(status.success(), "BOM-prefixed phrase import failed: {stderr}");
+    assert!(
+        status.success(),
+        "BOM-prefixed phrase import failed: {stderr}"
+    );
 
     let blob = fs::read(tmp.join("bom_alice.id")).unwrap();
     let recovered = recover_seed(&blob, b"bom-pw", MemoryTier::Nano).unwrap();
@@ -564,8 +608,7 @@ fn tempdir_create_dir_fails_loudly_on_collision() {
         .map(|d| d.as_nanos())
         .unwrap_or(0);
     let counter_n = TEMPDIR_COUNTER.fetch_add(1, Ordering::Relaxed);
-    let path = std::env::temp_dir()
-        .join(format!("origin-it-collision-{pid}-{nano}-{counter_n}"));
+    let path = std::env::temp_dir().join(format!("origin-it-collision-{pid}-{nano}-{counter_n}"));
 
     fs::create_dir(&path).expect("first create must succeed");
     let result = fs::create_dir(&path);
@@ -680,7 +723,11 @@ fn sign_output_hex_then_verify_hex_roundtrip() {
         v_stdout,
         v_stderr
     );
-    assert_eq!(v_stdout.trim(), "valid", "hex-pipe round-trip must produce 'valid'");
+    assert_eq!(
+        v_stdout.trim(),
+        "valid",
+        "hex-pipe round-trip must produce 'valid'"
+    );
 }
 
 #[test]
@@ -968,7 +1015,6 @@ fn keygen_banner_path_accepts_enter_and_creates_identity() {
     assert!(blob.len() > 40, "blob must be at least salt+nonce length");
 }
 
-
 // ── v0.3.0: shell-out tests for show / rename / delete / export-pubkey / rotate-passphrase ──
 //
 // These 5 tests close the main.rs coverage gap. Each shells out to the
@@ -989,7 +1035,10 @@ fn show_displays_metadata_after_keygen() {
         OsString::from(format!("--dir={}", tmp.0.display())),
         OsString::from("--tier=nano"),
         OsString::from("--no-phrase"),
-        OsString::from(format!("--passphrase-file={}", tmp.join("pw.txt").display())),
+        OsString::from(format!(
+            "--passphrase-file={}",
+            tmp.join("pw.txt").display()
+        )),
     ]);
     assert!(k_status.success(), "keygen failed: {k_stderr}");
 
@@ -1003,12 +1052,24 @@ fn show_displays_metadata_after_keygen() {
         "show failed; status={:?} stderr={stderr}",
         status
     );
-    assert!(stdout.contains("Name:        meta-id"), "missing Name line; got: {stdout}");
-    assert!(stdout.contains("Fingerprint:"), "missing Fingerprint line; got: {stdout}");
-    assert!(stdout.contains("Encrypted:   yes"), "missing encrypted marker; got: {stdout}");
+    assert!(
+        stdout.contains("Name:        meta-id"),
+        "missing Name line; got: {stdout}"
+    );
+    assert!(
+        stdout.contains("Fingerprint:"),
+        "missing Fingerprint line; got: {stdout}"
+    );
+    assert!(
+        stdout.contains("Encrypted:   yes"),
+        "missing encrypted marker; got: {stdout}"
+    );
     // Fingerprint is 8 hex chars (blake3[:4] hex-encoded).
     assert!(
-        stdout.lines().any(|l| l.trim_start().starts_with("Fingerprint:") && l.trim_start().len() == "Fingerprint:".len() + 1 + 8),
+        stdout
+            .lines()
+            .any(|l| l.trim_start().starts_with("Fingerprint:")
+                && l.trim_start().len() == "Fingerprint:".len() + 1 + 8),
         "Fingerprint line should have 8 hex chars after the label; got: {stdout}"
     );
 }
@@ -1024,7 +1085,10 @@ fn rename_atomically_moves_blob() {
         OsString::from(format!("--dir={}", tmp.0.display())),
         OsString::from("--tier=nano"),
         OsString::from("--no-phrase"),
-        OsString::from(format!("--passphrase-file={}", tmp.join("pw.txt").display())),
+        OsString::from(format!(
+            "--passphrase-file={}",
+            tmp.join("pw.txt").display()
+        )),
     ]);
     assert!(k_status.success());
 
@@ -1042,10 +1106,16 @@ fn rename_atomically_moves_blob() {
     ]);
     assert!(status.success(), "rename failed; stderr={stderr}");
     assert!(stdout.contains("Renamed") || stderr.contains("Renamed"));
-    assert!(!blob_before.exists(), "old blob should be gone after rename");
+    assert!(
+        !blob_before.exists(),
+        "old blob should be gone after rename"
+    );
     assert!(blob_after.exists(), "new blob should exist after rename");
     let size_after = fs::metadata(&blob_after).unwrap().len();
-    assert_eq!(size_before, size_after, "rename must be byte-exact (no key change)");
+    assert_eq!(
+        size_before, size_after,
+        "rename must be byte-exact (no key change)"
+    );
 }
 
 #[test]
@@ -1063,7 +1133,10 @@ fn delete_with_force_and_no_overwrite_removes_blob() {
         OsString::from(format!("--dir={}", tmp.0.display())),
         OsString::from("--tier=nano"),
         OsString::from("--no-phrase"),
-        OsString::from(format!("--passphrase-file={}", tmp.join("pw.txt").display())),
+        OsString::from(format!(
+            "--passphrase-file={}",
+            tmp.join("pw.txt").display()
+        )),
     ]);
     assert!(k_status.success());
 
@@ -1098,7 +1171,10 @@ fn export_pubkey_json_round_trip_with_sign_verify() {
         OsString::from(format!("--dir={}", tmp.0.display())),
         OsString::from("--tier=nano"),
         OsString::from("--no-phrase"),
-        OsString::from(format!("--passphrase-file={}", tmp.join("pw.txt").display())),
+        OsString::from(format!(
+            "--passphrase-file={}",
+            tmp.join("pw.txt").display()
+        )),
     ]);
     assert!(k_status.success());
 
@@ -1108,7 +1184,10 @@ fn export_pubkey_json_round_trip_with_sign_verify() {
         OsString::from("--tier=nano"),
         OsString::from("--domain=origin-identity:v1"),
         OsString::from(format!("--dir={}", tmp.0.display())),
-        OsString::from(format!("--passphrase-file={}", tmp.join("pw.txt").display())),
+        OsString::from(format!(
+            "--passphrase-file={}",
+            tmp.join("pw.txt").display()
+        )),
     ]);
     assert!(
         status.success(),
@@ -1125,7 +1204,11 @@ fn export_pubkey_json_round_trip_with_sign_verify() {
 
     // Structural lengths: ed25519 pubkey is always 32 bytes (64 hex),
     // falcon1024 pubkey is 1793 bytes (3586 hex).
-    assert_eq!(ed_hex.len(), 64, "ed25519 pubkey must be 32 bytes (64 hex chars)");
+    assert_eq!(
+        ed_hex.len(),
+        64,
+        "ed25519 pubkey must be 32 bytes (64 hex chars)"
+    );
     assert_eq!(
         falcon_hex.len(),
         1793 * 2,
@@ -1181,7 +1264,10 @@ fn rotate_passphrase_old_pw_fails_new_pw_succeeds() {
         OsString::from(format!("--dir={}", tmp.0.display())),
         OsString::from("--tier=nano"),
         OsString::from("--no-phrase"),
-        OsString::from(format!("--passphrase-file={}", tmp.join("pw1.txt").display())),
+        OsString::from(format!(
+            "--passphrase-file={}",
+            tmp.join("pw1.txt").display()
+        )),
     ]);
     assert!(k_status.success());
 
@@ -1191,8 +1277,14 @@ fn rotate_passphrase_old_pw_fails_new_pw_succeeds() {
         OsString::from("--name=rot-id"),
         OsString::from("--tier=nano"),
         OsString::from(format!("--dir={}", tmp.0.display())),
-        OsString::from(format!("--passphrase-file={}", tmp.join("pw1.txt").display())),
-        OsString::from(format!("--new-passphrase-file={}", tmp.join("pw2.txt").display())),
+        OsString::from(format!(
+            "--passphrase-file={}",
+            tmp.join("pw1.txt").display()
+        )),
+        OsString::from(format!(
+            "--new-passphrase-file={}",
+            tmp.join("pw2.txt").display()
+        )),
     ]);
     assert!(r_status.success(), "rotate failed; stderr={r_stderr}");
 
@@ -1202,7 +1294,10 @@ fn rotate_passphrase_old_pw_fails_new_pw_succeeds() {
         OsString::from("--name=rot-id"),
         OsString::from("--tier=nano"),
         OsString::from(format!("--dir={}", tmp.0.display())),
-        OsString::from(format!("--passphrase-file={}", tmp.join("pw1.txt").display())),
+        OsString::from(format!(
+            "--passphrase-file={}",
+            tmp.join("pw1.txt").display()
+        )),
     ]);
     assert!(!old_status.success(), "old pw should now fail");
     assert!(
@@ -1216,7 +1311,10 @@ fn rotate_passphrase_old_pw_fails_new_pw_succeeds() {
         OsString::from("--name=rot-id"),
         OsString::from("--tier=nano"),
         OsString::from(format!("--dir={}", tmp.0.display())),
-        OsString::from(format!("--passphrase-file={}", tmp.join("pw2.txt").display())),
+        OsString::from(format!(
+            "--passphrase-file={}",
+            tmp.join("pw2.txt").display()
+        )),
     ]);
     assert!(
         new_status.success(),
@@ -1227,4 +1325,3 @@ fn rotate_passphrase_old_pw_fails_new_pw_succeeds() {
     assert_eq!(json["ed25519"].as_str().unwrap().len(), 64);
     assert_eq!(json["falcon1024"].as_str().unwrap().len(), 1793 * 2);
 }
-

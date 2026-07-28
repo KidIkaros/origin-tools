@@ -52,13 +52,18 @@ pub struct OriginHome {
 }
 
 impl OriginHome {
-    /// Load the default home directory (~/.origin).
+    /// Load the default home directory.
     ///
-    /// Creates the directory and default config if they don't exist.
+    /// Respects the `ORIGIN_HOME` environment variable for testing / multi-profile.
+    /// Falls back to `~/.origin`. Creates the directory and default config if needed.
     pub fn load() -> Result<Self, String> {
-        let root = dirs::home_dir()
-            .ok_or("cannot determine home directory")?
-            .join(".origin");
+        let root = if let Ok(custom) = std::env::var("ORIGIN_HOME") {
+            PathBuf::from(custom)
+        } else {
+            dirs::home_dir()
+                .ok_or("cannot determine home directory")?
+                .join(".origin")
+        };
         Self::with_root(root)
     }
 

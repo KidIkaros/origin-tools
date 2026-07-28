@@ -30,6 +30,8 @@ pub fn tier_from_str(s: &str) -> Result<MemoryTier, String> {
         "nano" => Ok(MemoryTier::Nano),
         "standard" | "std" => Ok(MemoryTier::Standard),
         "sovereign" | "sov" => Ok(MemoryTier::Sovereign),
-        _ => Err(format!("unknown tier '{s}' (expected: nano, standard, sovereign)")),
+        _ => Err(format!(
+            "unknown tier '{s}' (expected: nano, standard, sovereign)"
+        )),
     }
 }

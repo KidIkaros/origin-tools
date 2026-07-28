@@ -8,7 +8,7 @@ use clap::{Parser, Subcommand, ValueEnum};
 #[command(
     name = "origin-seal",
     version,
-    about = "Data operations — encrypt, decrypt, sign, verify, hash, MAC, KDF",
+    about = "Data operations — encrypt, decrypt, sign, verify, hash, MAC, KDF"
 )]
 pub struct Cli {
     #[command(subcommand)]

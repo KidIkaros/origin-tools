@@ -325,10 +325,11 @@ pub enum HashAlgorithm {
 /// files are never silently written to `/tmp`.
 #[allow(dead_code)]
 pub fn resolve_dir(raw: &str) -> Result<PathBuf, String> {
-    if raw.starts_with("~/") {
-        let home = std::env::var("HOME")
-            .map_err(|_| "$HOME is unset; cannot expand ~/ paths. Pass an absolute path instead.".to_string())?;
-        Ok(PathBuf::from(home).join(&raw[2..]))
+    if let Some(rest) = raw.strip_prefix("~/") {
+        let home = std::env::var("HOME").map_err(|_| {
+            "$HOME is unset; cannot expand ~/ paths. Pass an absolute path instead.".to_string()
+        })?;
+        Ok(PathBuf::from(home).join(rest))
     } else {
         Ok(PathBuf::from(raw))
     }

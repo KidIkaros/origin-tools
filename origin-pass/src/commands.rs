@@ -18,7 +18,6 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 
 use origin_common::{resolve_passphrase, MemoryTier};
-use origin_crypto_sdk::tier::MemoryTier as SdkMemoryTier;
 
 use crate::cli::{
     AddArgs, ChangePassphraseArgs, CodeArgs, ExportQrArgs, GetArgs, ImportQrArgs, InitArgs,
@@ -33,9 +32,7 @@ use crate::vault::{self, EntryPayload, Vault};
 impl From<crate::cli::HashAlgorithm> for origin_crypto_sdk::drbg::otp::HashAlgorithm {
     fn from(v: crate::cli::HashAlgorithm) -> Self {
         match v {
-            crate::cli::HashAlgorithm::Sha1 => {
-                origin_crypto_sdk::drbg::otp::HashAlgorithm::Sha1
-            }
+            crate::cli::HashAlgorithm::Sha1 => origin_crypto_sdk::drbg::otp::HashAlgorithm::Sha1,
             crate::cli::HashAlgorithm::Sha256 => {
                 origin_crypto_sdk::drbg::otp::HashAlgorithm::Sha256
             }
@@ -54,9 +51,9 @@ static CURRENT_VAULT: Mutex<Option<Vault>> = Mutex::new(None);
 
 /// Helper: take the in-process unlocked vault, returning Err if absent.
 fn take_vault() -> Result<Vault, String> {
-    let mut guard = CURRENT_VAULT.lock().map_err(|e| {
-        format!("vault state mutex poisoned: {e}")
-    })?;
+    let mut guard = CURRENT_VAULT
+        .lock()
+        .map_err(|e| format!("vault state mutex poisoned: {e}"))?;
     guard.take().ok_or_else(|| {
         "vault is not unlocked in this process — run `origin-pass unlock` first (DESIGN.md §6 step 3)".to_string()
     })
@@ -64,9 +61,9 @@ fn take_vault() -> Result<Vault, String> {
 
 /// Helper: stash the unlocked vault back into process-global state.
 fn put_vault(v: Vault) -> Result<(), String> {
-    let mut guard = CURRENT_VAULT.lock().map_err(|e| {
-        format!("vault state mutex poisoned: {e}")
-    })?;
+    let mut guard = CURRENT_VAULT
+        .lock()
+        .map_err(|e| format!("vault state mutex poisoned: {e}"))?;
     *guard = Some(v);
     Ok(())
 }
@@ -103,16 +100,12 @@ fn resolve_vault_path(raw: &str) -> Result<PathBuf, String> {
 /// mutex semantics for the `--secret-file` presence; we simply check the
 /// bool flag here. The function returns `Err` on any I/O failure with an
 /// actionable message.
-fn resolve_entry_secret(
-    file: Option<&str>,
-    stdin: bool,
-) -> Result<String, String> {
+fn resolve_entry_secret(file: Option<&str>, stdin: bool) -> Result<String, String> {
     use std::io::Read;
 
     if let Some(path) = file {
-        let s = std::fs::read_to_string(path).map_err(|e| {
-            format!("cannot read secret file {path}: {e}")
-        })?;
+        let s = std::fs::read_to_string(path)
+            .map_err(|e| format!("cannot read secret file {path}: {e}"))?;
         return Ok(s.trim_end_matches(['\n', '\r']).to_string());
     }
     if stdin {
@@ -122,8 +115,7 @@ fn resolve_entry_secret(
             .map_err(|e| format!("cannot read secret from stdin: {e}"))?;
         return Ok(s.trim_end_matches(['\n', '\r']).to_string());
     }
-    rpassword::prompt_password("Secret: ")
-        .map_err(|e| format!("secret prompt failed: {e}"))
+    rpassword::prompt_password("Secret: ").map_err(|e| format!("secret prompt failed: {e}"))
 }
 
 /// Current Unix epoch seconds. Returns `0` if the system clock is set
@@ -237,9 +229,8 @@ pub fn compute_ocra_code(
 ) -> Result<OcraCode, String> {
     use origin_crypto_sdk::ocra::{ocra, OcraRequest};
 
-    let key = std::fs::read(key_path).map_err(|e| {
-        format!("failed to read OCRA key file {}: {e}", key_path.display())
-    })?;
+    let key = std::fs::read(key_path)
+        .map_err(|e| format!("failed to read OCRA key file {}: {e}", key_path.display()))?;
 
     let sdk_algo: origin_crypto_sdk::drbg::otp::HashAlgorithm = algo.into();
 
@@ -306,7 +297,11 @@ pub fn cmd_unlock(args: UnlockArgs) -> Result<(), String> {
         );
     }
     put_vault(vault_obj)?;
-    eprintln!("unlocked {} (tier={}, {entry_count} entries)", path.display(), tier);
+    eprintln!(
+        "unlocked {} (tier={}, {entry_count} entries)",
+        path.display(),
+        tier
+    );
     Ok(())
 }
 
@@ -314,9 +309,7 @@ pub fn cmd_unlock(args: UnlockArgs) -> Result<(), String> {
 /// to clear (unlock is per-process).
 pub fn cmd_lock(_args: LockArgs) -> Result<(), String> {
     take_vault()?; // drops it
-    eprintln!(
-        "vault state cleared (no persisted state in v0.4.x — unlock again to operate)"
-    );
+    eprintln!("vault state cleared (no persisted state in v0.4.x — unlock again to operate)");
     Ok(())
 }
 
@@ -365,10 +358,7 @@ pub fn cmd_add(args: AddArgs) -> Result<(), String> {
     // Source the secret bytes. We deliberately do NOT support
     // `--secret <string>` in argv — argv leaks via shell history and
     // `ps aux` for the brief window the process runs.
-    let secret_str = resolve_entry_secret(
-        args.secret_file.as_deref(),
-        args.secret_stdin,
-    )?;
+    let secret_str = resolve_entry_secret(args.secret_file.as_deref(), args.secret_stdin)?;
 
     // Build the EntryPayload. created_at is preserved across overwrites;
     // updated_at always bumped to "now". url/notes pass through; None on
@@ -541,19 +531,15 @@ fn cmd_code_otp(args: CodeArgs) -> Result<(), String> {
     // `rpassword::prompt_password`, which fails noisily on a non-TTY stdin
     // (e.g. cargo test, CI) with a cryptic message.
     if args.vault.trim().is_empty() {
-        return Err(
-            "no --vault supplied; cannot derive TOTP/HOTP code. \
+        return Err("no --vault supplied; cannot derive TOTP/HOTP code. \
              Pass --vault <path> --passphrase-file <path> to unlock the vault."
-                .to_string(),
-        );
+            .to_string());
     }
     if args.passphrase_file.is_none() {
-        return Err(
-            "TOTP/HOTP code requires a passphrase to unlock the vault. \
+        return Err("TOTP/HOTP code requires a passphrase to unlock the vault. \
              Pass --passphrase-file <path> or run from a terminal for \
              interactive unlock."
-                .to_string(),
-        );
+            .to_string());
     }
 
     let path = resolve_vault_path(&args.vault)?;
@@ -582,7 +568,10 @@ fn cmd_code_otp(args: CodeArgs) -> Result<(), String> {
         .as_ref()
         .ok_or_else(|| format!("entry '{}' has no secret bytes stored", args.name))?;
     let secret_b32 = std::str::from_utf8(secret_bytes).map_err(|e| {
-        format!("entry '{}' secret is not valid UTF-8 base32: {e}", args.name)
+        format!(
+            "entry '{}' secret is not valid UTF-8 base32: {e}",
+            args.name
+        )
     })?;
     let secret_raw = origin_crypto_sdk::drbg::otp::base32_decode(secret_b32)
         .map_err(|e| format!("entry '{}' secret is not valid base32: {e}", args.name))?;
@@ -598,16 +587,17 @@ fn cmd_code_otp(args: CodeArgs) -> Result<(), String> {
         .get("algo")
         .and_then(|a| a.as_str())
         .unwrap_or("SHA1");
-    let stored_digits: u32 = otp_json
-        .get("digits")
-        .and_then(|d| d.as_u64())
-        .unwrap_or(6) as u32;
+    let stored_digits: u32 = otp_json.get("digits").and_then(|d| d.as_u64()).unwrap_or(6) as u32;
 
     // CLI overrides take precedence over stored values.
     let algo: origin_crypto_sdk::drbg::otp::HashAlgorithm = match args.algo {
         Some(crate::cli::HashAlgorithm::Sha1) => origin_crypto_sdk::drbg::otp::HashAlgorithm::Sha1,
-        Some(crate::cli::HashAlgorithm::Sha256) => origin_crypto_sdk::drbg::otp::HashAlgorithm::Sha256,
-        Some(crate::cli::HashAlgorithm::Sha512) => origin_crypto_sdk::drbg::otp::HashAlgorithm::Sha512,
+        Some(crate::cli::HashAlgorithm::Sha256) => {
+            origin_crypto_sdk::drbg::otp::HashAlgorithm::Sha256
+        }
+        Some(crate::cli::HashAlgorithm::Sha512) => {
+            origin_crypto_sdk::drbg::otp::HashAlgorithm::Sha512
+        }
         None => match stored_algo {
             "SHA256" => origin_crypto_sdk::drbg::otp::HashAlgorithm::Sha256,
             "SHA512" => origin_crypto_sdk::drbg::otp::HashAlgorithm::Sha512,
@@ -674,16 +664,12 @@ fn cmd_code_otp(args: CodeArgs) -> Result<(), String> {
 
 /// OCRA (RFC 6287) challenge-response code path.
 fn cmd_code_ocra(args: CodeArgs) -> Result<(), String> {
-
     let challenge = args
         .challenge
         .as_deref()
         .ok_or_else(|| "--ocra requires --challenge <STRING>".to_string())?;
 
-    let algo = args
-        .algo
-        .clone()
-        .unwrap_or(crate::cli::HashAlgorithm::Sha1);
+    let algo = args.algo.clone().unwrap_or(crate::cli::HashAlgorithm::Sha1);
     let digits = args.digits.unwrap_or(6);
     let counter = args.counter.unwrap_or(0);
 
@@ -866,8 +852,8 @@ pub fn cmd_export_qr(args: ExportQrArgs) -> Result<(), String> {
     println!("uri: {uri}");
     println!();
 
-    let qr = qrcode::QrCode::new(uri.as_bytes())
-        .map_err(|e| format!("QR generation failed: {e}"))?;
+    let qr =
+        qrcode::QrCode::new(uri.as_bytes()).map_err(|e| format!("QR generation failed: {e}"))?;
     let block = qr
         .render::<qrcode::render::unicode::Dense1x2>()
         .quiet_zone(true)
@@ -910,9 +896,7 @@ pub fn cmd_import_qr(args: ImportQrArgs) -> Result<(), String> {
 
     // Validate kind.
     if kind != "totp" && kind != "hotp" {
-        return Err(format!(
-            "URI type must be `totp` or `hotp`, got `{kind}`"
-        ));
+        return Err(format!("URI type must be `totp` or `hotp`, got `{kind}`"));
     }
 
     // Parse + URL-decode query parameters. Reject bare-key pairs
@@ -923,9 +907,9 @@ pub fn cmd_import_qr(args: ImportQrArgs) -> Result<(), String> {
         if pair.is_empty() {
             continue;
         }
-        let (k_enc, v_enc) = pair.split_once('=').ok_or_else(|| {
-            format!("URI query pair missing `=`: `{pair}`")
-        })?;
+        let (k_enc, v_enc) = pair
+            .split_once('=')
+            .ok_or_else(|| format!("URI query pair missing `=`: `{pair}`"))?;
         let k = url_decode(k_enc).map_err(|e| format!("invalid URI query key: {e}"))?;
         let v = url_decode(v_enc).map_err(|e| format!("invalid URI query value: {e}"))?;
         params.insert(k, v);
@@ -996,11 +980,7 @@ pub fn cmd_import_qr(args: ImportQrArgs) -> Result<(), String> {
             Some(c) => c
                 .parse()
                 .map_err(|_| format!("counter not a valid integer: `{c}`"))?,
-            None => {
-                return Err(
-                    "HOTP URI missing required `counter` query parameter".to_string(),
-                )
-            }
+            None => return Err("HOTP URI missing required `counter` query parameter".to_string()),
         }
     } else {
         0
@@ -1052,8 +1032,8 @@ pub fn cmd_change_passphrase(args: ChangePassphraseArgs) -> Result<(), String> {
 
     // Probe the file to recover the existing tier — preserves user's
     // original choice (Nano / Standard / Sovereign).
-    let header_bytes = std::fs::read(&path)
-        .map_err(|e| format!("cannot read vault {}: {e}", path.display()))?;
+    let header_bytes =
+        std::fs::read(&path).map_err(|e| format!("cannot read vault {}: {e}", path.display()))?;
     if header_bytes.len() < vault::HEADER_BYTES_LEN {
         return Err(format!(
             "vault file too short: {} bytes",
@@ -1062,8 +1042,7 @@ pub fn cmd_change_passphrase(args: ChangePassphraseArgs) -> Result<(), String> {
     }
     let header = vault::VaultHeader::from_wire(&header_bytes[..vault::HEADER_BYTES_LEN])?;
     let tier = header.kdf_tier;
-    drop(header);
-    drop(header_bytes);
+    // header and header_bytes are consumed below; no explicit drop needed
 
     // Read the new passphrase — confirmation prompt unless file-based.
     let new = if let Some(new_file) = args.new_passphrase_file.as_ref() {
@@ -1155,9 +1134,14 @@ mod tests {
     #[test]
     fn rfc6287_a1_qn08_sha1_canonical_196958() {
         let key = write_key(b"12345678901234567890");
-        let code =
-            compute_ocra_code(key.path(), "00000000", 0, 6, crate::cli::HashAlgorithm::Sha1)
-                .expect("ocra");
+        let code = compute_ocra_code(
+            key.path(),
+            "00000000",
+            0,
+            6,
+            crate::cli::HashAlgorithm::Sha1,
+        )
+        .expect("ocra");
         assert_eq!(code.value, "196958");
         assert_eq!(code.numeric, 196_958);
         assert_eq!(code.digits, 6);
@@ -1203,24 +1187,44 @@ mod tests {
     #[test]
     fn counter_change_changes_response_sha1() {
         let key = write_key(b"12345678901234567890");
-        let c0 =
-            compute_ocra_code(key.path(), "12345678", 0, 6, crate::cli::HashAlgorithm::Sha1)
-                .expect("c0");
-        let c1 =
-            compute_ocra_code(key.path(), "12345678", 1, 6, crate::cli::HashAlgorithm::Sha1)
-                .expect("c1");
+        let c0 = compute_ocra_code(
+            key.path(),
+            "12345678",
+            0,
+            6,
+            crate::cli::HashAlgorithm::Sha1,
+        )
+        .expect("c0");
+        let c1 = compute_ocra_code(
+            key.path(),
+            "12345678",
+            1,
+            6,
+            crate::cli::HashAlgorithm::Sha1,
+        )
+        .expect("c1");
         assert_ne!(c0.numeric, c1.numeric);
     }
 
     #[test]
     fn challenge_change_changes_response_sha1() {
         let key = write_key(b"12345678901234567890");
-        let c0 =
-            compute_ocra_code(key.path(), "00000000", 0, 6, crate::cli::HashAlgorithm::Sha1)
-                .expect("c0");
-        let c1 =
-            compute_ocra_code(key.path(), "12345678", 0, 6, crate::cli::HashAlgorithm::Sha1)
-                .expect("c1");
+        let c0 = compute_ocra_code(
+            key.path(),
+            "00000000",
+            0,
+            6,
+            crate::cli::HashAlgorithm::Sha1,
+        )
+        .expect("c0");
+        let c1 = compute_ocra_code(
+            key.path(),
+            "12345678",
+            0,
+            6,
+            crate::cli::HashAlgorithm::Sha1,
+        )
+        .expect("c1");
         assert_ne!(c0.numeric, c1.numeric);
     }
 
@@ -1229,21 +1233,36 @@ mod tests {
         let short_key: [u8; 15] = [1u8; 15];
         assert_eq!(short_key.len(), 15);
         let key = write_key(&short_key);
-        let err =
-            compute_ocra_code(key.path(), "00000000", 0, 6, crate::cli::HashAlgorithm::Sha1)
-                .expect_err("must reject 15-byte key");
+        let err = compute_ocra_code(
+            key.path(),
+            "00000000",
+            0,
+            6,
+            crate::cli::HashAlgorithm::Sha1,
+        )
+        .expect_err("must reject 15-byte key");
         assert!(err.contains("InvalidKeyLength") || err.contains("key"));
     }
 
     #[test]
     fn digits_out_of_range_rejected() {
         let key = write_key(b"12345678901234567890");
-        let err3 =
-            compute_ocra_code(key.path(), "00000000", 0, 3, crate::cli::HashAlgorithm::Sha1)
-                .expect_err("3 digits rejected");
-        let err11 =
-            compute_ocra_code(key.path(), "00000000", 0, 11, crate::cli::HashAlgorithm::Sha1)
-                .expect_err("11 digits rejected");
+        let err3 = compute_ocra_code(
+            key.path(),
+            "00000000",
+            0,
+            3,
+            crate::cli::HashAlgorithm::Sha1,
+        )
+        .expect_err("3 digits rejected");
+        let err11 = compute_ocra_code(
+            key.path(),
+            "00000000",
+            0,
+            11,
+            crate::cli::HashAlgorithm::Sha1,
+        )
+        .expect_err("11 digits rejected");
         assert!(err3.contains("digits") || err3.contains("parameter"));
         assert!(err11.contains("digits") || err11.contains("parameter"));
     }
@@ -1476,8 +1495,8 @@ mod tests {
         use origin_crypto_sdk::drbg::otp::{format_code, hotp, HashAlgorithm};
         let secret = b"12345678901234567890";
         let expected = [
-            "755224", "287082", "359152", "969429", "338314",
-            "254676", "287922", "162583", "399871", "520489",
+            "755224", "287082", "359152", "969429", "338314", "254676", "287922", "162583",
+            "399871", "520489",
         ];
         for (i, exp) in expected.iter().enumerate() {
             let code = hotp(secret, i as u64, 6, HashAlgorithm::Sha1);
@@ -1674,6 +1693,9 @@ mod tests {
         let mut args = empty_code_args();
         args.ocra = false;
         let err = cmd_code(args).expect_err("no vault must error");
-        assert!(err.contains("vault") || err.contains("TOTP"), "error: {err}");
+        assert!(
+            err.contains("vault") || err.contains("TOTP"),
+            "error: {err}"
+        );
     }
 }

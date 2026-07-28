@@ -268,17 +268,17 @@ fn cmd_encrypt_stream(
 
     // Open input.
     let mut reader: Box<dyn Read> = match &args.input {
-        Some(p) => Box::new(
-            std::fs::File::open(p).map_err(|e| format!("cannot open '{}': {e}", p))?,
-        ),
+        Some(p) => {
+            Box::new(std::fs::File::open(p).map_err(|e| format!("cannot open '{}': {e}", p))?)
+        }
         None => Box::new(std::io::stdin()),
     };
 
     // Open output.
     let mut writer: Box<dyn Write> = match &args.output {
-        Some(p) => Box::new(
-            std::fs::File::create(p).map_err(|e| format!("cannot create '{}': {e}", p))?,
-        ),
+        Some(p) => {
+            Box::new(std::fs::File::create(p).map_err(|e| format!("cannot create '{}': {e}", p))?)
+        }
         None => Box::new(std::io::stdout()),
     };
 
@@ -469,9 +469,7 @@ fn cmd_decrypt_stream(
     writer.flush().map_err(|e| format!("flush: {e}"))?;
 
     if args.output.is_none() {
-        eprintln!(
-            "unsealed {total_plain} bytes from {counter} chunks (streamed)"
-        );
+        eprintln!("unsealed {total_plain} bytes from {counter} chunks (streamed)");
     }
     Ok(())
 }
@@ -489,8 +487,7 @@ fn resolve_seed(
 ) -> Result<[u8; 32], String> {
     match (seed_hex, blob_path) {
         (Some(h), None) => {
-            let bytes =
-                hex::decode(h.trim()).map_err(|e| format!("invalid hex seed: {e}"))?;
+            let bytes = hex::decode(h.trim()).map_err(|e| format!("invalid hex seed: {e}"))?;
             if bytes.len() != 32 {
                 return Err(format!("seed must be 32 bytes, got {}", bytes.len()));
             }
@@ -499,8 +496,7 @@ fn resolve_seed(
             Ok(arr)
         }
         (None, Some(p)) => {
-            let blob =
-                std::fs::read(p).map_err(|e| format!("cannot read blob '{}': {e}", p))?;
+            let blob = std::fs::read(p).map_err(|e| format!("cannot read blob '{}': {e}", p))?;
             let passphrase = resolve_passphrase(passphrase_file.as_deref())?;
             recover_seed(&blob, passphrase.as_bytes(), tier)
                 .map_err(|_| "blob decryption failed (wrong passphrase or corrupt)".to_string())
@@ -552,7 +548,10 @@ pub fn cmd_verify(args: VerifyArgs) -> Result<(), String> {
     let (ed_bytes, falcon_bytes) = parse_signature(&sig_bytes)?;
 
     if ed_bytes.len() != 64 {
-        return Err(format!("ed25519 signature must be 64 bytes, got {}", ed_bytes.len()));
+        return Err(format!(
+            "ed25519 signature must be 64 bytes, got {}",
+            ed_bytes.len()
+        ));
     }
     let mut ed_sig = [0u8; 64];
     ed_sig.copy_from_slice(&ed_bytes);
@@ -597,7 +596,10 @@ fn resolve_verify_pubkeys(
         let seed = *store.seed_bytes();
         let bundle = HybridSigningKeyBundle::from_seed(&seed, &args.domain)
             .map_err(|e| format!("key derivation failed: {e:?}"))?;
-        return Ok((bundle.ed25519_pk().to_bytes(), bundle.falcon1024_pk().clone()));
+        return Ok((
+            bundle.ed25519_pk().to_bytes(),
+            bundle.falcon1024_pk().clone(),
+        ));
     }
 
     // Path B: derive from seed/blob (has both keys).
@@ -619,7 +621,10 @@ fn resolve_verify_pubkeys(
     let ed_bytes =
         hex::decode(ed_hex.trim()).map_err(|e| format!("invalid ed25519 pubkey hex: {e}"))?;
     if ed_bytes.len() != 32 {
-        return Err(format!("ed25519 pubkey must be 32 bytes, got {}", ed_bytes.len()));
+        return Err(format!(
+            "ed25519 pubkey must be 32 bytes, got {}",
+            ed_bytes.len()
+        ));
     }
     let mut ed_pk = [0u8; 32];
     ed_pk.copy_from_slice(&ed_bytes);
@@ -790,7 +795,11 @@ mod tests {
 
     #[test]
     fn tier_byte_roundtrip() {
-        for t in [MemoryTier::Nano, MemoryTier::Standard, MemoryTier::Sovereign] {
+        for t in [
+            MemoryTier::Nano,
+            MemoryTier::Standard,
+            MemoryTier::Sovereign,
+        ] {
             assert_eq!(tier_from_byte_fn(tier_to_byte(t)).unwrap(), t);
         }
         assert!(tier_from_byte_fn(9).is_err());

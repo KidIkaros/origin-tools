@@ -1,7 +1,11 @@
 use clap::{Parser, Subcommand};
 
 #[derive(Parser)]
-#[command(name = "origin-proof", version, about = "Integrity proofs — Merkle Mountain Range")]
+#[command(
+    name = "origin-proof",
+    version,
+    about = "Integrity proofs — Merkle Mountain Range"
+)]
 pub struct Cli {
     #[command(subcommand)]
     pub command: Commands,

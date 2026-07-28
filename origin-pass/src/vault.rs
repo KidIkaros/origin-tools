@@ -16,8 +16,8 @@ use std::io::Read;
 use std::path::Path;
 
 use origin_crypto_sdk::{
-    chacha20_blake3::ChaCha20Blake3, kdf::Argon2idBuilder, kdf::hkdf::hkdf_sha3_256,
-    sha3_256, tier::MemoryTier,
+    chacha20_blake3::ChaCha20Blake3, kdf::hkdf::hkdf_sha3_256, kdf::Argon2idBuilder, sha3_256,
+    tier::MemoryTier,
 };
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
@@ -117,7 +117,9 @@ pub fn tier_from_byte(b: u8) -> Result<MemoryTier, String> {
         0 => Ok(MemoryTier::Nano),
         1 => Ok(MemoryTier::Standard),
         2 => Ok(MemoryTier::Sovereign),
-        _ => Err(format!("unknown tier byte 0x{b:02x}; vault file is corrupt")),
+        _ => Err(format!(
+            "unknown tier byte 0x{b:02x}; vault file is corrupt"
+        )),
     }
 }
 
@@ -229,11 +231,9 @@ impl EntryMetadata {
     pub fn to_wire(&self) -> [u8; ENTRY_METADATA_LEN] {
         let mut buf = [0u8; ENTRY_METADATA_LEN];
         buf[..NAME_HASH_LEN].copy_from_slice(&self.name_hash);
-        buf[NAME_HASH_LEN..NAME_HASH_LEN + ENTRY_NONCE_LEN]
-            .copy_from_slice(&self.entry_nonce);
+        buf[NAME_HASH_LEN..NAME_HASH_LEN + ENTRY_NONCE_LEN].copy_from_slice(&self.entry_nonce);
         let len_be = self.entry_ct_len.to_be_bytes();
-        buf[NAME_HASH_LEN + ENTRY_NONCE_LEN
-            ..NAME_HASH_LEN + ENTRY_NONCE_LEN + ENTRY_CT_LEN_FIELD]
+        buf[NAME_HASH_LEN + ENTRY_NONCE_LEN..NAME_HASH_LEN + ENTRY_NONCE_LEN + ENTRY_CT_LEN_FIELD]
             .copy_from_slice(&len_be);
         let off = NAME_HASH_LEN + ENTRY_NONCE_LEN + ENTRY_CT_LEN_FIELD;
         buf[off] = self.type_tag;
@@ -257,8 +257,7 @@ impl EntryMetadata {
         let mut name_hash = [0u8; NAME_HASH_LEN];
         name_hash.copy_from_slice(&bytes[..NAME_HASH_LEN]);
         let mut entry_nonce = [0u8; ENTRY_NONCE_LEN];
-        entry_nonce
-            .copy_from_slice(&bytes[NAME_HASH_LEN..NAME_HASH_LEN + ENTRY_NONCE_LEN]);
+        entry_nonce.copy_from_slice(&bytes[NAME_HASH_LEN..NAME_HASH_LEN + ENTRY_NONCE_LEN]);
         let entry_ct_len = u32::from_be_bytes([
             bytes[NAME_HASH_LEN + ENTRY_NONCE_LEN],
             bytes[NAME_HASH_LEN + ENTRY_NONCE_LEN + 1],
@@ -440,7 +439,7 @@ impl VaultHeader {
                 bytes.len()
             ));
         }
-        if &bytes[..4] != &MAGIC {
+        if bytes[..4] != MAGIC {
             return Err("vault magic mismatch — not an OVLT file (or wrong version)".to_string());
         }
         if bytes[4] != VERSION {
@@ -548,9 +547,8 @@ impl Vault {
 pub fn init_vault(path: &Path, passphrase: &str, tier: MemoryTier) -> Result<(), String> {
     if let Some(parent) = path.parent() {
         if !parent.as_os_str().is_empty() {
-            std::fs::create_dir_all(parent).map_err(|e| {
-                format!("cannot create vault parent {}: {e}", parent.display())
-            })?;
+            std::fs::create_dir_all(parent)
+                .map_err(|e| format!("cannot create vault parent {}: {e}", parent.display()))?;
         }
     }
     if path.exists() {
@@ -627,7 +625,9 @@ pub fn unlock_vault(path: &Path, passphrase: &str) -> Result<Vault, String> {
     //    implementation.
     let header_ct = &data[HEADER_BYTES_LEN..HEADER_BYTES_LEN + header.header_ct_len];
     let index_bytes = ChaCha20Blake3::decrypt(&header_key, &header.header_nonce, header_ct, &[])
-        .map_err(|_| "vault unlock failed (decryption — wrong passphrase or corrupt header)".to_string())?;
+        .map_err(|_| {
+            "vault unlock failed (decryption — wrong passphrase or corrupt header)".to_string()
+        })?;
     let mut metadata = parse_index_bytes(&index_bytes)?;
     let _total_len = read_total_entry_len(&metadata)?;
 
@@ -664,8 +664,8 @@ pub fn unlock_vault(path: &Path, passphrase: &str) -> Result<Vault, String> {
         let ct = &data[start..end];
         let entry_key = derive_entry_key(master_key.as_ref(), &meta.entry_nonce);
         let aad = build_entry_aad(&meta.name_hash, &meta.entry_nonce);
-        let plaintext = ChaCha20Blake3::decrypt(&entry_key, &meta.entry_nonce, ct, &aad)
-            .map_err(|e| {
+        let plaintext =
+            ChaCha20Blake3::decrypt(&entry_key, &meta.entry_nonce, ct, &aad).map_err(|e| {
                 let _ = e;
                 format!(
                     "entry decryption failed (entry name_hash={})",
@@ -705,14 +705,13 @@ pub fn persist_vault(path: &Path, vault: &Vault) -> Result<(), String> {
         let name_hash = hash_name(name);
         let entry_key = derive_entry_key(vault.master_key.as_ref(), &entry_nonce);
         let aad = build_entry_aad(&name_hash, &entry_nonce);
-        let json = serde_json::to_vec(payload)
-            .map_err(|e| format!("serialize entry payload: {e}"))?;
+        let json =
+            serde_json::to_vec(payload).map_err(|e| format!("serialize entry payload: {e}"))?;
         let ct = ChaCha20Blake3::encrypt(&entry_key, &entry_nonce, &json, &aad)
             .map_err(|e| format!("ChaCha20-BLAKE3 encrypt entry: {e:?}"))?;
 
         // Determine type_tag + algo + period + digits from payload.
-        let (type_tag, algo, period_secs, digits) =
-            payload_to_type_tag_algo_period_digits(payload);
+        let (type_tag, algo, period_secs, digits) = payload_to_type_tag_algo_period_digits(payload);
         let meta = EntryMetadata {
             name_hash,
             name: name.clone(),
@@ -753,12 +752,7 @@ pub fn persist_vault(path: &Path, vault: &Vault) -> Result<(), String> {
     for (_, ct) in &entry_data {
         payload_bytes.extend_from_slice(ct);
     }
-    write_atomic(
-        path,
-        &new_header.to_wire(),
-        &header_ct,
-        &payload_bytes,
-    )?;
+    write_atomic(path, &new_header.to_wire(), &header_ct, &payload_bytes)?;
     Ok(())
 }
 
@@ -878,17 +872,19 @@ fn decrypt_header_ct_legacy(
 /// Atomic file write: write header + header_ct + payload to a tmp
 /// sibling in the same directory, then rename. Single fsync on the
 /// renamed file.
-fn write_atomic(path: &Path, header_bytes: &[u8], header_ct: &[u8], entry_payload: &[u8]) -> Result<(), String> {
+fn write_atomic(
+    path: &Path,
+    header_bytes: &[u8],
+    header_ct: &[u8],
+    entry_payload: &[u8],
+) -> Result<(), String> {
     use std::io::Write;
     let pid = std::process::id();
     let nano = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_nanos())
         .unwrap_or(0);
-    let base_name = path
-        .file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or("vault");
+    let base_name = path.file_name().and_then(|n| n.to_str()).unwrap_or("vault");
     let tmp_name = format!("{base_name}.{pid}.{nano}.tmp");
     let tmp = path.with_file_name(tmp_name);
 
@@ -934,10 +930,7 @@ fn payload_to_type_tag_algo_period_digits(p: &EntryPayload) -> (u8, u8, u16, u8)
             Some("SHA512") | Some("sha512") => ALGO_SHA512,
             _ => ALGO_SHA256,
         };
-        let digits = totp
-            .get("digits")
-            .and_then(|v| v.as_u64())
-            .unwrap_or(6) as u8;
+        let digits = totp.get("digits").and_then(|v| v.as_u64()).unwrap_or(6) as u8;
         let period = totp.get("period").and_then(|v| v.as_u64()).unwrap_or(30) as u16;
         (a, period, digits)
     } else if let Some(ref ocra) = p.ocra {
@@ -968,7 +961,11 @@ mod tests {
 
     #[test]
     fn tier_round_trip_byte() {
-        for t in [MemoryTier::Nano, MemoryTier::Standard, MemoryTier::Sovereign] {
+        for t in [
+            MemoryTier::Nano,
+            MemoryTier::Standard,
+            MemoryTier::Sovereign,
+        ] {
             let b = tier_byte(t);
             let back = tier_from_byte(b).expect("tier from byte");
             assert_eq!(t, back);
@@ -1069,7 +1066,9 @@ mod tests {
         let path = dir.path().join("test.vault");
         let mut vault = unlock_vault_for_init(&path, MemoryTier::Nano);
         let secret = "SECRET_THAT_SHOULD_NEVER_LEAK_INTO_THE_FILE_AAAAAAAAAA";
-        vault.add_entry(EntryPayload::password("github.com", secret)).expect("add");
+        vault
+            .add_entry(EntryPayload::password("github.com", secret))
+            .expect("add");
         persist_vault(&path, &vault).expect("persist");
 
         let bytes = std::fs::read(&path).expect("read");
@@ -1087,8 +1086,7 @@ mod tests {
         let path = dir.path().join("test.vault");
         init_vault(&path, "pw", MemoryTier::Nano).unwrap();
         {
-            let mut vault =
-                unlock_vault(&path, "pw").expect("unlock empty");
+            let mut vault = unlock_vault(&path, "pw").expect("unlock empty");
             vault
                 .add_entry(EntryPayload::totp(
                     "github",

@@ -1,7 +1,11 @@
 use clap::{Parser, Subcommand};
 
 #[derive(Parser)]
-#[command(name = "origin-stealth", version, about = "Stealth addresses and proof-of-work")]
+#[command(
+    name = "origin-stealth",
+    version,
+    about = "Stealth addresses and proof-of-work"
+)]
 pub struct Cli {
     #[command(subcommand)]
     pub command: Commands,
@@ -82,11 +86,23 @@ pub struct VerifyArgs {
     #[arg(short, long)]
     pub proof: String,
 
-    /// Difficulty
+    /// Difficulty (used only for display; actual difficulty comes from proof)
     #[arg(long, default_value = "16")]
     pub difficulty: u32,
 
     /// Address index
     #[arg(long)]
     pub index: u64,
+
+    /// Seed (hex) — used to reconstruct identity_pk if not in proof
+    #[arg(long)]
+    pub seed: Option<String>,
+
+    /// Use the suite identity to reconstruct identity_pk
+    #[arg(long)]
+    pub identity: bool,
+
+    /// Passphrase file for identity
+    #[arg(long)]
+    pub passphrase_file: Option<String>,
 }

@@ -11,10 +11,8 @@ pub fn resolve_passphrase(passphrase_file: Option<&str>) -> Result<String, Strin
                 .map_err(|e| format!("cannot read passphrase file '{}': {e}", path))?;
             Ok(s.trim_end_matches('\n').trim_end_matches('\r').to_string())
         }
-        None => {
-            rpassword::prompt_password("Passphrase: ")
-                .map_err(|e| format!("passphrase prompt failed: {e}"))
-        }
+        None => rpassword::prompt_password("Passphrase: ")
+            .map_err(|e| format!("passphrase prompt failed: {e}")),
     }
 }
 
