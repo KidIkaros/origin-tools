@@ -10,27 +10,41 @@ verify single or batch signatures.
 
 ## Commands
 
-| Command      | Description                                     |
-|--------------|-------------------------------------------------|
-| `keygen`     | Generate a Schnorr keypair from a seed          |
-| `prove`      | Create a proof of knowledge for data            |
-| `verify`     | Verify a single proof                           |
-| `batch-verify` | Verify multiple proofs in a batch             |
+| Command        | Description                                     |
+|----------------|-------------------------------------------------|
+| `keygen`       | Generate a Schnorr keypair from a seed          |
+| `prove`        | Create a proof of knowledge of a secret key     |
+| `verify`       | Verify a single proof                           |
+| `batch-verify` | Verify multiple proofs from a JSON array file   |
 
 ## Usage
 
 ```bash
-# Generate a keypair
-origin-schnorr keygen --seed <hex>
+# Generate a keypair from a seed
+origin schnorr keygen --seed <hex>
 
-# Create a proof
-origin-schnorr prove --input message.txt --seed <hex> --output proof.json
+# Generate a keypair from your suite identity
+origin schnorr keygen --identity --passphrase-file pass.txt
+
+# Create a proof of knowledge
+origin schnorr prove --input message.txt --secret <hex> --public <hex>
 
 # Verify a proof
-origin-schnorr verify --proof proof.json --input message.txt
+origin schnorr verify --proof proof.json --input message.txt
 
-# Batch verify multiple proofs
-origin-schnorr batch-verify --proofs proofs/ --inputs messages/
+# Batch verify multiple proofs from a JSON array file
+origin schnorr batch-verify --input proofs.json
+```
+
+## Batch Verify Format
+
+The `--input` file is a JSON array of objects:
+
+```json
+[
+  { "proof": "...", "public_key": "...", "message": "..." },
+  { "proof": "...", "public_key": "...", "message": "..." }
+]
 ```
 
 ## How It Works

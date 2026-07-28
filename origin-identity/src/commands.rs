@@ -982,6 +982,25 @@ pub fn cmd_rotate_passphrase(args: RotatePassphraseArgs) -> Result<(), String> {
     Ok(())
 }
 
+// ── Dispatch ───────────────────────────────────────────────────────
+
+/// Dispatch a parsed CLI to the matching command implementation.
+pub fn dispatch(cli: crate::cli::Cli) -> Result<(), String> {
+    use crate::cli::Commands;
+    match cli.command {
+        Commands::Keygen(args) => cmd_keygen(args),
+        Commands::Sign(args) => cmd_sign(args),
+        Commands::Verify(args) => cmd_verify(args),
+        Commands::List(args) => cmd_list(args),
+        Commands::Import(args) => cmd_import(args),
+        Commands::Show(args) => cmd_show(args),
+        Commands::Rename(args) => cmd_rename(args),
+        Commands::Delete(args) => cmd_delete(args),
+        Commands::ExportPubkey(args) => cmd_export_pubkey(args),
+        Commands::RotatePassphrase(args) => cmd_rotate_passphrase(args),
+    }
+}
+
 // ── Tests ──────────────────────────────────────────────────────────
 
 #[cfg(test)]

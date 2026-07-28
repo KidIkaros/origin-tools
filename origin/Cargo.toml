@@ -1,0 +1,23 @@
+[package]
+name = "origin"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Unified CLI for the origin-tools cryptographic suite"
+
+[[bin]]
+name = "origin"
+path = "src/main.rs"
+
+[dependencies]
+origin-identity.workspace = true
+origin-pass.workspace = true
+origin-seal.workspace = true
+origin-seed.workspace = true
+origin-shard.workspace = true
+origin-proof.workspace = true
+origin-stealth.workspace = true
+origin-entropy.workspace = true
+origin-schnorr.workspace = true
+clap.workspace = true

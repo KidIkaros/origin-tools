@@ -1,6 +1,7 @@
 # Cookbook
 
-Practical recipes for composing origin-tools.
+Practical recipes for composing origin-tools. All examples use the unified
+`origin` binary; the standalone `origin-*` binaries accept identical flags.
 
 ---
 
@@ -8,10 +9,10 @@ Practical recipes for composing origin-tools.
 
 ```bash
 # Initialize your identity (one-time)
-origin-identity init
+origin identity keygen --name personal
 
-# Verify it works
-origin-identity list
+# List identities
+origin identity list
 ```
 
 ## Recipe 1: Encrypted File Sharing
@@ -19,16 +20,18 @@ origin-identity list
 Split a file, encrypt each shard, share with different people.
 
 ```bash
-# Split into 6 shards (tolerate 2 missing)
-origin-shard split --input secret.pdf --output-dir ./shards --total 6 --data 4
+# Split into 4 data + 2 parity shards (tolerate 2 missing)
+origin shard split --input secret.pdf --output ./shards \
+  --data-shards 4 --parity-shards 2
 
 # Encrypt each shard
 for f in ./shards/shard_*.bin; do
-  origin-seal encrypt --input "$f" --output "${f}.enc" --passphrase-file pass.txt
+  origin seal encrypt --input "$f" --output "${f}.enc" --passphrase-file pass.txt
 done
 
-# Recipient recovers (needs any 4 shards)
-origin-shard recover --input-dir ./shards --output recovered.pdf
+# Recipient recovers (needs any 4 of the 6 shards)
+origin shard recover --input ./shards --output recovered.pdf \
+  --data-shards 4 --parity-shards 2
 ```
 
 ## Recipe 2: Deterministic Key Derivation
@@ -36,11 +39,11 @@ origin-shard recover --input-dir ./shards --output recovered.pdf
 Derive purpose-specific keys from your master seed.
 
 ```bash
-# Derive a signing key for "email"
-origin-seed derive --seed $(origin-identity show --seed) --domain "email" --index 0
+# Derive a child seed for "email"
+origin seed derive --seed $(origin seed generate) --domain "email"
 
-# Derive a separate key for "ssh"
-origin-seed derive --seed $(origin-identity show --seed) --domain "ssh" --index 0
+# Derive from your suite identity instead
+origin seed derive --identity --domain "wallet" --passphrase-file pass.txt
 
 # Different domains → completely different keys (HKDF-SHA3-256)
 ```
@@ -50,19 +53,18 @@ origin-seed derive --seed $(origin-identity show --seed) --domain "ssh" --index 
 Build an append-only log and prove membership.
 
 ```bash
-# Append entries
-origin-proof append --state log.json --data "entry 1"
-origin-proof append --state log.json --data "entry 2"
-origin-proof append --state log.json --data "entry 3"
+# Append entries (data is hex)
+origin proof append --state log.json --data 656e74727931 --output log.json
+origin proof append --state log.json --data 656e74727932 --output log.json
 
 # Get the root hash
-ROOT=$(origin-proof root --state log.json)
+ROOT=$(origin proof root --state log.json)
 
-# Generate a proof for entry 0
-origin-proof prove --state log.json --index 0 --output proof_0.json
+# Generate a proof for leaf 0
+origin proof prove --state log.json --index 0 > proof_0.json
 
 # Anyone can verify against the root
-origin-proof verify --proof proof_0.json --root "$ROOT"
+origin proof verify --proof proof_0.json --root "$ROOT"
 ```
 
 ## Recipe 4: Stealth Address + PoW
@@ -71,17 +73,16 @@ Create a stealth address and prove work to use it.
 
 ```bash
 # Derive stealth master keys
-origin-stealth master --seed $(origin-identity show --seed)
+origin stealth master --seed <hex>
 
-# Generate a one-time address
-origin-stealth address --seed $(origin-identity show --seed) --index 42
+# Generate a one-time address at index 42
+origin stealth address --seed <hex> --index 42
 
 # Solve a PoW challenge (difficulty = leading zero bits)
-origin-stealth solve --seed $(origin-identity show --seed) \
-  --difficulty 20 --destination "payment-hint" --output pow.json
+origin stealth solve --seed <hex> --index 42 --difficulty 20 > pow.json
 
 # Verify the proof
-origin-stealth verify --proof pow.json --destination "payment-hint"
+origin stealth verify --proof pow.json --index 42 --seed <hex>
 ```
 
 ## Recipe 5: Schnorr Proofs (Batch)
@@ -90,16 +91,16 @@ Prove knowledge across multiple messages efficiently.
 
 ```bash
 # Generate a keypair
-origin-schnorr keygen --seed $(origin-identity show --seed) --output keys.json
+origin schnorr keygen --seed <hex>
 
-# Create proofs for multiple messages
-for msg in msg1.txt msg2.txt msg3.txt; do
-  origin-schnorr prove --input "$msg" --seed $(origin-identity show --seed) \
-    --output "proof_${msg%.txt}.json"
-done
+# Create a proof of knowledge
+origin schnorr prove --input message.txt --secret <hex> --public <hex> > proof.json
 
-# Batch verify all at once
-origin-schnorr batch-verify --proofs ./proofs/ --inputs ./messages/
+# Verify it
+origin schnorr verify --proof proof.json --input message.txt
+
+# Batch verify from a JSON array of {proof, public_key, message}
+origin schnorr batch-verify --input proofs.json
 ```
 
 ## Recipe 6: Entropy Quality Gate
@@ -107,14 +108,11 @@ origin-schnorr batch-verify --proofs ./proofs/ --inputs ./messages/
 Verify data quality before using it as a seed.
 
 ```bash
-# Check entropy meets threshold
-origin-entropy check --input random.bin --min-entropy 7.9
+# Analyze the entropy distribution
+origin entropy analyze --input random.bin --format text
 
-# Analyze the distribution
-origin-entropy analyze --input random.bin
-
-# Generate verified random bytes
-origin-entropy generate --bits 256 --output seed.bin
+# Check quality against requirements for a 256-bit seed
+origin entropy check --input random.bin --bits 256
 ```
 
 ## Recipe 7: Full Pipeline (End-to-End)
@@ -123,35 +121,34 @@ The complete workflow tested in `origin-cross-tests`:
 
 ```bash
 # 1. Generate a seed
-SEED=$(origin-seed generate)
+SEED=$(origin seed generate)
 
 # 2. Encrypt it as a blob
-origin-seed blob --seed "$SEED" --passphrase-file pass.txt --output seed.enc
+origin seed blob-create --seed "$SEED" --output seed.blob --passphrase-file pass.txt
 
 # 3. Shard the encrypted blob
-origin-shard split --input seed.enc --output-dir ./shards --total 6 --data 4
+origin shard split --input seed.blob --output ./shards \
+  --data-shards 4 --parity-shards 2
 
 # 4. Lose 2 shards (simulate disaster)
 rm ./shards/shard_2.bin ./shards/shard_5.bin
 
 # 5. Recover from remaining 4 shards
-origin-shard recover --input-dir ./shards --output recovered.enc
+origin shard recover --input ./shards --output recovered.blob \
+  --data-shards 4 --parity-shards 2
 
 # 6. Decrypt the recovered blob
-RECOVERED_SEED=$(origin-seed recover --input recovered.enc --passphrase-file pass.txt)
+RECOVERED_SEED=$(origin seed blob-recover --input recovered.blob --passphrase-file pass.txt)
 
 # 7. Verify seed integrity
 [ "$SEED" = "$RECOVERED_SEED" ] && echo "Pipeline OK"
-
-# 8. Sign with the recovered seed
-origin-schnorr prove --input message.txt --seed "$RECOVERED_SEED" --output proof.json
-origin-schnorr verify --proof proof.json --input message.txt
 ```
 
 ## Tips
 
 - **Isolated testing**: Set `ORIGIN_HOME=/tmp/test-origin` to avoid
   touching your real identity.
-- **CI tier**: Use `nano` tier in CI for fast Argon2id (64 MiB, 3 iterations).
-- **Piping**: All tools accept `--input -` for stdin and `--output -` for stdout.
-- **Formats**: Default output is hex. Use `--format base64` where supported.
+- **CI tier**: Use `--tier nano` for fast Argon2id (64 MiB, 3 iterations).
+- **Piping**: All tools accept stdin/stdout by default (omit `--input`/`--output`).
+- **Identity**: Most tools accept `--identity` to derive from your suite
+  identity instead of passing an explicit `--seed`.

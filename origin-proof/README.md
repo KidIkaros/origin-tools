@@ -14,23 +14,23 @@ membership proofs against a root hash.
 |-----------|----------------------------------------------------|
 | `append`  | Append data to an MMR and output the new state     |
 | `root`    | Compute the current MMR root hash                  |
-| `prove`   | Generate an authentication path for a leaf         |
-| `verify`  | Verify a leaf against an MMR root                  |
+| `prove`   | Generate a membership proof for a leaf             |
+| `verify`  | Verify a membership proof against a root hash      |
 
 ## Usage
 
 ```bash
 # Append data to an MMR (creates state file if new)
-origin-proof append --state mmr.json --data "block 1"
+origin proof append --state mmr.json --data <hex> --output mmr.json
 
 # Get the current root
-origin-proof root --state mmr.json
+origin proof root --state mmr.json
 
 # Generate a proof for leaf index 0
-origin-proof prove --state mmr.json --index 0 --output proof.json
+origin proof prove --state mmr.json --index 0 > proof.json
 
-# Verify a proof
-origin-proof verify --proof proof.json --root <hex>
+# Verify a proof against a root
+origin proof verify --proof proof.json --root <hex>
 ```
 
 ## How It Works

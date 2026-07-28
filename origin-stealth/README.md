@@ -13,7 +13,7 @@ create/verify identity-bound proofs of work.
 | Command   | Description                                        |
 |-----------|----------------------------------------------------|
 | `master`  | Derive stealth master keys from a seed             |
-| `address` | Generate a one-time stealth address                |
+| `address` | Generate a stealth address at a specific index     |
 | `solve`   | Solve a proof-of-work challenge                    |
 | `verify`  | Verify a proof-of-work solution                    |
 
@@ -21,21 +21,24 @@ create/verify identity-bound proofs of work.
 
 ```bash
 # Derive stealth master keys
-origin-stealth master --seed <hex>
+origin stealth master --seed <hex>
 
-# Generate a stealth address
-origin-stealth address --seed <hex> --index 0
+# Generate a stealth address at index 0
+origin stealth address --seed <hex> --index 0
 
-# Solve a PoW challenge (identity-bound)
-origin-stealth solve --seed <hex> --difficulty 20 --destination "hint"
+# Solve a PoW challenge (difficulty = leading zero bits)
+origin stealth solve --seed <hex> --index 0 --difficulty 20
 
 # Verify a PoW proof
-origin-stealth verify --proof proof.json --destination "hint"
+origin stealth verify --proof proof.json --index 0 --seed <hex>
+
+# Use your suite identity instead of an explicit seed
+origin stealth solve --identity --index 0 --difficulty 20 --passphrase-file pass.txt
 ```
 
 ## How It Works
 
-- Stealth addresses use ECDH with a one-time nonce.
+- Stealth addresses use ECDH with a one-time nonce at a given index.
 - PoW is identity-bound: the hash includes `identity_pk`, `destination_hint`,
   `nonce`, `extra`, and `counter`.
 - Verification uses the SDK's `stealth::pow::verify()` — not an ad-hoc hash.

@@ -1,5 +1,6 @@
 [workspace]
 members = [
+    "origin",
     "origin-common",
     "origin-identity",
     "origin-pass",
@@ -22,6 +23,16 @@ authors = ["Origin SDK Contributors"]
 
 [workspace.dependencies]
 origin-crypto-sdk = { path = "../origin-crypto-sdk" }
+origin-common = { path = "origin-common" }
+origin-identity = { path = "origin-identity" }
+origin-pass = { path = "origin-pass" }
+origin-seal = { path = "origin-seal" }
+origin-seed = { path = "origin-seed" }
+origin-shard = { path = "origin-shard" }
+origin-proof = { path = "origin-proof" }
+origin-stealth = { path = "origin-stealth" }
+origin-entropy = { path = "origin-entropy" }
+origin-schnorr = { path = "origin-schnorr" }
 clap = { version = "4", features = ["derive"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

@@ -781,6 +781,22 @@ pub fn ensure_parent(path: &Path) -> Result<(), String> {
     Ok(())
 }
 
+// ── Dispatch ───────────────────────────────────────────────────────
+
+/// Dispatch a parsed CLI to the matching command implementation.
+pub fn dispatch(cli: crate::cli::Cli) -> Result<(), String> {
+    use crate::cli::Commands;
+    match cli.command {
+        Commands::Hash(args) => cmd_hash(args),
+        Commands::Encrypt(args) => cmd_encrypt(args),
+        Commands::Decrypt(args) => cmd_decrypt(args),
+        Commands::Sign(args) => cmd_sign(args),
+        Commands::Verify(args) => cmd_verify(args),
+        Commands::Kdf(args) => cmd_kdf(args),
+        Commands::Mac(args) => cmd_mac(args),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

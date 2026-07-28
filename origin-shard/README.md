@@ -3,8 +3,8 @@
 Reed-Solomon erasure coding for data sharding and recovery, built on
 [`origin-crypto-sdk`](https://github.com/KidIkaros/OriginSDK).
 
-Split any data into N shards with configurable redundancy. Recover from
-missing shards using erasure-based decoding.
+Split any data into data + parity shards. Recover from missing shards
+using erasure-based decoding.
 
 ---
 
@@ -12,30 +12,33 @@ missing shards using erasure-based decoding.
 
 | Command   | Description                                        |
 |-----------|----------------------------------------------------|
-| `split`   | Split data into N shards (systematic RS code)      |
+| `split`   | Split data into data + parity shards (RS code)     |
 | `recover` | Recover original data from available shards        |
-| `info`    | Show shard metadata and integrity info             |
 
 ## Usage
 
 ```bash
-# Split a file into 6 shards (4 data + 2 parity)
-origin-shard split --input secret.dat --output-dir ./shards --total 6 --data 4
+# Split a file into 3 data + 2 parity shards (defaults)
+origin shard split --input secret.dat --output ./shards
 
-# Recover from shards (tolerates up to 2 missing)
-origin-shard recover --input-dir ./shards --output recovered.dat
+# Custom shard counts: 4 data + 2 parity
+origin shard split --input secret.dat --output ./shards \
+  --data-shards 4 --parity-shards 2
 
-# Inspect a shard
-origin-shard info --input ./shards/shard_0.bin
+# Recover from shards (tolerates up to `parity-shards` missing)
+origin shard recover --input ./shards --output recovered.dat
+
+# Recover from stdin/stdout for piping
+origin shard recover --input ./shards > recovered.dat
 ```
 
 ## How It Works
 
-Uses a systematic `[N, K]` Reed-Solomon code over GF(256):
-- `K` data shards contain the original data
-- `N - K` parity shards enable recovery
+Uses a systematic Reed-Solomon code over GF(256):
+- `data-shards` contain the original data
+- `parity-shards` enable recovery
 - Recovery uses `decode_shards()` with explicit erasure locations
-- Can recover from up to `N - K` missing shards
+- Can recover from up to `parity-shards` missing shards
 
 ## Security Notes
 

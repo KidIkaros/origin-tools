@@ -1114,6 +1114,28 @@ fn entry_kind(entry: &EntryPayload) -> &'static str {
 }
 
 // ──────────────────────────────────────────────────────────────────────
+// Dispatch
+// ──────────────────────────────────────────────────────────────────────
+
+/// Dispatch a parsed CLI to the matching command implementation.
+pub fn dispatch(cli: crate::cli::Cli) -> Result<(), String> {
+    use crate::cli::Commands;
+    match cli.command {
+        Commands::Init(args) => cmd_init(args),
+        Commands::Unlock(args) => cmd_unlock(args),
+        Commands::Lock(args) => cmd_lock(args),
+        Commands::Add(args) => cmd_add(args),
+        Commands::Get(args) => cmd_get(args),
+        Commands::List(args) => cmd_list(args),
+        Commands::Rm(args) => cmd_rm(args),
+        Commands::Code(args) => cmd_code(args),
+        Commands::ExportQr(args) => cmd_export_qr(args),
+        Commands::ImportQr(args) => cmd_import_qr(args),
+        Commands::ChangePassphrase(args) => cmd_change_passphrase(args),
+    }
+}
+
+// ──────────────────────────────────────────────────────────────────────
 // Tests — RFC 6287 §A.1 + edge cases + vault round-trips
 // ──────────────────────────────────────────────────────────────────────
 

@@ -3,8 +3,8 @@
 Entropy analysis and quality gating built on
 [`origin-crypto-sdk`](https://github.com/KidIkaros/OriginSDK).
 
-Analyze the entropy of data, run quality checks, and generate
-cryptographically secure random bytes.
+Analyze the entropy of data and run quality checks against requirements
+for a given bit size.
 
 ---
 
@@ -13,8 +13,7 @@ cryptographically secure random bytes.
 | Command   | Description                                        |
 |-----------|----------------------------------------------------|
 | `analyze` | Compute Shannon entropy and byte distribution      |
-| `check`   | Run quality gates (min entropy, chi-squared)       |
-| `generate`| Generate cryptographically secure random bytes     |
+| `check`   | Check quality against requirements for a bit size  |
 
 ## Usage
 
@@ -22,18 +21,23 @@ cryptographically secure random bytes.
 # Analyze entropy of a file
 origin-entropy analyze --input data.bin
 
-# Check if data meets quality thresholds
-origin-entropy check --input data.bin --min-entropy 7.5
+# Analyze from stdin, text output
+cat data.bin | origin-entropy analyze --format text
 
-# Generate 32 random bytes
-origin-entropy generate --bits 256
+# Check if data meets quality requirements for a 256-bit seed
+origin-entropy check --input data.bin --bits 256
 ```
 
 ## Quality Gates
 
-- Shannon entropy threshold (configurable, default 7.5 bits/byte)
-- Chi-squared uniformity test
-- Byte distribution histogram
+- Shannon entropy measurement (bits/byte)
+- Byte distribution analysis
+- Quality check against expected bit size
+
+## Notes
+
+- This tool analyzes and gates entropy; it does not generate random bytes.
+  For random generation, use `origin-seed generate`.
 
 ## License
 

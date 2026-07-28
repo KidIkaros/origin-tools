@@ -1046,6 +1046,22 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "04744f49eae99ab78e0d5c0b603ab218f515ea8cfe5a456d7629ad883a3b6e7d"
 
 [[package]]
+name = "origin"
+version = "0.4.1"
+dependencies = [
+ "clap",
+ "origin-entropy",
+ "origin-identity",
+ "origin-pass",
+ "origin-proof",
+ "origin-schnorr",
+ "origin-seal",
+ "origin-seed",
+ "origin-shard",
+ "origin-stealth",
+]
+
+[[package]]
 name = "origin-common"
 version = "0.4.1"
 dependencies = [
