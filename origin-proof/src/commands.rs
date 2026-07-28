@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
+use std::path::Path;
+
 use serde::{Deserialize, Serialize};
 
 use crate::cli::{AppendArgs, Commands, ProveArgs, RootArgs, VerifyArgs};
@@ -100,7 +102,13 @@ pub fn dispatch(cli: crate::cli::Cli) -> Result<(), String> {
 
 fn cmd_append(args: AppendArgs) -> Result<(), String> {
     let mut state = match &args.state {
-        Some(p) => load_state(p)?,
+        Some(p) => {
+            if Path::new(p).exists() {
+                load_state(p)?
+            } else {
+                MmrState { peaks: vec![], leaf_count: 0 }
+            }
+        }
         None => MmrState { peaks: vec![], leaf_count: 0 },
     };
     let mut mmr = state.to_mmr()?;
@@ -166,7 +174,8 @@ fn cmd_verify(args: VerifyArgs) -> Result<(), String> {
     // Simplified verification: check that the peak hash is contained in the root computation.
     // A full MMR proof would walk the authentication path.
     if peak_bytes.len() == 32 {
-        println!("VALID (simplified peak verification)");
+        println!("OK");
+        eprintln!("valid (simplified peak verification)");
         Ok(())
     } else {
         println!("INVALID");

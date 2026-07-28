@@ -17,6 +17,7 @@ use origin_crypto_sdk::{
     blake3,
     blob::{create_blob, recover_seed},
     compression, hmac_sha3_256,
+    kdf::hkdf::hkdf_sha3_256,
     kdf::Argon2idBuilder,
     pqc::falcon1024,
     sha3_256, sha3_512,
@@ -133,12 +134,62 @@ fn validate_chunk_size(cs: usize) -> Result<usize, String> {
     Ok(cs)
 }
 
+/// Derive a 32-byte encryption key from the suite identity.
+///
+/// Uses HKDF-SHA3-256 over the master seed (IKM) with a domain-separation
+/// `info` string so each tool gets a distinct key from the same identity.
+/// This avoids an interactive passphrase prompt entirely when `--identity`
+/// is set.
+fn key_from_identity(domain: &str, passphrase_file: Option<&str>) -> Result<[u8; 32], String> {
+    use origin_common::OriginHome;
+
+    let home = OriginHome::load()?;
+    let passphrase = resolve_passphrase(passphrase_file)?;
+    let store = origin_common::IdentityStore::load(&home, &passphrase)?;
+    let seed = store.seed_bytes();
+
+    let mut okm = [0u8; 32];
+    hkdf_sha3_256(seed, None, domain.as_bytes(), &mut okm)
+        .map_err(|e| format!("HKDF key derivation failed: {e}"))?;
+    Ok(okm)
+}
+
 pub fn cmd_encrypt(args: EncryptArgs) -> Result<(), String> {
     let tier = parse_tier(&args.tier)?;
-    let passphrase = resolve_passphrase(args.passphrase_file.as_deref())?;
+
+    // Resolve the 32-byte encryption key. When `--identity` is set we derive it
+    // deterministically from the suite identity (no passphrase). Otherwise we use
+    // the supplied passphrase (or prompt for one) via Argon2id.
+    //
+    // For the passphrase path the key must be derived from the *same* salt that
+    // gets embedded in the envelope, so we generate the salt up front and reuse
+    // it for both key derivation (here) and envelope encoding (below).
+    let mut salt = [0u8; 16];
+    use rand::RngCore;
+    rand::thread_rng().fill_bytes(&mut salt);
+
+    let key_arr: [u8; 32] = if args.identity {
+        key_from_identity("origin-seal::encrypt", args.passphrase_file.as_deref())?
+    } else {
+        let passphrase = resolve_passphrase(args.passphrase_file.as_deref())?;
+        let key = tier_argon2(tier)
+            .derive(passphrase.as_bytes(), &salt)
+            .map_err(|e| format!("Argon2id failed: {e:?}"))?;
+        let mut ka = [0u8; 32];
+        ka.copy_from_slice(&key[..32]);
+        ka
+    };
 
     if args.stream {
-        return cmd_encrypt_stream(&args, tier, &passphrase);
+        // Streaming uses the passphrase-derived key path; when using identity we
+        // still need a passphrase for the Argon2id salt, so derive one from the
+        // identity-derived key (stable, deterministic).
+        let stream_pass = if args.identity {
+            hex::encode(key_arr)
+        } else {
+            resolve_passphrase(args.passphrase_file.as_deref())?
+        };
+        return cmd_encrypt_stream(&args, tier, &stream_pass);
     }
 
     let plaintext = read_input(args.input.as_deref())?;
@@ -152,19 +203,9 @@ pub fn cmd_encrypt(args: EncryptArgs) -> Result<(), String> {
         (plaintext, false)
     };
 
-    // Random salt + nonce.
-    let mut salt = [0u8; 16];
+    // Random nonce. (Salt already generated above.)
     let mut nonce = [0u8; 24];
-    use rand::RngCore;
-    rand::thread_rng().fill_bytes(&mut salt);
     rand::thread_rng().fill_bytes(&mut nonce);
-
-    // Derive key via Argon2id.
-    let key = tier_argon2(tier)
-        .derive(passphrase.as_bytes(), &salt)
-        .map_err(|e| format!("Argon2id failed: {e:?}"))?;
-    let mut key_arr = [0u8; 32];
-    key_arr.copy_from_slice(&key[..32]);
 
     let ct = XChaCha20Poly1305::encrypt(&key_arr, &nonce, &payload)
         .map_err(|e| format!("encryption failed: {e:?}"))?;
@@ -333,13 +374,20 @@ pub fn cmd_decrypt(args: DecryptArgs) -> Result<(), String> {
     let salt: [u8; 16] = envelope[8..24].try_into().unwrap();
     let base_nonce: [u8; 24] = envelope[24..48].try_into().unwrap();
 
-    let passphrase = resolve_passphrase(args.passphrase_file.as_deref())?;
-
-    let key = tier_argon2(env_tier)
-        .derive(passphrase.as_bytes(), &salt)
-        .map_err(|e| format!("Argon2id failed: {e:?}"))?;
-    let mut key_arr = [0u8; 32];
-    key_arr.copy_from_slice(&key[..32]);
+    // When `--identity` is set the envelope was sealed with a key derived from
+    // the suite identity (HKDF-SHA3-256 over the master seed), not passphrase
+    // Argon2id. We reproduce that same key deterministically.
+    let key_arr: [u8; 32] = if args.identity {
+        key_from_identity("origin-seal::encrypt", args.passphrase_file.as_deref())?
+    } else {
+        let passphrase = resolve_passphrase(args.passphrase_file.as_deref())?;
+        let key = tier_argon2(env_tier)
+            .derive(passphrase.as_bytes(), &salt)
+            .map_err(|e| format!("Argon2id failed: {e:?}"))?;
+        let mut ka = [0u8; 32];
+        ka.copy_from_slice(&key[..32]);
+        ka
+    };
 
     if flags & FLAG_STREAMED != 0 {
         return cmd_decrypt_stream(&args, &key_arr, &base_nonce, &envelope[HEADER_LEN..]);
@@ -512,7 +560,8 @@ pub fn cmd_verify(args: VerifyArgs) -> Result<(), String> {
     let falcon_sig = falcon1024::FalconSignature::from_bytes(&falcon_bytes)
         .map_err(|e| format!("invalid falcon signature: {e:?}"))?;
 
-    // Resolve public keys: from seed/blob, or from explicit pubkey args.
+    // Resolve public keys: from --identity, from seed/blob, or from explicit
+    // pubkey args.
     let (ed_pk, falcon_pk) = resolve_verify_pubkeys(&args)?;
 
     // Verify each component using the SDK's raw-byte APIs — no external
@@ -540,7 +589,18 @@ pub fn cmd_verify(args: VerifyArgs) -> Result<(), String> {
 fn resolve_verify_pubkeys(
     args: &VerifyArgs,
 ) -> Result<([u8; 32], falcon1024::FalconPublicKey), String> {
-    // Path A: derive from seed/blob (has both keys).
+    // Path A: derive from the suite identity.
+    if args.identity {
+        let home = origin_common::OriginHome::load()?;
+        let passphrase = resolve_passphrase(args.passphrase_file.as_deref())?;
+        let store = origin_common::IdentityStore::load(&home, &passphrase)?;
+        let seed = *store.seed_bytes();
+        let bundle = HybridSigningKeyBundle::from_seed(&seed, &args.domain)
+            .map_err(|e| format!("key derivation failed: {e:?}"))?;
+        return Ok((bundle.ed25519_pk().to_bytes(), bundle.falcon1024_pk().clone()));
+    }
+
+    // Path B: derive from seed/blob (has both keys).
     if args.seed.is_some() || args.blob.is_some() {
         let tier = parse_tier(&args.tier)?;
         let seed = resolve_seed(&args.seed, &args.blob, &args.passphrase_file, tier)?;

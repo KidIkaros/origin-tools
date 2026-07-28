@@ -102,6 +102,10 @@ pub struct EncryptArgs {
     #[arg(long, default_value = "3")]
     pub compress_level: u8,
 
+    /// Use the suite identity (~/.origin/identity.seed) to derive the encryption key
+    #[arg(long)]
+    pub identity: bool,
+
     /// Stream in chunks (for files larger than memory)
     #[arg(long)]
     pub stream: bool,
@@ -128,6 +132,10 @@ pub struct DecryptArgs {
     /// Argon2id memory tier (must match encryption tier)
     #[arg(short, long, default_value = "standard")]
     pub tier: String,
+
+    /// Use the suite identity (~/.origin/identity.seed) to derive the decryption key
+    #[arg(long)]
+    pub identity: bool,
 
     /// Stream in chunks (must match encryption mode)
     #[arg(long)]
@@ -194,6 +202,10 @@ pub struct VerifyArgs {
     /// Raw seed (hex, 32 bytes) — alternative to --blob
     #[arg(long)]
     pub seed: Option<String>,
+
+    /// Use the suite identity (~/.origin/identity.seed) to derive verifying keys
+    #[arg(long)]
+    pub identity: bool,
 
     /// Ed25519 public key (hex, 32 bytes) — for pubkey-only verification
     #[arg(long)]

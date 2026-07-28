@@ -61,11 +61,19 @@ pub struct VerifyArgs {
     #[arg(short, long)]
     pub proof: String,
 
-    /// Public key (hex)
+    /// Public key (hex). Required unless `--identity` is set.
     #[arg(long)]
-    pub public: String,
+    pub public: Option<String>,
 
     /// Message (hex)
     #[arg(long)]
     pub message: String,
+
+    /// Use the suite identity (derives the Ed25519 public key)
+    #[arg(long)]
+    pub identity: bool,
+
+    /// Passphrase file for identity
+    #[arg(long)]
+    pub passphrase_file: Option<String>,
 }

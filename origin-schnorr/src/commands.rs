@@ -54,8 +54,13 @@ fn cmd_prove(args: ProveArgs) -> Result<(), String> {
     let message = read_input(args.input.as_deref())?;
 
     let (secret, public) = if args.identity {
-        let seed = resolve_seed(&None, true, &args.passphrase_file)?;
-        ec_schnorr::generate_keypair(&seed)
+        let home = origin_common::OriginHome::load()?;
+        let passphrase = resolve_passphrase(args.passphrase_file.as_deref())?;
+        let store = origin_common::IdentityStore::load(&home, &passphrase)?;
+        let derived = store.derive_key("origin-schnorr-ed25519", 32)?;
+        let mut sk = [0u8; 32];
+        sk.copy_from_slice(&derived);
+        ec_schnorr::generate_keypair(&sk)
     } else {
         let secret_hex = args
             .secret
@@ -92,6 +97,21 @@ fn cmd_prove(args: ProveArgs) -> Result<(), String> {
 }
 
 fn cmd_verify(args: VerifyArgs) -> Result<(), String> {
+    // When `--identity` is set, derive the Ed25519 public key from the suite
+    // identity so verification needs only the proof + challenge (no exposed key).
+    let public_hex = if args.identity {
+        let home = origin_common::OriginHome::load()?;
+        let passphrase = resolve_passphrase(args.passphrase_file.as_deref())?;
+        let store = origin_common::IdentityStore::load(&home, &passphrase)?;
+        let secret = store.derive_key("origin-schnorr-ed25519", 32)?;
+        let mut sk = [0u8; 32];
+        sk.copy_from_slice(&secret);
+        let (_s, pk) = origin_crypto_sdk::ec_schnorr::generate_keypair(&sk);
+        hex::encode(pk)
+    } else {
+        args.public.clone().ok_or("either --public or --identity is required")?
+    };
+
     let content = std::fs::read_to_string(&args.proof)
         .map_err(|e| format!("cannot read '{}': {e}", args.proof))?;
     let proof_json: serde_json::Value =
@@ -101,7 +121,7 @@ fn cmd_verify(args: VerifyArgs) -> Result<(), String> {
         .map_err(|e| format!("invalid commitment: {e}"))?;
     let response = hex::decode(proof_json["response"].as_str().unwrap_or(""))
         .map_err(|e| format!("invalid response: {e}"))?;
-    let public = hex::decode(args.public.trim())
+    let public = hex::decode(public_hex.trim())
         .map_err(|e| format!("invalid public key: {e}"))?;
     let message = hex::decode(args.message.trim())
         .map_err(|e| format!("invalid message: {e}"))?;
@@ -113,7 +133,7 @@ fn cmd_verify(args: VerifyArgs) -> Result<(), String> {
 
     match ec_schnorr::verify(&proof, &public, &message) {
         Ok(true) => {
-            println!("VALID");
+            println!("OK");
             Ok(())
         }
         Ok(false) => {
