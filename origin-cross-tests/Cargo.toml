@@ -1,0 +1,11 @@
+[package]
+name = "origin-cross-tests"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+origin-crypto-sdk = { workspace = true }
+origin-common = { path = "../origin-common" }
+hex = { workspace = true }
+tempfile = "3"

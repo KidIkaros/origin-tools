@@ -10,6 +10,7 @@ members = [
     "origin-stealth",
     "origin-entropy",
     "origin-schnorr",
+    "origin-cross-tests",
 ]
 resolver = "2"
 

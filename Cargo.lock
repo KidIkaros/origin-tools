@@ -1062,6 +1062,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "origin-cross-tests"
+version = "0.1.0"
+dependencies = [
+ "hex",
+ "origin-common",
+ "origin-crypto-sdk",
+ "tempfile",
+]
+
+[[package]]
 name = "origin-crypto-sdk"
 version = "0.6.4"
 dependencies = [
