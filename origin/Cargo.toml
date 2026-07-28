@@ -11,6 +11,7 @@ name = "origin"
 path = "src/main.rs"
 
 [dependencies]
+origin-common.workspace = true
 origin-identity.workspace = true
 origin-pass.workspace = true
 origin-seal.workspace = true

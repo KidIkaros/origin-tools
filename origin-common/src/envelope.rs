@@ -32,8 +32,6 @@ pub const HEADER_LEN: usize = 48;
 
 /// Flag bits.
 pub const FLAG_COMPRESSED: u8 = 0x01;
-pub const FLAG_STREAMED: u8 = 0x02;
-pub const FLAG_DUAL_SIGNED: u8 = 0x04;
 
 /// Payload type — what's inside the envelope.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

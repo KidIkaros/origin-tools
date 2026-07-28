@@ -17,6 +17,8 @@
 
 use clap::{Parser, Subcommand};
 
+mod doctor;
+
 #[derive(Parser)]
 #[command(
     name = "origin",
@@ -51,6 +53,8 @@ enum Tool {
     Entropy(origin_entropy::cli::Cli),
     /// EC-Schnorr zero-knowledge proofs
     Schnorr(origin_schnorr::cli::Cli),
+    /// Health-check your ~/.origin setup
+    Doctor,
 }
 
 fn main() {
@@ -66,6 +70,7 @@ fn main() {
         Tool::Stealth(sub) => origin_stealth::commands::dispatch(sub),
         Tool::Entropy(sub) => origin_entropy::commands::dispatch(sub),
         Tool::Schnorr(sub) => origin_schnorr::commands::dispatch(sub),
+        Tool::Doctor => doctor::run(),
     };
 
     if let Err(e) = result {

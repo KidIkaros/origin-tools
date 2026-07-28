@@ -1050,6 +1050,7 @@ name = "origin"
 version = "0.4.1"
 dependencies = [
  "clap",
+ "origin-common",
  "origin-entropy",
  "origin-identity",
  "origin-pass",

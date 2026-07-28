@@ -67,6 +67,29 @@ All tools follow Unix CLI conventions:
 - Proper exit codes (0 = success, 1 = failure)
 - Hex-encoded binary output for easy piping
 
+## Install
+
+```bash
+# From source (recommended for now)
+git clone https://github.com/KidIkaros/origin-tools
+cd origin-tools
+cargo install --path origin          # installs the unified `origin` binary
+
+# Or build all standalone tools into target/release
+cargo build --release --workspace
+```
+
+The unified binary gives you every tool as a subcommand:
+
+```bash
+origin identity keygen --name personal
+origin seed generate
+origin seal encrypt --input file.txt
+origin doctor            # health-check your ~/.origin setup
+```
+
+The standalone `origin-*` binaries remain available and behave identically.
+
 ## Building
 
 ```bash
@@ -92,7 +115,8 @@ cargo test --workspace
 - **origin-entropy**: Functional. Shannon/chi-squared/min-entropy + quality gates.
 - **origin-schnorr**: Functional. Keygen/prove/verify/batch-verify.
 
-343 tests green across the workspace (including 34 origin-common + 7 cross-tool).
+335 tests green across the workspace (including 34 origin-common + 7 cross-tool),
+plus cargo-fuzz harnesses for the untrusted-input parsers.
 
 ## License
 

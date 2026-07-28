@@ -38,8 +38,18 @@ impl Default for Config {
 
 impl Config {
     /// Resolve the tier string to a MemoryTier enum.
+    ///
+    /// An unrecognized tier string is a misconfiguration: rather than silently
+    /// downgrading (which could weaken KDF parameters without the user knowing),
+    /// this warns on stderr and falls back to Standard.
     pub fn tier(&self) -> origin_crypto_sdk::tier::MemoryTier {
-        tier_from_str(&self.tier).unwrap_or(origin_crypto_sdk::tier::MemoryTier::Standard)
+        match tier_from_str(&self.tier) {
+            Ok(tier) => tier,
+            Err(e) => {
+                eprintln!("warning: {e}; falling back to 'standard'");
+                origin_crypto_sdk::tier::MemoryTier::Standard
+            }
+        }
     }
 }
 

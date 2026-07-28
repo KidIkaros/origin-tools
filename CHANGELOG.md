@@ -7,9 +7,62 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Planned
-- `origin-pass` — TOTP / OCRA / password-manager CLI built on `origin-crypto-sdk::drbg::otp`.
-- `origin-vault` — encrypted file vault using passphrase-derived keys + ChaCha20.
+### Added
+- **`origin` unified binary** — a single umbrella CLI dispatching to all nine
+  tools as subcommands (`origin identity …`, `origin seed …`, `origin seal …`,
+  etc.). Standalone `origin-*` binaries remain and behave identically.
+- **`origin doctor`** — one-command health check of `~/.origin`: identity
+  presence, config validity, tier resolution, file/directory permissions, and
+  SDK compatibility.
+- **Fuzz targets** (`fuzz/`) — cargo-fuzz harnesses for the `origin-common`
+  parsers that handle untrusted input: the ORGN envelope binary parser, TOML
+  `Config` deserialization, and the tier byte/string converters.
+- **CI pipeline** (`.github/workflows/ci.yml`) — gates on `cargo fmt --check`,
+  `clippy -D warnings`, and the full workspace test suite.
+- **Cross-tool integration tests** (`origin-cross-tests`) — seven end-to-end
+  composability workflows spanning multiple tools + SDK APIs.
+- **Per-crate READMEs**, `ARCHITECTURE.md`, and `COOKBOOK.md`.
+- **`LICENSE`** file (Apache-2.0), matching the `license` field in `Cargo.toml`.
+
+### Changed
+- **`origin-common` security hardening**: envelope headers are now
+  authenticated via AAD (payload type / flags / tier can no longer be swapped
+  undetected); `~/.origin` is created `0700` and `identity.seed` `0600`;
+  Argon2id-derived keys are zeroized after use; the identity blob stores the
+  KDF tier used at creation so loading is independent of current config.
+- **Config tier resolution** now warns on stderr instead of silently
+  downgrading when `config.toml` contains an unrecognized tier string.
+
+### Removed
+- Dead envelope flag constants `FLAG_STREAMED` / `FLAG_DUAL_SIGNED` (defined
+  but never referenced; origin-seal uses its own streamed-file format).
+
+### Dropped from plan
+- ~~`origin-vault`~~ — superseded by `origin-seal` (encrypted files) and
+  `origin-pass` (encrypted secret store), which together cover the space.
+
+---
+
+## [0.4.1] — 2026-07-28
+
+First public release of the full nine-tool suite plus the shared
+`origin-common` foundation, built on `origin-crypto-sdk` v0.6.4.
+
+### Added
+- **`origin-pass`** — encrypted password vault + 2FA (TOTP / HOTP / OCRA per
+  RFC 6287), tiered Argon2id, vault init/unlock/add/get/list/rm, QR provisioning.
+- **`origin-seed`** — seed lifecycle: generate, derive, encode/decode, and
+  encrypted blob create/recover.
+- **`origin-shard`** — Reed-Solomon secret sharing: split and K-of-N recover.
+- **`origin-proof`** — BLAKE3 MMR integrity proofs: append, root, prove, verify.
+- **`origin-stealth`** — stealth address derivation + proof-of-work solve/verify.
+- **`origin-entropy`** — entropy audit: Shannon, chi-squared, min-entropy,
+  quality gates.
+- **`origin-schnorr`** — EC-Schnorr zero-knowledge proofs: keygen, prove,
+  verify, batch-verify.
+- **`origin-common`** — shared infrastructure crate: `OriginHome`,
+  `IdentityStore`, the unified ORGN `Envelope` format, `MemoryTier` helpers,
+  and shared passphrase / IO utilities.
 
 ---
 
@@ -111,6 +164,7 @@ The actual `0.1.0` tag was never created — the workspace moved directly to
   through the binary CLI (codepoints → phrase-file → `import --phrase @file`
   → encrypted blob → SDK recovery → seed equality).
 
-[Unreleased]: https://github.com/KidIkaros/origin-tools/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/KidIkaros/origin-tools/compare/v0.4.1...HEAD
+[0.4.1]: https://github.com/KidIkaros/origin-tools/releases/tag/v0.4.1
 [0.3.0]: https://github.com/KidIkaros/origin-tools/releases/tag/v0.3.0
 [0.1.0]: https://github.com/KidIkaros/origin-tools/commit/c26eab3
