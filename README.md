@@ -74,6 +74,12 @@ cargo build --workspace
 cargo test --workspace
 ```
 
+## Documentation
+
+- **[ARCHITECTURE.md](ARCHITECTURE.md)** — Crate dependency graph, design principles, formats
+- **[COOKBOOK.md](COOKBOOK.md)** — Practical recipes for composing tools
+- **Per-crate READMEs** — Each tool has its own README with usage examples
+
 ## Status
 
 - **origin-identity**: Production. Full keygen/sign/verify, blob support.
@@ -84,9 +90,9 @@ cargo test --workspace
 - **origin-proof**: Functional. BLAKE3 MMR append/root/prove/verify.
 - **origin-stealth**: Functional. Address derivation + PoW.
 - **origin-entropy**: Functional. Shannon/chi-squared/min-entropy + quality gates.
-- **origin-schnorr**: Functional. Keygen/prove/verify.
+- **origin-schnorr**: Functional. Keygen/prove/verify/batch-verify.
 
-309 tests green across the workspace.
+343 tests green across the workspace (including 34 origin-common + 7 cross-tool).
 
 ## License
 
