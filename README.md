@@ -86,7 +86,7 @@ cargo test --workspace
 - **origin-entropy**: Functional. Shannon/chi-squared/min-entropy + quality gates.
 - **origin-schnorr**: Functional. Keygen/prove/verify.
 
-199 tests green across the workspace.
+309 tests green across the workspace.
 
 ## License
 
