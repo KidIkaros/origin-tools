@@ -127,6 +127,26 @@ pub struct AddArgs {
     /// exists is a hard error (protects against accidental clobbering).
     #[arg(long)]
     pub force: bool,
+
+    /// TOTP period in seconds (default 30). Only relevant for --type otp.
+    #[arg(long, default_value_t = 30)]
+    pub period: u32,
+
+    /// Number of OTP digits (4..=10, default 6). Only relevant for --type otp.
+    #[arg(long, default_value_t = 6)]
+    pub digits: u32,
+
+    /// OTP hash algorithm. Only relevant for --type otp.
+    #[arg(long, value_enum, default_value = "sha1")]
+    pub algo: HashAlgorithm,
+
+    /// Initial HOTP counter (default 0). Only relevant for --type otp --hotp.
+    #[arg(long, default_value_t = 0)]
+    pub counter: u64,
+
+    /// Create an HOTP entry instead of TOTP. Only relevant for --type otp.
+    #[arg(long)]
+    pub hotp: bool,
 }
 
 #[derive(Parser, Clone, Debug)]
@@ -303,6 +323,7 @@ pub enum HashAlgorithm {
 
 /// Resolve `~/` prefix against `$HOME`. Errors if `$HOME` is unset so vault
 /// files are never silently written to `/tmp`.
+#[allow(dead_code)]
 pub fn resolve_dir(raw: &str) -> Result<PathBuf, String> {
     if raw.starts_with("~/") {
         let home = std::env::var("HOME")
