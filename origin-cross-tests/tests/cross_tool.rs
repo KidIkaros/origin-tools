@@ -6,12 +6,12 @@
 //! exercising real workflows that span multiple crates.
 
 use origin_crypto_sdk::{
-    blob::{create_blob, recover_seed},
     blake3,
+    blob::{create_blob, recover_seed},
     ec_schnorr::{self, EcSchnorrProof},
     error_correction::ReedSolomonCodec,
     seed::gen::{generate, SeedVariant},
-    stealth::pow::{self as stealth_pow, StealthPowProof},
+    stealth::pow as stealth_pow,
     tier::MemoryTier,
 };
 
@@ -72,7 +72,11 @@ fn seed_blob_recover_schnorr_sign_verify() {
 
     // 3. Recover the seed from the blob
     let recovered = recover_seed(&blob, passphrase, MemoryTier::Nano).expect("recover seed");
-    assert_eq!(recovered.as_slice(), seed_bytes.as_slice(), "recovered seed must match");
+    assert_eq!(
+        recovered.as_slice(),
+        seed_bytes.as_slice(),
+        "recovered seed must match"
+    );
 
     // 4. Wrong passphrase must fail
     let bad = recover_seed(&blob, b"wrong-pass", MemoryTier::Nano);
@@ -117,7 +121,8 @@ fn seed_stealth_pow_solve_verify() {
     // 6. Tampered nonce must fail
     let mut tampered = proof.clone();
     tampered.nonce[0] ^= 0xFF;
-    let bad3 = stealth_pow::verify(&tampered, &identity_pk, destination_hint).expect("verify tampered");
+    let bad3 =
+        stealth_pow::verify(&tampered, &identity_pk, destination_hint).expect("verify tampered");
     assert!(!bad3, "tampered nonce must fail");
 }
 
@@ -199,7 +204,9 @@ fn full_pipeline_seed_blob_shard_recover_sign() {
     slots[3] = None;
 
     // 5. Recover blob
-    let recovered_blob = codec.decode_shards(&slots, blob.len()).expect("recover blob");
+    let recovered_blob = codec
+        .decode_shards(&slots, blob.len())
+        .expect("recover blob");
     assert_eq!(recovered_blob, blob, "recovered blob must match");
 
     // 6. Recover seed from blob
@@ -299,7 +306,7 @@ fn generate_mmr_proof(leaves: &[[u8; 32]], index: usize) -> Vec<([u8; 32], bool)
     let mut idx = index;
 
     while level.len() > 1 {
-        let sibling_idx = if idx % 2 == 0 { idx + 1 } else { idx - 1 };
+        let sibling_idx = if idx.is_multiple_of(2) { idx + 1 } else { idx - 1 };
         if sibling_idx < level.len() {
             let is_left = idx % 2 == 1; // sibling is on the left
             proof.push((level[sibling_idx], is_left));

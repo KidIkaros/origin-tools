@@ -117,10 +117,13 @@ impl Envelope {
             plaintext.to_vec()
         };
 
-        let ciphertext = XChaCha20Poly1305::encrypt(key, &nonce, &payload_data)
-            .map_err(|e| format!("encryption failed: {e}"))?;
-
         let flags = if compress { FLAG_COMPRESSED } else { 0 };
+
+        // AAD: authenticate the header fields so they can't be tampered with
+        let aad = Self::compute_aad(VERSION, payload_type, flags, tier, &salt, &nonce);
+
+        let ciphertext = XChaCha20Poly1305::encrypt_aad(key, &nonce, &payload_data, &aad)
+            .map_err(|e| format!("encryption failed: {e}"))?;
 
         Ok(Self {
             header: EnvelopeHeader {
@@ -137,8 +140,19 @@ impl Envelope {
 
     /// Decrypt the envelope payload.
     pub fn decrypt(&self, key: &[u8; 32]) -> Result<Vec<u8>, String> {
-        let plaintext = XChaCha20Poly1305::decrypt(key, &self.header.nonce, &self.payload)
-            .map_err(|_| "decryption failed (wrong key or corrupt data)")?;
+        // Reconstruct AAD from header to verify integrity
+        let aad = Self::compute_aad(
+            self.header.version,
+            self.header.payload_type,
+            self.header.flags,
+            self.header.tier,
+            &self.header.salt,
+            &self.header.nonce,
+        );
+
+        let plaintext =
+            XChaCha20Poly1305::decrypt_aad(key, &self.header.nonce, &self.payload, &aad)
+                .map_err(|_| "decryption failed (wrong key or corrupt data)")?;
 
         if self.header.flags & FLAG_COMPRESSED != 0 {
             origin_crypto_sdk::compression::decompress(&plaintext)
@@ -146,6 +160,26 @@ impl Envelope {
         } else {
             Ok(plaintext)
         }
+    }
+
+    /// Compute the AAD for header authentication.
+    fn compute_aad(
+        version: u8,
+        payload_type: PayloadType,
+        flags: u8,
+        tier: MemoryTier,
+        salt: &[u8; 16],
+        nonce: &[u8; 24],
+    ) -> Vec<u8> {
+        let mut aad = Vec::with_capacity(48);
+        aad.extend_from_slice(MAGIC);
+        aad.push(version);
+        aad.push(payload_type.to_byte());
+        aad.push(flags);
+        aad.push(tier_to_byte(tier));
+        aad.extend_from_slice(salt);
+        aad.extend_from_slice(nonce);
+        aad
     }
 
     /// Serialize the envelope to bytes.

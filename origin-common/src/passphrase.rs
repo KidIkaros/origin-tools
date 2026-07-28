@@ -9,7 +9,11 @@ pub fn resolve_passphrase(passphrase_file: Option<&str>) -> Result<String, Strin
         Some(path) => {
             let s = std::fs::read_to_string(path)
                 .map_err(|e| format!("cannot read passphrase file '{}': {e}", path))?;
-            Ok(s.trim_end_matches('\n').trim_end_matches('\r').to_string())
+            let trimmed = s.trim_end_matches('\n').trim_end_matches('\r').to_string();
+            if trimmed.is_empty() {
+                eprintln!("warning: passphrase file '{}' is empty", path);
+            }
+            Ok(trimmed)
         }
         None => rpassword::prompt_password("Passphrase: ")
             .map_err(|e| format!("passphrase prompt failed: {e}")),
@@ -23,7 +27,11 @@ pub fn resolve_passphrase_confirm(passphrase_file: Option<&str>) -> Result<Strin
         Some(path) => {
             let s = std::fs::read_to_string(path)
                 .map_err(|e| format!("cannot read passphrase file '{}': {e}", path))?;
-            Ok(s.trim_end_matches('\n').trim_end_matches('\r').to_string())
+            let trimmed = s.trim_end_matches('\n').trim_end_matches('\r').to_string();
+            if trimmed.is_empty() {
+                eprintln!("warning: passphrase file '{}' is empty", path);
+            }
+            Ok(trimmed)
         }
         None => {
             let a = rpassword::prompt_password("Passphrase: ")

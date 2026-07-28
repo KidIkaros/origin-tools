@@ -72,6 +72,14 @@ impl OriginHome {
         if !root.exists() {
             std::fs::create_dir_all(&root)
                 .map_err(|e| format!("cannot create '{}': {e}", root.display()))?;
+            // Restrict home directory to owner-only access
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let perms = std::fs::Permissions::from_mode(0o700);
+                std::fs::set_permissions(&root, perms)
+                    .map_err(|e| format!("cannot set permissions on '{}': {e}", root.display()))?;
+            }
         }
 
         let config_path = root.join("config.toml");

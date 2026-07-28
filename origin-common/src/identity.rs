@@ -19,6 +19,20 @@ fn tier_argon2(tier: MemoryTier) -> Argon2idBuilder {
         .parallelism(params.p_cost())
 }
 
+/// Set Unix file permissions (no-op on non-Unix).
+#[cfg(unix)]
+fn set_file_permissions(path: &std::path::Path, mode: u32) -> Result<(), String> {
+    use std::os::unix::fs::PermissionsExt;
+    let perms = std::fs::Permissions::from_mode(mode);
+    std::fs::set_permissions(path, perms)
+        .map_err(|e| format!("cannot set permissions on '{}': {e}", path.display()))
+}
+
+#[cfg(not(unix))]
+fn set_file_permissions(_path: &std::path::Path, _mode: u32) -> Result<(), String> {
+    Ok(())
+}
+
 /// The master identity seed, decrypted and ready for use.
 pub struct IdentityStore {
     seed: [u8; 32],
@@ -34,7 +48,7 @@ impl Drop for IdentityStore {
 impl IdentityStore {
     /// Load the identity from ~/.origin/identity.seed.
     ///
-    /// Decrypts the seed with the provided passphrase using the tier from config.
+    /// Decrypts the seed with the provided passphrase using the tier stored in the blob.
     pub fn load(home: &OriginHome, passphrase: &str) -> Result<Self, String> {
         let path = home.identity_seed_path();
         if !path.exists() {
@@ -48,25 +62,28 @@ impl IdentityStore {
             std::fs::read(&path).map_err(|e| format!("cannot read '{}': {e}", path.display()))?;
 
         // Decrypt the seed blob.
-        // Format: salt (16) + nonce (24) + ciphertext
-        if blob.len() < 40 + 16 {
+        // Format: salt (16) + nonce (24) + tier (1) + ciphertext
+        if blob.len() < 41 + 16 {
             return Err("identity blob too short".to_string());
         }
 
         let salt: [u8; 16] = blob[..16].try_into().unwrap();
         let nonce: [u8; 24] = blob[16..40].try_into().unwrap();
-        let ciphertext = &blob[40..];
+        let tier = crate::tier_from_byte(blob[40])?;
+        let ciphertext = &blob[41..];
 
-        let tier = home.config().tier();
-        let key = tier_argon2(tier)
+        let mut key = tier_argon2(tier)
             .derive(passphrase.as_bytes(), &salt)
             .map_err(|e| format!("key derivation failed: {e}"))?;
 
         let mut key_arr = [0u8; 32];
         key_arr.copy_from_slice(&key[..32]);
+        key.zeroize(); // zeroize the Vec
 
         let seed_bytes = XChaCha20Poly1305::decrypt(&key_arr, &nonce, ciphertext)
             .map_err(|_| "decryption failed (wrong passphrase or corrupt identity)")?;
+
+        key_arr.zeroize(); // zeroize the derived key
 
         if seed_bytes.len() != 32 {
             return Err(format!("invalid seed length: {}", seed_bytes.len()));
@@ -97,23 +114,30 @@ impl IdentityStore {
         rand::RngCore::fill_bytes(&mut rand::thread_rng(), &mut salt);
         rand::RngCore::fill_bytes(&mut rand::thread_rng(), &mut nonce);
 
-        let key = tier_argon2(self.tier)
+        let mut key = tier_argon2(self.tier)
             .derive(passphrase.as_bytes(), &salt)
             .map_err(|e| format!("key derivation failed: {e}"))?;
 
         let mut key_arr = [0u8; 32];
         key_arr.copy_from_slice(&key[..32]);
+        key.zeroize(); // zeroize the Vec
 
         let ciphertext = XChaCha20Poly1305::encrypt(&key_arr, &nonce, &self.seed)
             .map_err(|e| format!("encryption failed: {e}"))?;
 
-        let mut blob = Vec::with_capacity(16 + 24 + ciphertext.len());
+        key_arr.zeroize(); // zeroize the derived key
+
+        let mut blob = Vec::with_capacity(16 + 24 + 1 + ciphertext.len());
         blob.extend_from_slice(&salt);
         blob.extend_from_slice(&nonce);
+        blob.push(crate::tier_to_byte(self.tier));
         blob.extend_from_slice(&ciphertext);
 
         std::fs::write(&path, &blob)
             .map_err(|e| format!("cannot write '{}': {e}", path.display()))?;
+
+        // Restrict identity file to owner-only read/write
+        set_file_permissions(&path, 0o600)?;
 
         Ok(())
     }
