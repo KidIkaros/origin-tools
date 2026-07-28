@@ -1097,6 +1097,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "origin-entropy"
+version = "0.4.1"
+dependencies = [
+ "clap",
+ "hex",
+ "origin-common",
+ "origin-crypto-sdk",
+ "serde",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
 name = "origin-identity"
 version = "0.4.1"
 dependencies = [
@@ -1128,6 +1141,33 @@ dependencies = [
 ]
 
 [[package]]
+name = "origin-proof"
+version = "0.4.1"
+dependencies = [
+ "clap",
+ "hex",
+ "origin-common",
+ "origin-crypto-sdk",
+ "serde",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
+name = "origin-schnorr"
+version = "0.4.1"
+dependencies = [
+ "clap",
+ "hex",
+ "origin-common",
+ "origin-crypto-sdk",
+ "rpassword",
+ "serde",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
 name = "origin-seal"
 version = "0.4.1"
 dependencies = [
@@ -1136,6 +1176,48 @@ dependencies = [
  "origin-common",
  "origin-crypto-sdk",
  "rand",
+ "rpassword",
+ "serde",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
+name = "origin-seed"
+version = "0.4.1"
+dependencies = [
+ "clap",
+ "hex",
+ "origin-common",
+ "origin-crypto-sdk",
+ "rand",
+ "rpassword",
+ "serde",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
+name = "origin-shard"
+version = "0.4.1"
+dependencies = [
+ "clap",
+ "hex",
+ "origin-common",
+ "origin-crypto-sdk",
+ "serde",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
+name = "origin-stealth"
+version = "0.4.1"
+dependencies = [
+ "clap",
+ "hex",
+ "origin-common",
+ "origin-crypto-sdk",
  "rpassword",
  "serde",
  "serde_json",

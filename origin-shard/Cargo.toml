@@ -1,0 +1,18 @@
+[package]
+name = "origin-shard"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Secret sharing — Reed-Solomon split and K-of-N threshold recovery"
+
+[dependencies]
+origin-common = { path = "../origin-common" }
+origin-crypto-sdk.workspace = true
+clap.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+hex.workspace = true
+
+[dev-dependencies]
+tempfile = "3"

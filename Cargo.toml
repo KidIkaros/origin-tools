@@ -4,6 +4,12 @@ members = [
     "origin-identity",
     "origin-pass",
     "origin-seal",
+    "origin-seed",
+    "origin-shard",
+    "origin-proof",
+    "origin-stealth",
+    "origin-entropy",
+    "origin-schnorr",
 ]
 resolver = "2"
 
