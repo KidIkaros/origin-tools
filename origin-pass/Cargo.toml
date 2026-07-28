@@ -12,6 +12,7 @@ name = "origin-pass"
 path = "src/main.rs"
 
 [dependencies]
+origin-common = { path = "../origin-common" }
 origin-crypto-sdk = { workspace = true }
 clap = { workspace = true }
 serde = { workspace = true }

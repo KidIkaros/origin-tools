@@ -50,6 +50,7 @@ pub const ENTRY_NONCE_LEN: usize = 24;
 pub const ENTRY_CT_LEN_FIELD: usize = 4;
 
 /// Reserved block (16 bytes per EntryMetadata).
+#[allow(dead_code)]
 pub const ENTRY_RESERVED_LEN: usize = 16;
 
 /// Total EntryMetadata on-disk size.
@@ -283,6 +284,7 @@ impl EntryMetadata {
     }
 
     /// Detect entry type from the `type_tag`.
+    #[allow(dead_code)]
     pub fn entry_kind(&self) -> &'static str {
         match self.type_tag {
             TYPE_PASSWORD => "password",
@@ -379,7 +381,8 @@ impl EntryPayload {
         }
     }
 
-    /// Build an OCRA entry. The `secret` is the raw OCRA key (≥ 16 bytes).
+    /// Create an OCRA entry payload.
+    #[allow(dead_code)]
     pub fn ocra(name: &str, key: &[u8], suite: &str, digits: u32, algo: &str) -> Self {
         Self {
             name: name.to_string(),
@@ -475,6 +478,7 @@ pub struct Vault {
     /// Decrypted entry payloads keyed by entry name.
     pub entries: BTreeMap<String, EntryPayload>,
     /// Per-entry metadata (offsets, type info) — populated on unlock.
+    #[allow(dead_code)]
     pub metadata: Vec<EntryMetadata>,
     /// Master key wrapped in Zeroizing (scrubs on drop).
     pub master_key: Zeroizing<[u8; 32]>,
@@ -625,7 +629,7 @@ pub fn unlock_vault(path: &Path, passphrase: &str) -> Result<Vault, String> {
     let index_bytes = ChaCha20Blake3::decrypt(&header_key, &header.header_nonce, header_ct, &[])
         .map_err(|_| "vault unlock failed (decryption — wrong passphrase or corrupt header)".to_string())?;
     let mut metadata = parse_index_bytes(&index_bytes)?;
-    let total_len = read_total_entry_len(&metadata)?;
+    let _total_len = read_total_entry_len(&metadata)?;
 
     // 3. Walk entries sequentially after the encrypted header index.
     //    NOTE: do NOT add `total_len` here — `total_len` is summed into

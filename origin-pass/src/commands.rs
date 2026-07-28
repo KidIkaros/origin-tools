@@ -14,10 +14,11 @@
 //! needs the vault will re-unlock automatically if the in-process state
 //! is empty.
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Mutex;
 
-use origin_crypto_sdk::tier::MemoryTier;
+use origin_common::{resolve_passphrase, MemoryTier};
+use origin_crypto_sdk::tier::MemoryTier as SdkMemoryTier;
 
 use crate::cli::{
     AddArgs, ChangePassphraseArgs, CodeArgs, ExportQrArgs, GetArgs, ImportQrArgs, InitArgs,
@@ -74,42 +75,10 @@ fn put_vault(v: Vault) -> Result<(), String> {
 // Passphrase + path helpers
 // ──────────────────────────────────────────────────────────────────────
 
-/// Resolve a passphrase from `--passphrase-file <path>` or via prompt.
-pub fn resolve_passphrase(file: &Option<String>) -> Result<String, String> {
-    match file {
-        Some(path) => {
-            let pw = std::fs::read_to_string(path)
-                .map_err(|e| format!("cannot read passphrase file {path}: {e}"))?;
-            Ok(pw.trim_end_matches(['\n', '\r']).to_string())
-        }
-        None => {
-            rpassword::prompt_password("Passphrase: ")
-                .map_err(|e| format!("passphrase prompt failed: {e}"))
-        }
-    }
-}
-
 /// Same as `resolve_passphrase` but confirms via a second prompt when
 /// reading interactively (used by `cmd_init` and `cmd_change_passphrase`).
 pub fn resolve_passphrase_confirm(file: &Option<String>) -> Result<String, String> {
-    match file {
-        Some(path) => {
-            // File-based passphrase — confirmation is the user's responsibility.
-            let pw = std::fs::read_to_string(path)
-                .map_err(|e| format!("cannot read passphrase file {path}: {e}"))?;
-            Ok(pw.trim_end_matches(['\n', '\r']).to_string())
-        }
-        None => {
-            let pw = rpassword::prompt_password("Passphrase: ")
-                .map_err(|e| format!("passphrase prompt failed: {e}"))?;
-            let pw2 = rpassword::prompt_password("Confirm:   ")
-                .map_err(|e| format!("passphrase confirm failed: {e}"))?;
-            if pw != pw2 {
-                return Err("passphrases do not match".to_string());
-            }
-            Ok(pw)
-        }
-    }
+    origin_common::resolve_passphrase_confirm(file.as_deref())
 }
 
 /// Resolve `--vault <path>` with `~/` expansion against `$HOME`.
@@ -322,7 +291,7 @@ pub fn cmd_unlock(args: UnlockArgs) -> Result<(), String> {
     // the on-disk header is authoritative so this value is unused.
     vault::parse_tier(&args.tier)?;
     let path = resolve_vault_path(&args.vault)?;
-    let passphrase = resolve_passphrase(&args.passphrase_file)?;
+    let passphrase = resolve_passphrase(args.passphrase_file.as_deref())?;
     let vault_obj = vault::unlock_vault(&path, &passphrase)?;
 
     let entry_count = vault_obj.entries.len();
@@ -375,15 +344,13 @@ pub fn cmd_add(args: AddArgs) -> Result<(), String> {
             );
         }
         crate::cli::EntryType::Otp => {
-            return Err(
-                "TOTP/HOTP entries cannot yet be added via `add`; use the `cmd_import_qr` subcommand once it lands (DESIGN.md §6 step 4)".to_string(),
-            );
+            return cmd_add_otp(args);
         }
         crate::cli::EntryType::Password => {} // fall through
     }
 
     let path = resolve_vault_path(&args.vault)?;
-    let passphrase = resolve_passphrase(&args.passphrase_file)?;
+    let passphrase = resolve_passphrase(args.passphrase_file.as_deref())?;
     let mut vault_obj = vault::unlock_vault(&path, &passphrase)?;
 
     // Pre-flight: --force vs. duplicate. Refuse accidental clobbering.
@@ -434,10 +401,79 @@ pub fn cmd_add(args: AddArgs) -> Result<(), String> {
     Ok(())
 }
 
+/// Add a TOTP or HOTP entry to the vault.
+///
+/// The secret is sourced from `--secret-file` / `--secret-stdin` /
+/// interactive prompt (same as password entries) and must be a valid
+/// base32 string (RFC 4648). The `--hotp` flag selects HOTP mode;
+/// without it, TOTP is the default. `--period`, `--digits`, `--algo`,
+/// and `--counter` configure the OTP parameters.
+fn cmd_add_otp(args: AddArgs) -> Result<(), String> {
+    // Validate digits range early (before touching the vault).
+    if !(4..=10).contains(&args.digits) {
+        return Err(format!("digits out of range (4..=10): {}", args.digits));
+    }
+
+    let path = resolve_vault_path(&args.vault)?;
+    let passphrase = resolve_passphrase(args.passphrase_file.as_deref())?;
+    let mut vault_obj = vault::unlock_vault(&path, &passphrase)?;
+
+    // Pre-flight: --force vs. duplicate.
+    let is_overwrite = vault_obj.entries.contains_key(&args.name);
+    if is_overwrite && !args.force {
+        return Err(format!(
+            "entry already exists: {} (use --force to overwrite)",
+            args.name
+        ));
+    }
+
+    // Source the secret (base32 string).
+    let secret_b32 = resolve_entry_secret(args.secret_file.as_deref(), args.secret_stdin)?;
+
+    // Validate base32 (rejects invalid characters / padding).
+    origin_crypto_sdk::drbg::otp::base32_decode(&secret_b32)
+        .map_err(|e| format!("secret is not valid base32: {e}"))?;
+
+    // Normalize algorithm to uppercase for storage.
+    let algo_str = match args.algo {
+        crate::cli::HashAlgorithm::Sha1 => "SHA1",
+        crate::cli::HashAlgorithm::Sha256 => "SHA256",
+        crate::cli::HashAlgorithm::Sha512 => "SHA512",
+    };
+
+    let now = unix_now();
+    let mut payload = if args.hotp {
+        EntryPayload::hotp(&args.name, &secret_b32, args.counter, args.digits, algo_str)
+    } else {
+        EntryPayload::totp(&args.name, &secret_b32, args.period, args.digits, algo_str)
+    };
+    payload.url = args.url.clone();
+    payload.notes = args.notes.clone();
+    payload.updated_at = now;
+    if is_overwrite {
+        if let Some(prev) = vault_obj.entries.get(&args.name) {
+            payload.created_at = prev.created_at;
+        }
+    } else {
+        payload.created_at = now;
+    }
+
+    let kind = if args.hotp { "hotp" } else { "totp" };
+    vault_obj.add_entry(payload)?;
+    vault::persist_vault(&path, &vault_obj)?;
+
+    eprintln!(
+        "{}: {} (entry: {kind})",
+        if is_overwrite { "updated" } else { "added" },
+        args.name
+    );
+    Ok(())
+}
+
 /// Retrieve a single entry by name.
 pub fn cmd_get(args: GetArgs) -> Result<(), String> {
     let path = resolve_vault_path(&args.vault)?;
-    let passphrase = resolve_passphrase(&args.passphrase_file)?;
+    let passphrase = resolve_passphrase(args.passphrase_file.as_deref())?;
     let vault_obj = vault::unlock_vault(&path, &passphrase)?;
 
     let entry = vault_obj
@@ -453,7 +489,7 @@ pub fn cmd_get(args: GetArgs) -> Result<(), String> {
 /// List all entries (names + types, NO secrets).
 pub fn cmd_list(args: ListArgs) -> Result<(), String> {
     let path = resolve_vault_path(&args.vault)?;
-    let passphrase = resolve_passphrase(&args.passphrase_file)?;
+    let passphrase = resolve_passphrase(args.passphrase_file.as_deref())?;
     let vault_obj = vault::unlock_vault(&path, &passphrase)?;
 
     let mut entries: Vec<_> = vault_obj.entries.iter().collect();
@@ -471,7 +507,7 @@ pub fn cmd_list(args: ListArgs) -> Result<(), String> {
 /// Remove an entry from the vault.
 pub fn cmd_rm(args: RmArgs) -> Result<(), String> {
     let path = resolve_vault_path(&args.vault)?;
-    let passphrase = resolve_passphrase(&args.passphrase_file)?;
+    let passphrase = resolve_passphrase(args.passphrase_file.as_deref())?;
     let mut vault_obj = vault::unlock_vault(&path, &passphrase)?;
 
     if vault_obj.entries.remove(&args.name).is_none() {
@@ -484,19 +520,160 @@ pub fn cmd_rm(args: RmArgs) -> Result<(), String> {
 
 /// Compute and display a TOTP/HOTP or OCRA response.
 ///
-/// OCRA branch is implemented for v0.4.x: it uses the in-process
-/// unlocked vault (set by `cmd_unlock`) to look up the entry by name.
-/// `--key-file` remains as a **testing escape hatch** (DESIGN.md §3.1
-/// T5.11) and takes precedence over the vault lookup. The TOTP/HOTP
-/// branch is still pending the import-qr subcommand (DESIGN.md §6
-/// step 4).
+/// Without `--ocra`: looks up the entry in the vault, determines
+/// TOTP vs HOTP from the stored payload, decodes the base32 secret,
+/// computes the code via the SDK, and prints it. For HOTP entries the
+/// counter is auto-incremented and the vault is persisted.
+///
+/// With `--ocra`: delegates to the OCRA (RFC 6287) challenge-response
+/// path. `--key-file` remains as a **testing escape hatch** (DESIGN.md
+/// §3.1 T5.11) and takes precedence over the vault lookup.
 pub fn cmd_code(args: CodeArgs) -> Result<(), String> {
-    if !args.ocra {
+    if args.ocra {
+        return cmd_code_ocra(args);
+    }
+    cmd_code_otp(args)
+}
+
+/// TOTP/HOTP code path.
+fn cmd_code_otp(args: CodeArgs) -> Result<(), String> {
+    // Pre-flight: validate vault path + unlock strategy BEFORE we hit
+    // `rpassword::prompt_password`, which fails noisily on a non-TTY stdin
+    // (e.g. cargo test, CI) with a cryptic message.
+    if args.vault.trim().is_empty() {
         return Err(
-            "TOTP/HOTP code path not yet implemented (DESIGN.md §6 step 4); pass --ocra for OCRA mode"
+            "no --vault supplied; cannot derive TOTP/HOTP code. \
+             Pass --vault <path> --passphrase-file <path> to unlock the vault."
                 .to_string(),
         );
     }
+    if args.passphrase_file.is_none() {
+        return Err(
+            "TOTP/HOTP code requires a passphrase to unlock the vault. \
+             Pass --passphrase-file <path> or run from a terminal for \
+             interactive unlock."
+                .to_string(),
+        );
+    }
+
+    let path = resolve_vault_path(&args.vault)?;
+    let passphrase = resolve_passphrase(args.passphrase_file.as_deref())?;
+    let mut vault_obj = vault::unlock_vault(&path, &passphrase)?;
+
+    let entry = vault_obj
+        .entries
+        .get(&args.name)
+        .ok_or_else(|| format!("entry not found: {}", args.name))?;
+
+    // Determine TOTP vs HOTP from the stored payload.
+    let is_totp = entry.totp.is_some();
+    let is_hotp = entry.hotp.is_some();
+    if !is_totp && !is_hotp {
+        return Err(format!(
+            "entry '{}' is type '{}'; `code` requires a TOTP or HOTP entry",
+            args.name,
+            entry_kind(entry)
+        ));
+    }
+
+    // Decode the base32 secret.
+    let secret_bytes = entry
+        .secret
+        .as_ref()
+        .ok_or_else(|| format!("entry '{}' has no secret bytes stored", args.name))?;
+    let secret_b32 = std::str::from_utf8(secret_bytes).map_err(|e| {
+        format!("entry '{}' secret is not valid UTF-8 base32: {e}", args.name)
+    })?;
+    let secret_raw = origin_crypto_sdk::drbg::otp::base32_decode(secret_b32)
+        .map_err(|e| format!("entry '{}' secret is not valid base32: {e}", args.name))?;
+
+    // Pull stored parameters from the JSON payload.
+    let otp_json = if is_totp {
+        entry.totp.as_ref().unwrap()
+    } else {
+        entry.hotp.as_ref().unwrap()
+    };
+
+    let stored_algo = otp_json
+        .get("algo")
+        .and_then(|a| a.as_str())
+        .unwrap_or("SHA1");
+    let stored_digits: u32 = otp_json
+        .get("digits")
+        .and_then(|d| d.as_u64())
+        .unwrap_or(6) as u32;
+
+    // CLI overrides take precedence over stored values.
+    let algo: origin_crypto_sdk::drbg::otp::HashAlgorithm = match args.algo {
+        Some(crate::cli::HashAlgorithm::Sha1) => origin_crypto_sdk::drbg::otp::HashAlgorithm::Sha1,
+        Some(crate::cli::HashAlgorithm::Sha256) => origin_crypto_sdk::drbg::otp::HashAlgorithm::Sha256,
+        Some(crate::cli::HashAlgorithm::Sha512) => origin_crypto_sdk::drbg::otp::HashAlgorithm::Sha512,
+        None => match stored_algo {
+            "SHA256" => origin_crypto_sdk::drbg::otp::HashAlgorithm::Sha256,
+            "SHA512" => origin_crypto_sdk::drbg::otp::HashAlgorithm::Sha512,
+            _ => origin_crypto_sdk::drbg::otp::HashAlgorithm::Sha1,
+        },
+    };
+    let digits = args.digits.unwrap_or(stored_digits);
+
+    use origin_crypto_sdk::drbg::otp::{format_code, hotp, totp};
+
+    let code_str = if is_totp {
+        let period: u64 = otp_json
+            .get("period")
+            .and_then(|p| p.as_u64())
+            .unwrap_or(30);
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let code = totp(&secret_raw, now, period, digits, algo);
+        format_code(code, digits)
+    } else {
+        // HOTP: read counter, compute, then auto-increment + persist.
+        let counter: u64 = otp_json
+            .get("counter")
+            .and_then(|c| c.as_u64())
+            .unwrap_or(0);
+        let code = hotp(&secret_raw, counter, digits, algo);
+        let result = format_code(code, digits);
+
+        // Auto-increment the counter and persist.
+        if let Some(entry_mut) = vault_obj.entries.get_mut(&args.name) {
+            if let Some(ref mut hotp_json) = entry_mut.hotp {
+                hotp_json["counter"] = serde_json::json!(counter + 1);
+            }
+            entry_mut.updated_at = unix_now();
+        }
+        vault::persist_vault(&path, &vault_obj)?;
+
+        result
+    };
+
+    // Output: --quiet sends to stderr; default is stdout.
+    if args.quiet {
+        eprintln!("{code_str}");
+    } else {
+        println!("{code_str}");
+    }
+
+    // --auto-clear: wait N seconds then overwrite the line (TTY only).
+    if let Some(secs) = args.auto_clear {
+        use std::io::IsTerminal;
+        if std::io::stdout().is_terminal() {
+            std::thread::sleep(std::time::Duration::from_secs(secs as u64));
+            // ANSI: move up one line, clear it, move up again.
+            print!("\x1b[1A\x1b[2K");
+            use std::io::Write;
+            let _ = std::io::stdout().flush();
+        }
+    }
+
+    Ok(())
+}
+
+/// OCRA (RFC 6287) challenge-response code path.
+fn cmd_code_ocra(args: CodeArgs) -> Result<(), String> {
 
     let challenge = args
         .challenge
@@ -542,7 +719,7 @@ pub fn cmd_code(args: CodeArgs) -> Result<(), String> {
     }
 
     let path = resolve_vault_path(&args.vault)?;
-    let passphrase = resolve_passphrase(&args.passphrase_file)?;
+    let passphrase = resolve_passphrase(args.passphrase_file.as_deref())?;
     let vault_obj = vault::unlock_vault(&path, &passphrase)?;
 
     let secret = vault_obj
@@ -569,7 +746,7 @@ pub fn cmd_code(args: CodeArgs) -> Result<(), String> {
 
 pub fn cmd_export_qr(args: ExportQrArgs) -> Result<(), String> {
     let path = resolve_vault_path(&args.vault)?;
-    let passphrase = resolve_passphrase(&args.passphrase_file)?;
+    let passphrase = resolve_passphrase(args.passphrase_file.as_deref())?;
     let vault_obj = vault::unlock_vault(&path, &passphrase)?;
 
     let entry = vault_obj
@@ -713,7 +890,7 @@ pub fn cmd_import_qr(args: ImportQrArgs) -> Result<(), String> {
         args.uri.clone()
     };
 
-    let passphrase = resolve_passphrase(&args.passphrase_file)?;
+    let passphrase = resolve_passphrase(args.passphrase_file.as_deref())?;
     let mut vault_obj = vault::unlock_vault(&path, &passphrase)?;
 
     // Parse `otpauth://<type>/<label>?<query>`.
@@ -871,7 +1048,7 @@ pub fn cmd_change_passphrase(args: ChangePassphraseArgs) -> Result<(), String> {
     // Read the existing tier from the vault header BEFORE unlocking (we
     // need the tier to call `change_vault_passphrase`, but the function
     // reads the header itself; we lock it by reading just the header).
-    let current = resolve_passphrase(&args.passphrase_file)?;
+    let current = resolve_passphrase(args.passphrase_file.as_deref())?;
 
     // Probe the file to recover the existing tier — preserves user's
     // original choice (Nano / Standard / Sovereign).
@@ -1266,5 +1443,237 @@ mod tests {
         })
         .expect_err("wrong old passphrase must fail");
         assert!(err.contains("decryption") || err.contains("Argon2id") || err.contains("cannot"));
+    }
+
+    // ── TOTP/HOTP SDK-level tests (RFC 6238 / RFC 4226 vectors) ──
+
+    #[test]
+    fn rfc6238_totp_sha1_t59() {
+        use origin_crypto_sdk::drbg::otp::{format_code, totp, HashAlgorithm};
+        let secret = b"12345678901234567890";
+        let code = totp(secret, 59, 30, 8, HashAlgorithm::Sha1);
+        assert_eq!(format_code(code, 8), "94287082");
+    }
+
+    #[test]
+    fn rfc6238_totp_sha256_t59() {
+        use origin_crypto_sdk::drbg::otp::{format_code, totp, HashAlgorithm};
+        let secret = b"12345678901234567890123456789012";
+        let code = totp(secret, 59, 30, 8, HashAlgorithm::Sha256);
+        assert_eq!(format_code(code, 8), "46119246");
+    }
+
+    #[test]
+    fn rfc6238_totp_sha512_t59() {
+        use origin_crypto_sdk::drbg::otp::{format_code, totp, HashAlgorithm};
+        let secret = b"1234567890123456789012345678901234567890123456789012345678901234";
+        let code = totp(secret, 59, 30, 8, HashAlgorithm::Sha512);
+        assert_eq!(format_code(code, 8), "90693936");
+    }
+
+    #[test]
+    fn rfc4226_hotp_sha1_counters_0_through_9() {
+        use origin_crypto_sdk::drbg::otp::{format_code, hotp, HashAlgorithm};
+        let secret = b"12345678901234567890";
+        let expected = [
+            "755224", "287082", "359152", "969429", "338314",
+            "254676", "287922", "162583", "399871", "520489",
+        ];
+        for (i, exp) in expected.iter().enumerate() {
+            let code = hotp(secret, i as u64, 6, HashAlgorithm::Sha1);
+            assert_eq!(format_code(code, 6), *exp, "HOTP counter {i}");
+        }
+    }
+
+    // ── cmd_add_otp tests ──
+
+    fn otp_add_args(dir: &std::path::Path, name: &str, hotp: bool) -> AddArgs {
+        let secret_file = dir.join("secret.b32");
+        // RFC 4226/6238 test secret in base32: "12345678901234567890"
+        std::fs::write(&secret_file, "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ\n").unwrap();
+        AddArgs {
+            vault: dir.join("test.vault").to_string_lossy().to_string(),
+            name: name.to_string(),
+            r#type: crate::cli::EntryType::Otp,
+            passphrase_file: Some(dir.join("pp").to_string_lossy().to_string()),
+            url: None,
+            notes: None,
+            secret_file: Some(secret_file.to_string_lossy().to_string()),
+            secret_stdin: false,
+            force: false,
+            period: 30,
+            digits: 6,
+            algo: crate::cli::HashAlgorithm::Sha1,
+            counter: 0,
+            hotp,
+        }
+    }
+
+    fn init_test_vault(dir: &std::path::Path) {
+        let pp = dir.join("pp");
+        std::fs::write(&pp, "test-pass\n").unwrap();
+        cmd_init(InitArgs {
+            vault: dir.join("test.vault").to_string_lossy().to_string(),
+            tier: "nano".to_string(),
+            passphrase_file: Some(pp.to_string_lossy().to_string()),
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn cmd_add_otp_creates_totp_entry() {
+        let dir = fresh_vault_dir();
+        init_test_vault(dir.path());
+        let args = otp_add_args(dir.path(), "github-2fa", false);
+        cmd_add(args).expect("add TOTP");
+
+        // Verify the entry exists and is TOTP.
+        let vault_obj = vault::unlock_vault(&dir.path().join("test.vault"), "test-pass").unwrap();
+        let entry = vault_obj.entries.get("github-2fa").expect("entry exists");
+        assert!(entry.totp.is_some(), "must be TOTP");
+        assert!(entry.hotp.is_none(), "must not be HOTP");
+        let totp_json = entry.totp.as_ref().unwrap();
+        assert_eq!(totp_json["period"], 30);
+        assert_eq!(totp_json["digits"], 6);
+        assert_eq!(totp_json["algo"], "SHA1");
+    }
+
+    #[test]
+    fn cmd_add_otp_creates_hotp_entry() {
+        let dir = fresh_vault_dir();
+        init_test_vault(dir.path());
+        let mut args = otp_add_args(dir.path(), "bank-hotp", true);
+        args.counter = 42;
+        cmd_add(args).expect("add HOTP");
+
+        let vault_obj = vault::unlock_vault(&dir.path().join("test.vault"), "test-pass").unwrap();
+        let entry = vault_obj.entries.get("bank-hotp").expect("entry exists");
+        assert!(entry.hotp.is_some(), "must be HOTP");
+        assert!(entry.totp.is_none(), "must not be TOTP");
+        let hotp_json = entry.hotp.as_ref().unwrap();
+        assert_eq!(hotp_json["counter"], 42);
+        assert_eq!(hotp_json["digits"], 6);
+    }
+
+    #[test]
+    fn cmd_add_otp_rejects_invalid_base32() {
+        let dir = fresh_vault_dir();
+        init_test_vault(dir.path());
+        let secret_file = dir.path().join("bad.b32");
+        std::fs::write(&secret_file, "not-valid-base32!!!\n").unwrap();
+        let mut args = otp_add_args(dir.path(), "bad-entry", false);
+        args.secret_file = Some(secret_file.to_string_lossy().to_string());
+        let err = cmd_add(args).expect_err("invalid base32 must fail");
+        assert!(err.contains("base32"), "error: {err}");
+    }
+
+    #[test]
+    fn cmd_add_otp_rejects_digits_out_of_range() {
+        let dir = fresh_vault_dir();
+        init_test_vault(dir.path());
+        let mut args = otp_add_args(dir.path(), "bad-digits", false);
+        args.digits = 3;
+        let err = cmd_add(args).expect_err("digits=3 must fail");
+        assert!(err.contains("digits"), "error: {err}");
+    }
+
+    // ── cmd_code_otp end-to-end tests ──
+
+    fn code_args(dir: &std::path::Path, name: &str) -> CodeArgs {
+        CodeArgs {
+            vault: dir.join("test.vault").to_string_lossy().to_string(),
+            name: name.to_string(),
+            passphrase_file: Some(dir.join("pp").to_string_lossy().to_string()),
+            algo: None,
+            digits: None,
+            auto_clear: None,
+            quiet: false,
+            ocra: false,
+            challenge: None,
+            counter: None,
+            key_file: None,
+        }
+    }
+
+    #[test]
+    fn cmd_code_totp_produces_6_digit_output() {
+        let dir = fresh_vault_dir();
+        init_test_vault(dir.path());
+        cmd_add(otp_add_args(dir.path(), "github-2fa", false)).expect("add");
+
+        // cmd_code prints to stdout; we just verify it doesn't error.
+        cmd_code(code_args(dir.path(), "github-2fa")).expect("code TOTP");
+    }
+
+    #[test]
+    fn cmd_code_hotp_increments_counter() {
+        let dir = fresh_vault_dir();
+        init_test_vault(dir.path());
+        cmd_add(otp_add_args(dir.path(), "bank-hotp", true)).expect("add");
+
+        // First code call: counter=0 → should increment to 1.
+        cmd_code(code_args(dir.path(), "bank-hotp")).expect("code 1");
+        let vault_obj = vault::unlock_vault(&dir.path().join("test.vault"), "test-pass").unwrap();
+        let counter1 = vault_obj.entries["bank-hotp"].hotp.as_ref().unwrap()["counter"]
+            .as_u64()
+            .unwrap();
+        assert_eq!(counter1, 1, "counter must be 1 after first code");
+
+        // Second code call: counter=1 → should increment to 2.
+        cmd_code(code_args(dir.path(), "bank-hotp")).expect("code 2");
+        let vault_obj = vault::unlock_vault(&dir.path().join("test.vault"), "test-pass").unwrap();
+        let counter2 = vault_obj.entries["bank-hotp"].hotp.as_ref().unwrap()["counter"]
+            .as_u64()
+            .unwrap();
+        assert_eq!(counter2, 2, "counter must be 2 after second code");
+    }
+
+    #[test]
+    fn cmd_code_rejects_password_entry() {
+        let dir = fresh_vault_dir();
+        init_test_vault(dir.path());
+
+        // Add a password entry.
+        let secret_file = dir.path().join("pw.txt");
+        std::fs::write(&secret_file, "hunter2\n").unwrap();
+        cmd_add(AddArgs {
+            vault: dir.path().join("test.vault").to_string_lossy().to_string(),
+            name: "email".to_string(),
+            r#type: crate::cli::EntryType::Password,
+            passphrase_file: Some(dir.path().join("pp").to_string_lossy().to_string()),
+            url: None,
+            notes: None,
+            secret_file: Some(secret_file.to_string_lossy().to_string()),
+            secret_stdin: false,
+            force: false,
+            period: 30,
+            digits: 6,
+            algo: crate::cli::HashAlgorithm::Sha1,
+            counter: 0,
+            hotp: false,
+        })
+        .expect("add password");
+
+        let err = cmd_code(code_args(dir.path(), "email")).expect_err("password entry must fail");
+        assert!(
+            err.contains("TOTP") || err.contains("HOTP") || err.contains("type"),
+            "error: {err}"
+        );
+    }
+
+    #[test]
+    fn cmd_code_rejects_missing_entry() {
+        let dir = fresh_vault_dir();
+        init_test_vault(dir.path());
+        let err = cmd_code(code_args(dir.path(), "nonexistent")).expect_err("missing entry");
+        assert!(err.contains("not found"), "error: {err}");
+    }
+
+    #[test]
+    fn cmd_code_otp_without_vault_returns_err() {
+        let mut args = empty_code_args();
+        args.ocra = false;
+        let err = cmd_code(args).expect_err("no vault must error");
+        assert!(err.contains("vault") || err.contains("TOTP"), "error: {err}");
     }
 }

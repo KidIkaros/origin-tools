@@ -482,3 +482,209 @@ fn cmd_import_qr_then_export_qr_recovers_uri_via_shell_out() {
         "URI scheme + type + label must round-trip, got: {uri_line}"
     );
 }
+
+// ──────────────────────────────────────────────────────────────────────
+// Test 6: OTP add → code round-trip
+// Adds a TOTP entry via `add --type otp --secret-file`, then generates
+// a code via `code`. Asserts the code is a 6-digit numeric string.
+// ──────────────────────────────────────────────────────────────────────
+
+#[test]
+fn cmd_add_otp_then_code_produces_6_digit_output() {
+    let dir = TempDir::new().expect("tempdir");
+    let vault_pw = write_secret(&dir, "vault-pw", "vault-pass");
+    // RFC 4226/6238 test secret in base32: "12345678901234567890"
+    let secret_file = write_secret(&dir, "otp-secret.b32", "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ");
+
+    init_vault(&dir, &vault_pw, "nano");
+    let vault_path = dir.path().join("test.vault");
+
+    // Add a TOTP entry.
+    let add_status = Command::new(origin_pass_bin())
+        .args([
+            "add",
+            "--vault",
+            vault_path.to_str().unwrap(),
+            "--type",
+            "otp",
+            "github-2fa",
+            "--secret-file",
+            secret_file.to_str().unwrap(),
+            "--passphrase-file",
+            vault_pw.to_str().unwrap(),
+        ])
+        .status()
+        .expect("spawn origin-pass add --type otp");
+    assert!(
+        add_status.success(),
+        "cmd_add --type otp must succeed (exit={add_status})"
+    );
+
+    // Generate a code.
+    let code_output = Command::new(origin_pass_bin())
+        .args([
+            "code",
+            "--vault",
+            vault_path.to_str().unwrap(),
+            "github-2fa",
+            "--passphrase-file",
+            vault_pw.to_str().unwrap(),
+        ])
+        .output()
+        .expect("spawn origin-pass code");
+    assert!(
+        code_output.status.success(),
+        "cmd_code must succeed (exit={}); stderr={}",
+        code_output.status,
+        String::from_utf8_lossy(&code_output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&code_output.stdout);
+    let code = stdout.trim();
+    assert_eq!(
+        code.len(),
+        6,
+        "TOTP code must be exactly 6 digits, got: `{code}`"
+    );
+    assert!(
+        code.chars().all(|c| c.is_ascii_digit()),
+        "TOTP code must be all digits, got: `{code}`"
+    );
+}
+
+// ──────────────────────────────────────────────────────────────────────
+// Test 7: import-qr → code round-trip
+// Imports a TOTP URI via `import-qr`, then generates a code via `code`.
+// Verifies the full shell-out path: URI parsing → vault storage →
+// base32 decode → TOTP computation → stdout.
+// ──────────────────────────────────────────────────────────────────────
+
+#[test]
+fn cmd_import_qr_then_code_produces_valid_totp() {
+    let dir = TempDir::new().expect("tempdir");
+    let vault_pw = write_secret(&dir, "vault-pw", "v");
+    init_vault(&dir, &vault_pw, "nano");
+
+    let vault_path = dir.path().join("test.vault");
+    let uri = "otpauth://totp/Acme:alice?secret=JBSWY3DPEHPK3PXP&issuer=Acme&algorithm=SHA1&digits=6&period=30";
+
+    // Import.
+    let import_status = Command::new(origin_pass_bin())
+        .args([
+            "import-qr",
+            "--vault",
+            vault_path.to_str().unwrap(),
+            uri,
+            "--passphrase-file",
+            vault_pw.to_str().unwrap(),
+        ])
+        .status()
+        .expect("spawn import-qr");
+    assert!(
+        import_status.success(),
+        "import-qr must succeed (exit={import_status})"
+    );
+
+    // Generate code. The entry name is derived from the URI label
+    // ("Acme:alice" → the portion after the colon: "alice").
+    let code_output = Command::new(origin_pass_bin())
+        .args([
+            "code",
+            "--vault",
+            vault_path.to_str().unwrap(),
+            "alice",
+            "--passphrase-file",
+            vault_pw.to_str().unwrap(),
+        ])
+        .output()
+        .expect("spawn code after import-qr");
+    assert!(
+        code_output.status.success(),
+        "code after import-qr must succeed (exit={}); stderr={}",
+        code_output.status,
+        String::from_utf8_lossy(&code_output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&code_output.stdout);
+    let code = stdout.trim();
+    assert_eq!(
+        code.len(),
+        6,
+        "TOTP code from imported URI must be 6 digits, got: `{code}`"
+    );
+    assert!(
+        code.chars().all(|c| c.is_ascii_digit()),
+        "TOTP code must be all digits, got: `{code}`"
+    );
+}
+
+// ──────────────────────────────────────────────────────────────────────
+// Test 8: HOTP add → code → counter increments
+// Adds an HOTP entry, generates a code, then verifies the counter
+// was incremented in the vault by generating a second code and
+// confirming the output differs (different counter → different code).
+// ──────────────────────────────────────────────────────────────────────
+
+#[test]
+fn cmd_add_hotp_then_code_increments_counter() {
+    let dir = TempDir::new().expect("tempdir");
+    let vault_pw = write_secret(&dir, "vault-pw", "vault-pass");
+    let secret_file = write_secret(&dir, "otp-secret.b32", "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ");
+
+    init_vault(&dir, &vault_pw, "nano");
+    let vault_path = dir.path().join("test.vault");
+
+    // Add an HOTP entry with --hotp flag.
+    let add_status = Command::new(origin_pass_bin())
+        .args([
+            "add",
+            "--vault",
+            vault_path.to_str().unwrap(),
+            "--type",
+            "otp",
+            "--hotp",
+            "bank-token",
+            "--secret-file",
+            secret_file.to_str().unwrap(),
+            "--passphrase-file",
+            vault_pw.to_str().unwrap(),
+        ])
+        .status()
+        .expect("spawn add --type otp --hotp");
+    assert!(
+        add_status.success(),
+        "add --hotp must succeed (exit={add_status})"
+    );
+
+    // First code (counter=0).
+    let code1 = Command::new(origin_pass_bin())
+        .args([
+            "code",
+            "--vault",
+            vault_path.to_str().unwrap(),
+            "bank-token",
+            "--passphrase-file",
+            vault_pw.to_str().unwrap(),
+        ])
+        .output()
+        .expect("first code");
+    assert!(code1.status.success(), "first code must succeed");
+    let out1 = String::from_utf8_lossy(&code1.stdout).trim().to_string();
+
+    // Second code (counter=1 after auto-increment).
+    let code2 = Command::new(origin_pass_bin())
+        .args([
+            "code",
+            "--vault",
+            vault_path.to_str().unwrap(),
+            "bank-token",
+            "--passphrase-file",
+            vault_pw.to_str().unwrap(),
+        ])
+        .output()
+        .expect("second code");
+    assert!(code2.status.success(), "second code must succeed");
+    let out2 = String::from_utf8_lossy(&code2.stdout).trim().to_string();
+
+    // RFC 4226: counter 0 → 755224, counter 1 → 287082.
+    assert_eq!(out1, "755224", "HOTP counter=0 must produce 755224, got: {out1}");
+    assert_eq!(out2, "287082", "HOTP counter=1 must produce 287082, got: {out2}");
+}

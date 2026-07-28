@@ -1,9 +1,10 @@
 [package]
-name = "origin-identity"
+name = "origin-stealth"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "Identity key management — generate master seeds, hybrid sign/verify with Ed25519 + Falcon-1024"
+authors.workspace = true
+description = "Stealth addresses and proof-of-work challenges"
 
 [dependencies]
 origin-common = { path = "../origin-common" }
@@ -13,4 +14,6 @@ serde.workspace = true
 serde_json.workspace = true
 hex.workspace = true
 rpassword.workspace = true
-ed25519-dalek.workspace = true
+
+[dev-dependencies]
+tempfile = "3"
