@@ -1,0 +1,21 @@
+[package]
+name = "origin-common"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Shared infrastructure for the origin-tools suite"
+
+[dependencies]
+origin-crypto-sdk.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+hex.workspace = true
+rpassword.workspace = true
+rand = "0.8"
+zeroize = { version = "1.8", features = ["derive"] }
+toml = "0.8"
+dirs = "5"
+
+[dev-dependencies]
+tempfile = "3"

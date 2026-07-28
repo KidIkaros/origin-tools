@@ -17,7 +17,8 @@
 use std::path::PathBuf;
 use std::sync::Mutex;
 
-use origin_crypto_sdk::tier::MemoryTier;
+use origin_common::{resolve_passphrase, MemoryTier};
+use origin_crypto_sdk::tier::MemoryTier as SdkMemoryTier;
 
 use crate::cli::{
     AddArgs, ChangePassphraseArgs, CodeArgs, ExportQrArgs, GetArgs, ImportQrArgs, InitArgs,
@@ -74,42 +75,10 @@ fn put_vault(v: Vault) -> Result<(), String> {
 // Passphrase + path helpers
 // ──────────────────────────────────────────────────────────────────────
 
-/// Resolve a passphrase from `--passphrase-file <path>` or via prompt.
-pub fn resolve_passphrase(file: &Option<String>) -> Result<String, String> {
-    match file {
-        Some(path) => {
-            let pw = std::fs::read_to_string(path)
-                .map_err(|e| format!("cannot read passphrase file {path}: {e}"))?;
-            Ok(pw.trim_end_matches(['\n', '\r']).to_string())
-        }
-        None => {
-            rpassword::prompt_password("Passphrase: ")
-                .map_err(|e| format!("passphrase prompt failed: {e}"))
-        }
-    }
-}
-
 /// Same as `resolve_passphrase` but confirms via a second prompt when
 /// reading interactively (used by `cmd_init` and `cmd_change_passphrase`).
 pub fn resolve_passphrase_confirm(file: &Option<String>) -> Result<String, String> {
-    match file {
-        Some(path) => {
-            // File-based passphrase — confirmation is the user's responsibility.
-            let pw = std::fs::read_to_string(path)
-                .map_err(|e| format!("cannot read passphrase file {path}: {e}"))?;
-            Ok(pw.trim_end_matches(['\n', '\r']).to_string())
-        }
-        None => {
-            let pw = rpassword::prompt_password("Passphrase: ")
-                .map_err(|e| format!("passphrase prompt failed: {e}"))?;
-            let pw2 = rpassword::prompt_password("Confirm:   ")
-                .map_err(|e| format!("passphrase confirm failed: {e}"))?;
-            if pw != pw2 {
-                return Err("passphrases do not match".to_string());
-            }
-            Ok(pw)
-        }
-    }
+    origin_common::resolve_passphrase_confirm(file.as_deref())
 }
 
 /// Resolve `--vault <path>` with `~/` expansion against `$HOME`.
@@ -322,7 +291,7 @@ pub fn cmd_unlock(args: UnlockArgs) -> Result<(), String> {
     // the on-disk header is authoritative so this value is unused.
     vault::parse_tier(&args.tier)?;
     let path = resolve_vault_path(&args.vault)?;
-    let passphrase = resolve_passphrase(&args.passphrase_file)?;
+    let passphrase = resolve_passphrase(args.passphrase_file.as_deref())?;
     let vault_obj = vault::unlock_vault(&path, &passphrase)?;
 
     let entry_count = vault_obj.entries.len();
@@ -381,7 +350,7 @@ pub fn cmd_add(args: AddArgs) -> Result<(), String> {
     }
 
     let path = resolve_vault_path(&args.vault)?;
-    let passphrase = resolve_passphrase(&args.passphrase_file)?;
+    let passphrase = resolve_passphrase(args.passphrase_file.as_deref())?;
     let mut vault_obj = vault::unlock_vault(&path, &passphrase)?;
 
     // Pre-flight: --force vs. duplicate. Refuse accidental clobbering.
@@ -446,7 +415,7 @@ fn cmd_add_otp(args: AddArgs) -> Result<(), String> {
     }
 
     let path = resolve_vault_path(&args.vault)?;
-    let passphrase = resolve_passphrase(&args.passphrase_file)?;
+    let passphrase = resolve_passphrase(args.passphrase_file.as_deref())?;
     let mut vault_obj = vault::unlock_vault(&path, &passphrase)?;
 
     // Pre-flight: --force vs. duplicate.
@@ -504,7 +473,7 @@ fn cmd_add_otp(args: AddArgs) -> Result<(), String> {
 /// Retrieve a single entry by name.
 pub fn cmd_get(args: GetArgs) -> Result<(), String> {
     let path = resolve_vault_path(&args.vault)?;
-    let passphrase = resolve_passphrase(&args.passphrase_file)?;
+    let passphrase = resolve_passphrase(args.passphrase_file.as_deref())?;
     let vault_obj = vault::unlock_vault(&path, &passphrase)?;
 
     let entry = vault_obj
@@ -520,7 +489,7 @@ pub fn cmd_get(args: GetArgs) -> Result<(), String> {
 /// List all entries (names + types, NO secrets).
 pub fn cmd_list(args: ListArgs) -> Result<(), String> {
     let path = resolve_vault_path(&args.vault)?;
-    let passphrase = resolve_passphrase(&args.passphrase_file)?;
+    let passphrase = resolve_passphrase(args.passphrase_file.as_deref())?;
     let vault_obj = vault::unlock_vault(&path, &passphrase)?;
 
     let mut entries: Vec<_> = vault_obj.entries.iter().collect();
@@ -538,7 +507,7 @@ pub fn cmd_list(args: ListArgs) -> Result<(), String> {
 /// Remove an entry from the vault.
 pub fn cmd_rm(args: RmArgs) -> Result<(), String> {
     let path = resolve_vault_path(&args.vault)?;
-    let passphrase = resolve_passphrase(&args.passphrase_file)?;
+    let passphrase = resolve_passphrase(args.passphrase_file.as_deref())?;
     let mut vault_obj = vault::unlock_vault(&path, &passphrase)?;
 
     if vault_obj.entries.remove(&args.name).is_none() {
@@ -588,7 +557,7 @@ fn cmd_code_otp(args: CodeArgs) -> Result<(), String> {
     }
 
     let path = resolve_vault_path(&args.vault)?;
-    let passphrase = resolve_passphrase(&args.passphrase_file)?;
+    let passphrase = resolve_passphrase(args.passphrase_file.as_deref())?;
     let mut vault_obj = vault::unlock_vault(&path, &passphrase)?;
 
     let entry = vault_obj
@@ -750,7 +719,7 @@ fn cmd_code_ocra(args: CodeArgs) -> Result<(), String> {
     }
 
     let path = resolve_vault_path(&args.vault)?;
-    let passphrase = resolve_passphrase(&args.passphrase_file)?;
+    let passphrase = resolve_passphrase(args.passphrase_file.as_deref())?;
     let vault_obj = vault::unlock_vault(&path, &passphrase)?;
 
     let secret = vault_obj
@@ -777,7 +746,7 @@ fn cmd_code_ocra(args: CodeArgs) -> Result<(), String> {
 
 pub fn cmd_export_qr(args: ExportQrArgs) -> Result<(), String> {
     let path = resolve_vault_path(&args.vault)?;
-    let passphrase = resolve_passphrase(&args.passphrase_file)?;
+    let passphrase = resolve_passphrase(args.passphrase_file.as_deref())?;
     let vault_obj = vault::unlock_vault(&path, &passphrase)?;
 
     let entry = vault_obj
@@ -921,7 +890,7 @@ pub fn cmd_import_qr(args: ImportQrArgs) -> Result<(), String> {
         args.uri.clone()
     };
 
-    let passphrase = resolve_passphrase(&args.passphrase_file)?;
+    let passphrase = resolve_passphrase(args.passphrase_file.as_deref())?;
     let mut vault_obj = vault::unlock_vault(&path, &passphrase)?;
 
     // Parse `otpauth://<type>/<label>?<query>`.
@@ -1079,7 +1048,7 @@ pub fn cmd_change_passphrase(args: ChangePassphraseArgs) -> Result<(), String> {
     // Read the existing tier from the vault header BEFORE unlocking (we
     // need the tier to call `change_vault_passphrase`, but the function
     // reads the header itself; we lock it by reading just the header).
-    let current = resolve_passphrase(&args.passphrase_file)?;
+    let current = resolve_passphrase(args.passphrase_file.as_deref())?;
 
     // Probe the file to recover the existing tier — preserves user's
     // original choice (Nano / Standard / Sovereign).
