@@ -1,0 +1,38 @@
+[package]
+name = "origin-tools-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+origin-common = { path = "../origin-common" }
+origin-crypto-sdk = { path = "../../origin-crypto-sdk" }
+serde_json = "1"
+toml = "0.8"
+
+[dependencies.libfuzzer-sys]
+version = "0.4"
+
+[[bin]]
+name = "fuzz_envelope"
+path = "fuzz_targets/fuzz_envelope.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "fuzz_config"
+path = "fuzz_targets/fuzz_config.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "fuzz_tier"
+path = "fuzz_targets/fuzz_tier.rs"
+test = false
+doc = false
+
+[profile.release]
+debug = 1

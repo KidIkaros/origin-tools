@@ -1,0 +1,6 @@
+target/
+corpus/
+crashes/
+hangs/
+coverage/
+Cargo.lock
