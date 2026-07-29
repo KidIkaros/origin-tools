@@ -69,8 +69,26 @@ All tools follow Unix CLI conventions:
 
 ## Install
 
+### Prebuilt binaries (no Rust required)
+
+Download a binary for your platform from the
+[latest release](https://github.com/KidIkaros/origin-tools/releases), extract
+the archive, and put the `origin` binary on your `PATH`:
+
 ```bash
-# From source (recommended for now)
+tar -xzf origin-tools-<version>-<target>.tar.gz
+cd origin-tools-<version>-<target>
+sudo cp origin /usr/local/bin/
+```
+
+Available targets: `x86_64-unknown-linux-musl`, `aarch64-unknown-linux-musl`,
+`x86_64-apple-darwin`, `aarch64-apple-darwin`. Each archive includes the
+unified `origin` binary, all nine standalone `origin-*` tools, the README, and
+the LICENSE. Verify integrity with the accompanying `.sha256` file.
+
+### From source
+
+```bash
 git clone https://github.com/KidIkaros/origin-tools
 cd origin-tools
 cargo install --path origin          # installs the unified `origin` binary
