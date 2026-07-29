@@ -81,13 +81,15 @@ struct TempDir(PathBuf);
 
 impl TempDir {
     fn new(label: &str) -> Self {
+        let base = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("target/test-tmp");
+        fs::create_dir_all(&base).expect("create test-tmp dir");
         let pid = std::process::id();
         let nano = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_nanos())
             .unwrap_or(0);
         let counter = TEMPDIR_COUNTER.fetch_add(1, Ordering::Relaxed);
-        let path = std::env::temp_dir().join(format!("origin-it-{label}-{pid}-{nano}-{counter}"));
+        let path = base.join(format!("origin-it-{label}-{pid}-{nano}-{counter}"));
         fs::create_dir(&path)
             .unwrap_or_else(|e| panic!("create temp dir {} ({e})", path.display()));
         Self(path)

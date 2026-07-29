@@ -1014,17 +1014,19 @@ mod tests {
     /// rapid back-to-back calls would otherwise collide on `/tmp`.
     static UNIT_COUNTER: AtomicU64 = AtomicU64::new(0);
 
-    /// Build a fresh path under the OS temp dir for a single test
-    /// artifact. Caller owns the cleanup (call `fs::remove_file` /
+    /// Build a fresh path under a per-process temp directory for a
+    /// single test artifact. Uses `/tmp/origin-test-{pid}/` instead of
+    /// flat `/tmp` to avoid interference from system tmp cleaners and
+    /// cargo target-dir management that caused flaky "No such file"
+    /// failures in parallel workspace test runs.
+    /// Caller owns the cleanup (call `fs::remove_file` /
     /// `fs::remove_dir_all` on the path).
     fn fresh_tmp_path(label: &str) -> std::path::PathBuf {
         let pid = std::process::id();
-        let nano = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_nanos())
-            .unwrap_or(0);
+        let base = std::env::temp_dir().join(format!("origin-test-{pid}"));
+        std::fs::create_dir_all(&base).expect("create per-process test dir");
         let counter = UNIT_COUNTER.fetch_add(1, Ordering::Relaxed);
-        std::env::temp_dir().join(format!("origin-unit-{label}-{pid}-{nano}-{counter}"))
+        base.join(format!("{label}-{counter}"))
     }
 
     #[test]

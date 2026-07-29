@@ -1,0 +1,6 @@
+# Cap test parallelism: origin-identity tests run Argon2id KDF
+# (up to 64 MiB per invocation). With 12 threads the system hits
+# memory/IO pressure and file operations fail intermittently.
+# 4 threads keeps total KDF memory under ~256 MiB — stable.
+[env]
+RUST_TEST_THREADS = "4"
