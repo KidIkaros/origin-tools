@@ -4,6 +4,9 @@ A coherent, interoperable suite of cryptographic CLI tools built on the
 [origin-crypto-sdk](../origin-crypto-sdk). Modeled on Office 365 / Google
 Workspace: one identity, one shared store, tools that compose.
 
+> **🌐 Try it in your browser:** [kidikaros.github.io/origin-web](https://kidikaros.github.io/origin-web)
+> — a zero-server WASM demo running the same crypto, entirely client-side.
+
 ## Architecture
 
 ```
