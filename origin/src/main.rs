@@ -53,6 +53,10 @@ enum Tool {
     Entropy(origin_entropy::cli::Cli),
     /// EC-Schnorr zero-knowledge proofs
     Schnorr(origin_schnorr::cli::Cli),
+    /// Encrypted sessions (Noise handshake, ratchet, AEAD messaging)
+    Channel(origin_channel::cli::Cli),
+    /// File provenance (stamps, manifests, watermarks, verification)
+    Provenance(origin_provenance::cli::Cli),
     /// Health-check your ~/.origin setup
     Doctor,
 }
@@ -70,6 +74,8 @@ fn main() {
         Tool::Stealth(sub) => origin_stealth::commands::dispatch(sub),
         Tool::Entropy(sub) => origin_entropy::commands::dispatch(sub),
         Tool::Schnorr(sub) => origin_schnorr::commands::dispatch(sub),
+        Tool::Channel(sub) => origin_channel::commands::dispatch(sub),
+        Tool::Provenance(sub) => origin_provenance::commands::dispatch(sub),
         Tool::Doctor => doctor::run(),
     };
 

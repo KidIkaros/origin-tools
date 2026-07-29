@@ -21,4 +21,6 @@ origin-proof.workspace = true
 origin-stealth.workspace = true
 origin-entropy.workspace = true
 origin-schnorr.workspace = true
+origin-channel.workspace = true
+origin-provenance.workspace = true
 clap.workspace = true

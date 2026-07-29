@@ -11,6 +11,9 @@ members = [
     "origin-stealth",
     "origin-entropy",
     "origin-schnorr",
+    "origin-channel",
+    "origin-provenance",
+    "origin-attest",
     "origin-cross-tests",
 ]
 exclude = ["fuzz"]
@@ -34,6 +37,9 @@ origin-proof = { path = "origin-proof" }
 origin-stealth = { path = "origin-stealth" }
 origin-entropy = { path = "origin-entropy" }
 origin-schnorr = { path = "origin-schnorr" }
+origin-channel = { path = "origin-channel" }
+origin-provenance = { path = "origin-provenance" }
+origin-attest = { path = "origin-attest" }
 clap = { version = "4", features = ["derive"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
