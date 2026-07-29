@@ -1,0 +1,121 @@
+# SPDX-License-Identifier: Apache-2.0
+name: Release
+
+# Builds prebuilt binaries and attaches them to a GitHub Release whenever a
+# version tag (v*) is pushed. Run `cargo build --release` locally is NOT
+# required by end users anymore — they can download a binary from the release.
+#
+# Targets:
+#   - x86_64-unknown-linux-musl   (static, runs on any modern Linux)
+#   - aarch64-unknown-linux-musl  (static, ARM64 Linux / Raspberry Pi)
+#   - x86_64-apple-darwin         (Intel macOS)
+#   - aarch64-apple-darwin        (Apple Silicon macOS)
+
+on:
+  push:
+    tags:
+      - "v*"
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: Build (${{ matrix.target }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-musl
+            runner: ubuntu-latest
+            asset_suffix: x86_64-unknown-linux-musl
+          - target: aarch64-unknown-linux-musl
+            runner: ubuntu-latest
+            asset_suffix: aarch64-unknown-linux-musl
+          - target: x86_64-apple-darwin
+            runner: macos-latest
+            asset_suffix: x86_64-apple-darwin
+          - target: aarch64-apple-darwin
+            runner: macos-latest
+            asset_suffix: aarch64-apple-darwin
+
+    steps:
+      - name: Checkout origin-tools
+        uses: actions/checkout@v4
+        with:
+          path: origin-tools
+
+      - name: Checkout origin-crypto-sdk (sibling path dependency)
+        uses: actions/checkout@v4
+        with:
+          repository: KidIkaros/OriginSDK
+          path: origin-crypto-sdk
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Install musl toolchain (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y musl-tools
+          # Cross-linker for aarch64 musl
+          if [ "${{ matrix.target }}" = "aarch64-unknown-linux-musl" ]; then
+            sudo apt-get install -y gcc-aarch64-linux-gnu
+            mkdir -p ~/.cargo
+            printf '[target.aarch64-unknown-linux-musl]\n' >> ~/.cargo/config.toml
+            printf 'linker = "aarch64-linux-gnu-gcc"\n' >> ~/.cargo/config.toml
+          fi
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            origin-tools/target
+          key: ${{ runner.os }}-${{ matrix.target }}-cargo-${{ hashFiles('origin-tools/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-${{ matrix.target }}-cargo-
+
+      - name: Build release binaries
+        run: cargo build --release --target ${{ matrix.target }} --workspace
+        working-directory: origin-tools
+
+      - name: Package binaries
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG="${GITHUB_REF_NAME}"
+          SUFFIX="${{ matrix.asset_suffix }}"
+          STAGE="origin-tools-${TAG}-${SUFFIX}"
+          mkdir -p "${STAGE}"
+
+          # Unified binary + all standalone tools
+          BINS="origin origin-identity origin-pass origin-seal origin-seed \
+                origin-shard origin-proof origin-stealth origin-entropy origin-schnorr"
+          for b in ${BINS}; do
+            cp "origin-tools/target/${{ matrix.target }}/release/${b}" "${STAGE}/"
+          done
+
+          # Docs users expect alongside the binaries
+          cp origin-tools/README.md "${STAGE}/"
+          cp origin-tools/LICENSE "${STAGE}/"
+
+          # Archive + checksum
+          tar -czf "${STAGE}.tar.gz" "${STAGE}"
+          shasum -a 256 "${STAGE}.tar.gz" > "${STAGE}.tar.gz.sha256"
+
+          echo "ASSET=${STAGE}.tar.gz" >> "$GITHUB_ENV"
+          echo "CHECKSUM=${STAGE}.tar.gz.sha256" >> "$GITHUB_ENV"
+
+      - name: Upload release assets
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            ${{ env.ASSET }}
+            ${{ env.CHECKSUM }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
