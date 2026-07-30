@@ -1032,6 +1032,7 @@ mod tests {
     #[test]
     fn fingerprint_changes_after_rotate() {
         // Two blobs with the same seed but different salt (forced by RNG) → different fingerprints.
+        // Uses real Nano tier to confirm Argon2id KDF works end-to-end.
         let seed_a = [7u8; 32];
         let seed_b = [7u8; 32];
         let blob_a = create_blob(b"pw", MemoryTier::Nano, Some(&seed_a)).unwrap();
@@ -1290,7 +1291,7 @@ mod tests {
         // produced by cmd_sign --output hex) and CombinedSignature::from_wire
         // (same consumed by cmd_verify --hex).
         let seed = [0x33u8; 32];
-        let bundle = HybridSigningKeyBundle::from_seed(&seed, "test:v1").unwrap();
+        let bundle = HybridSigningKeyBundle::from_seed_cached(&seed, "test:v1").unwrap();
         let msg = b"pipe test";
         let sig = bundle.sign_hybrid(msg);
 
@@ -1318,7 +1319,7 @@ mod tests {
     fn verify_with_hex_message() {
         // Verify that --hex message mode sees the same bytes as input.
         let seed = [0x44u8; 32];
-        let bundle = HybridSigningKeyBundle::from_seed(&seed, "test:v1").unwrap();
+        let bundle = HybridSigningKeyBundle::from_seed_cached(&seed, "test:v1").unwrap();
         let raw_msg = b"\x00\x01\x02\xff";
         let sig = bundle.sign_hybrid(raw_msg);
 
@@ -1934,7 +1935,7 @@ mod tests {
         let dir = fresh_tmp_path("sign-json");
         std::fs::create_dir(&dir).unwrap();
 
-        // Create a real blob with known seed + passphrase
+        // Create a real blob with known seed + passphrase.
         let seed = [0x42u8; 32];
         let pw = b"test-pw";
         let blob = create_blob(pw, MemoryTier::Nano, Some(&seed)).unwrap();
@@ -2007,7 +2008,7 @@ mod tests {
         std::fs::write(&pw_path, "test-pw").unwrap();
 
         // Sign directly using SDK to get the signature parts
-        let bundle = HybridSigningKeyBundle::from_seed(&seed, "test:v1").unwrap();
+        let bundle = HybridSigningKeyBundle::from_seed_cached(&seed, "test:v1").unwrap();
         let sig = bundle.sign_hybrid(b"hello world");
         let sig_json = serde_json::json!({
             "ed25519": hex::encode(sig.ed25519_sig.to_bytes()),
@@ -2054,7 +2055,7 @@ mod tests {
         // Message must be valid hex (read_bytes with hex:true calls hex::decode).
         let msg_hex = "deadbeef";
         let raw_msg = hex::decode(msg_hex).unwrap();
-        let bundle = HybridSigningKeyBundle::from_seed(&seed, "test:v1").unwrap();
+        let bundle = HybridSigningKeyBundle::from_seed_cached(&seed, "test:v1").unwrap();
         let sig = bundle.sign_hybrid(&raw_msg);
         let combined = CombinedSignature {
             ed: sig.ed25519_sig,
@@ -2098,7 +2099,7 @@ mod tests {
         std::fs::write(&pw_path, "test-pw").unwrap();
 
         // Sign "real message" but verify "wrong message"
-        let bundle = HybridSigningKeyBundle::from_seed(&seed, "test:v1").unwrap();
+        let bundle = HybridSigningKeyBundle::from_seed_cached(&seed, "test:v1").unwrap();
         let sig = bundle.sign_hybrid(b"real message");
         let sig_json = serde_json::json!({
             "ed25519": hex::encode(sig.ed25519_sig.to_bytes()),
@@ -2137,7 +2138,7 @@ mod tests {
         std::fs::write(&blob_path, &blob).unwrap();
 
         // Sign correctly but write WRONG passphrase file
-        let bundle = HybridSigningKeyBundle::from_seed(&seed, "test:v1").unwrap();
+        let bundle = HybridSigningKeyBundle::from_seed_cached(&seed, "test:v1").unwrap();
         let sig = bundle.sign_hybrid(b"message");
         let sig_json = serde_json::json!({
             "ed25519": hex::encode(sig.ed25519_sig.to_bytes()),

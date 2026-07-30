@@ -473,10 +473,11 @@ impl DelegationRevocation {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Arc;
 
-    fn test_bundle() -> (HybridSigningKeyBundle, String) {
+    fn test_bundle() -> (Arc<HybridSigningKeyBundle>, String) {
         let seed = [0x42u8; 32];
-        let bundle = HybridSigningKeyBundle::from_seed(&seed, "test:v1").unwrap();
+        let bundle = HybridSigningKeyBundle::from_seed_cached(&seed, "test:v1").unwrap();
         let fp = hex::encode(origin_crypto_sdk::sha3_256(
             bundle.falcon1024_pk().as_bytes(),
         ));
@@ -510,7 +511,7 @@ mod tests {
     fn chain_verification_two_links() {
         let (root_bundle, root_fp) = test_bundle();
         let seed2 = [0x43u8; 32];
-        let mid_bundle = HybridSigningKeyBundle::from_seed(&seed2, "test:v1").unwrap();
+        let mid_bundle = HybridSigningKeyBundle::from_seed_cached(&seed2, "test:v1").unwrap();
         let mid_fp = hex::encode(origin_crypto_sdk::sha3_256(
             mid_bundle.falcon1024_pk().as_bytes(),
         ));
@@ -598,7 +599,7 @@ mod tests {
     fn chain_rejects_broken_link() {
         let (root_bundle, root_fp) = test_bundle();
         let seed2 = [0x43u8; 32];
-        let mid_bundle = HybridSigningKeyBundle::from_seed(&seed2, "test:v1").unwrap();
+        let mid_bundle = HybridSigningKeyBundle::from_seed_cached(&seed2, "test:v1").unwrap();
         let mid_fp = hex::encode(origin_crypto_sdk::sha3_256(
             mid_bundle.falcon1024_pk().as_bytes(),
         ));
