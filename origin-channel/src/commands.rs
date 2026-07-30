@@ -234,4 +234,65 @@ mod tests {
         };
         assert!(cmd_keygen(kg2).is_err());
     }
+
+    #[test]
+    fn keygen_force_overwrites() {
+        let dir = tempfile::tempdir().unwrap();
+        let keyfile = dir.path().join("test-keys.json");
+        let kf_str = keyfile.to_str().unwrap();
+
+        let kg = KeygenArgs {
+            output: kf_str.to_string(),
+            force: false,
+        };
+        assert!(cmd_keygen(kg).is_ok());
+
+        let kg2 = KeygenArgs {
+            output: kf_str.to_string(),
+            force: true,
+        };
+        assert!(cmd_keygen(kg2).is_ok());
+    }
+
+    #[test]
+    fn resolve_path_tilde_expansion() {
+        let resolved = resolve_path("~/some/file.json").unwrap();
+        let home = std::env::var("HOME").unwrap();
+        assert_eq!(resolved, PathBuf::from(home).join("some/file.json"));
+    }
+
+    #[test]
+    fn resolve_path_absolute() {
+        let resolved = resolve_path("/tmp/keys.json").unwrap();
+        assert_eq!(resolved, PathBuf::from("/tmp/keys.json"));
+    }
+
+    #[test]
+    fn fingerprint_missing_fields() {
+        let dir = tempfile::tempdir().unwrap();
+        let keyfile = dir.path().join("bad.json");
+        std::fs::write(&keyfile, r#"{"version": 1}"#).unwrap();
+
+        let fp = FingerprintArgs {
+            keyfile: keyfile.to_str().unwrap().to_string(),
+        };
+        assert!(cmd_fingerprint(fp).is_err());
+    }
+
+    #[test]
+    fn fingerprint_missing_file() {
+        let fp = FingerprintArgs {
+            keyfile: "/nonexistent/path/keys.json".to_string(),
+        };
+        assert!(cmd_fingerprint(fp).is_err());
+    }
+
+    #[test]
+    fn dispatch_routes_commands() {
+        use crate::cli::Cli;
+        use clap::Parser;
+
+        let cli = Cli::parse_from(["origin-channel", "demo", "--messages", "1"]);
+        assert!(dispatch(cli).is_ok());
+    }
 }

@@ -134,4 +134,33 @@ mod tests {
         assert_eq!(p2, b"second");
         assert_eq!(consumed1 + consumed2, buf.len());
     }
+
+    #[test]
+    fn decode_typed_empty_body_rejected() {
+        // Frame with 1-byte payload (just the type tag, no actual body)
+        let frame = encode_frame(&[0x42]).unwrap();
+        let result = decode_typed(&frame);
+        // inner = [0x42], tag = 0x42, payload = [] — this is valid
+        assert!(result.unwrap().is_some());
+
+        // Truly empty frame body
+        let frame = encode_frame(b"").unwrap();
+        let result = decode_typed(&frame);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn decode_frame_oversized_rejected() {
+        // Craft a header claiming a huge frame
+        let mut buf = vec![0u8; 4];
+        let huge = (MAX_FRAME_SIZE + 1) as u32;
+        buf[..4].copy_from_slice(&huge.to_be_bytes());
+        let result = decode_frame(&buf);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn incomplete_header_returns_none() {
+        assert!(decode_frame(&[0x00, 0x01]).unwrap().is_none());
+    }
 }

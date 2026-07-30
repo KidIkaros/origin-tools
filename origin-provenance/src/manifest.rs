@@ -278,4 +278,19 @@ mod tests {
         assert_eq!(manifest.entries.len(), 1);
         assert!(manifest.entries.contains_key("visible.txt"));
     }
+
+    #[test]
+    fn summarize_all_statuses() {
+        let mut results = BTreeMap::new();
+        results.insert("ok.txt".to_string(), FileStatus::Ok);
+        results.insert("mod.txt".to_string(), FileStatus::Modified);
+        results.insert("miss.txt".to_string(), FileStatus::Missing);
+        results.insert("add.txt".to_string(), FileStatus::Added);
+
+        let (ok, modified, missing, added) = Manifest::summarize(&results);
+        assert_eq!(ok, 1);
+        assert_eq!(modified, 1);
+        assert_eq!(missing, 1);
+        assert_eq!(added, 1);
+    }
 }

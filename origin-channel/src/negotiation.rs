@@ -117,4 +117,38 @@ mod tests {
         let bytes = [0xFF, 0x01, 0x01];
         assert!(Negotiation::from_bytes(&bytes).is_err());
     }
+
+    #[test]
+    fn reject_truncated_suite_list() {
+        // Says 3 suites but only provides 1
+        let bytes = [NEGOTIATION_VERSION, 3, 0x01];
+        let result = Negotiation::from_bytes(&bytes);
+        assert!(result.is_err());
+        let err = result.err().unwrap();
+        assert!(err.to_string().contains("truncated"));
+    }
+
+    #[test]
+    fn reject_unknown_suite_byte() {
+        let bytes = [NEGOTIATION_VERSION, 1, 0xFF];
+        let result = Negotiation::from_bytes(&bytes);
+        assert!(result.is_err());
+        let err = result.err().unwrap();
+        assert!(err.to_string().contains("unknown suite"));
+    }
+
+    #[test]
+    fn reject_empty_suite_list() {
+        let bytes = [NEGOTIATION_VERSION, 0];
+        let result = Negotiation::from_bytes(&bytes);
+        assert!(result.is_err());
+        let err = result.err().unwrap();
+        assert!(err.to_string().contains("empty"));
+    }
+
+    #[test]
+    fn reject_too_short() {
+        let bytes = [NEGOTIATION_VERSION];
+        assert!(Negotiation::from_bytes(&bytes).is_err());
+    }
 }

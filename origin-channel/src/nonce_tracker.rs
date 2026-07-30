@@ -69,4 +69,14 @@ mod tests {
         let nonce = NonceTracker::counter_to_nonce(42);
         assert_eq!(&nonce[8..], &[0u8; 16]);
     }
+
+    #[test]
+    fn counter_exhaustion_at_max() {
+        let mut tracker = NonceTracker::new("test");
+        tracker.next = u64::MAX;
+        let result = tracker.next_nonce();
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(err_msg.contains("exhausted"));
+    }
 }

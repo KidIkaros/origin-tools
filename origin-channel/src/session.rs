@@ -284,4 +284,44 @@ mod tests {
         let result = receiver.decrypt(&msg);
         assert!(matches!(result, Err(ChannelError::Decryption(_))));
     }
+
+    #[test]
+    fn needs_rotation_and_recv_exhausted() {
+        let limits = AeadLimits::new(u64::MAX, 20);
+        let mut sender = RatchetedSession::with_defaults(test_keys());
+        let mut receiver = RatchetedSession::new(peer_keys(), limits);
+
+        assert!(!receiver.needs_rotation());
+        assert!(!receiver.recv_exhausted());
+
+        // 10 bytes plaintext → 26 bytes ciphertext → 10 bytes counted
+        let msg = sender.encrypt(b"0123456789").unwrap();
+        receiver.decrypt(&msg).unwrap();
+        assert!(!receiver.recv_exhausted());
+
+        // Another 10 → total 20 → exhausted
+        let msg2 = sender.encrypt(b"0123456789").unwrap();
+        receiver.decrypt(&msg2).unwrap();
+        assert!(receiver.recv_exhausted());
+        assert!(receiver.needs_rotation());
+    }
+
+    #[test]
+    fn limits_accessor() {
+        let limits = AeadLimits::new(42, 99);
+        let session = RatchetedSession::new(test_keys(), limits);
+        assert_eq!(session.limits().max_messages, 42);
+        assert_eq!(session.limits().max_bytes, 99);
+    }
+
+    #[test]
+    fn recv_bytes_tracking() {
+        let mut sender = RatchetedSession::with_defaults(test_keys());
+        let mut receiver = RatchetedSession::with_defaults(peer_keys());
+
+        let msg = sender.encrypt(b"hello").unwrap();
+        receiver.decrypt(&msg).unwrap();
+        assert_eq!(receiver.recv_messages(), 1);
+        assert_eq!(receiver.recv_bytes(), 5);
+    }
 }

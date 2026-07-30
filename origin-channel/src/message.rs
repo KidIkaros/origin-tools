@@ -171,4 +171,16 @@ mod tests {
         let result = HandshakeMessage::from_bytes(&[0x01; 10]);
         assert!(result.is_err());
     }
+
+    #[test]
+    fn wire_size_calculation() {
+        let msg = ChannelMessage {
+            msg_type: MSG_DATA,
+            seq: 1,
+            nonce: [0u8; 24],
+            ciphertext: vec![0xAB; 48],
+        };
+        // 4 (frame prefix) + 33 (header) + 48 (ciphertext) = 85
+        assert_eq!(msg.wire_size(), 4 + HEADER_SIZE + 48);
+    }
 }

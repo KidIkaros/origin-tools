@@ -285,4 +285,229 @@ mod tests {
         };
         assert!(cmd_check(check_args).is_ok());
     }
+
+    #[test]
+    fn dispatch_all_commands() {
+        use crate::cli::Cli;
+        use clap::Parser;
+
+        // Stamp
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("d.txt");
+        std::fs::write(&file, b"dispatch test").unwrap();
+        let cli = Cli::parse_from(["origin-provenance", "stamp", file.to_str().unwrap()]);
+        assert!(dispatch(cli).is_ok());
+
+        // Verify
+        let stamp_file = dir.path().join("d.txt.stamp.json");
+        let cli = Cli::parse_from([
+            "origin-provenance",
+            "verify",
+            "--stamp",
+            stamp_file.to_str().unwrap(),
+            file.to_str().unwrap(),
+        ]);
+        assert!(dispatch(cli).is_ok());
+
+        // Watermark
+        let wm_file = dir.path().join("wm.txt");
+        std::fs::write(&wm_file, b"watermark me").unwrap();
+        let cli = Cli::parse_from(["origin-provenance", "watermark", wm_file.to_str().unwrap()]);
+        assert!(dispatch(cli).is_ok());
+
+        // Unwatermark
+        let cli = Cli::parse_from(["origin-provenance", "unwatermark", wm_file.to_str().unwrap()]);
+        assert!(dispatch(cli).is_ok());
+
+        // Scan
+        let scan_dir = tempfile::tempdir().unwrap();
+        std::fs::write(scan_dir.path().join("s.txt"), b"scan").unwrap();
+        let cli = Cli::parse_from(["origin-provenance", "scan", scan_dir.path().to_str().unwrap()]);
+        assert!(dispatch(cli).is_ok());
+
+        // Check
+        let manifest_path = scan_dir.path().join("provenance-manifest.json");
+        let cli = Cli::parse_from([
+            "origin-provenance",
+            "check",
+            "--manifest",
+            manifest_path.to_str().unwrap(),
+            scan_dir.path().to_str().unwrap(),
+        ]);
+        assert!(dispatch(cli).is_ok());
+    }
+
+    #[test]
+    fn stamp_file_not_found() {
+        let args = StampArgs {
+            file: "/nonexistent/file.txt".into(),
+            output: None,
+        };
+        let err = cmd_stamp(args).unwrap_err();
+        assert!(err.contains("file not found"));
+    }
+
+    #[test]
+    fn verify_file_not_found() {
+        let dir = tempfile::tempdir().unwrap();
+        let stamp = dir.path().join("s.json");
+        std::fs::write(&stamp, b"{}").unwrap();
+        let args = VerifyArgs {
+            file: "/nonexistent/file.txt".into(),
+            stamp: stamp.to_str().unwrap().into(),
+        };
+        let err = cmd_verify(args).unwrap_err();
+        assert!(err.contains("file not found"));
+    }
+
+    #[test]
+    fn verify_stamp_not_found() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("f.txt");
+        std::fs::write(&file, b"data").unwrap();
+        let args = VerifyArgs {
+            file: file.to_str().unwrap().into(),
+            stamp: "/nonexistent/stamp.json".into(),
+        };
+        let err = cmd_verify(args).unwrap_err();
+        assert!(err.contains("stamp not found"));
+    }
+
+    #[test]
+    fn watermark_file_not_found() {
+        let args = WatermarkArgs {
+            file: "/nonexistent/file.txt".into(),
+            label: None,
+            output: None,
+        };
+        let err = cmd_watermark(args).unwrap_err();
+        assert!(err.contains("file not found"));
+    }
+
+    #[test]
+    fn watermark_already_watermarked() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("wm.bin");
+        std::fs::write(&file, b"content").unwrap();
+
+        // First watermark
+        let args = WatermarkArgs {
+            file: file.to_str().unwrap().into(),
+            label: None,
+            output: None,
+        };
+        cmd_watermark(args).unwrap();
+
+        // Second watermark should fail
+        let args = WatermarkArgs {
+            file: file.to_str().unwrap().into(),
+            label: None,
+            output: None,
+        };
+        let err = cmd_watermark(args).unwrap_err();
+        assert!(err.contains("already contains a watermark"));
+    }
+
+    #[test]
+    fn unwatermark_file_not_found() {
+        let args = UnwatermarkArgs {
+            file: "/nonexistent/file.txt".into(),
+            strip: None,
+        };
+        let err = cmd_unwatermark(args).unwrap_err();
+        assert!(err.contains("file not found"));
+    }
+
+    #[test]
+    fn unwatermark_no_watermark() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("plain.txt");
+        std::fs::write(&file, b"no watermark here").unwrap();
+        let args = UnwatermarkArgs {
+            file: file.to_str().unwrap().into(),
+            strip: None,
+        };
+        let err = cmd_unwatermark(args).unwrap_err();
+        assert!(err.contains("does not contain a watermark"));
+    }
+
+    #[test]
+    fn unwatermark_with_strip() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("wm.bin");
+        std::fs::write(&file, b"original data").unwrap();
+
+        let wm_args = WatermarkArgs {
+            file: file.to_str().unwrap().into(),
+            label: Some("strip-test".into()),
+            output: None,
+        };
+        cmd_watermark(wm_args).unwrap();
+
+        let stripped = dir.path().join("stripped.bin");
+        let uw_args = UnwatermarkArgs {
+            file: file.to_str().unwrap().into(),
+            strip: Some(stripped.to_str().unwrap().into()),
+        };
+        assert!(cmd_unwatermark(uw_args).is_ok());
+        assert!(stripped.exists());
+        assert_eq!(std::fs::read(&stripped).unwrap(), b"original data");
+    }
+
+    #[test]
+    fn scan_not_a_directory() {
+        let args = ScanArgs {
+            dir: "/nonexistent/dir".into(),
+            output: None,
+        };
+        let err = cmd_scan(args).unwrap_err();
+        assert!(err.contains("not a directory"));
+    }
+
+    #[test]
+    fn check_not_a_directory() {
+        let args = CheckArgs {
+            dir: "/nonexistent/dir".into(),
+            manifest: "/some/manifest.json".into(),
+        };
+        let err = cmd_check(args).unwrap_err();
+        assert!(err.contains("not a directory"));
+    }
+
+    #[test]
+    fn check_manifest_not_found() {
+        let dir = tempfile::tempdir().unwrap();
+        let args = CheckArgs {
+            dir: dir.path().to_str().unwrap().into(),
+            manifest: "/nonexistent/manifest.json".into(),
+        };
+        let err = cmd_check(args).unwrap_err();
+        assert!(err.contains("manifest not found"));
+    }
+
+    #[test]
+    fn check_detects_modified_and_missing() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("keep.txt"), b"keep").unwrap();
+        std::fs::write(dir.path().join("modify.txt"), b"original").unwrap();
+        std::fs::write(dir.path().join("delete.txt"), b"gone").unwrap();
+
+        let scan_args = ScanArgs {
+            dir: dir.path().to_str().unwrap().into(),
+            output: None,
+        };
+        cmd_scan(scan_args).unwrap();
+
+        // Modify one file, delete another
+        std::fs::write(dir.path().join("modify.txt"), b"tampered!").unwrap();
+        std::fs::remove_file(dir.path().join("delete.txt")).unwrap();
+
+        let manifest_path = dir.path().join("provenance-manifest.json");
+        let check_args = CheckArgs {
+            dir: dir.path().to_str().unwrap().into(),
+            manifest: manifest_path.to_str().unwrap().into(),
+        };
+        let err = cmd_check(check_args).unwrap_err();
+        assert!(err.contains("integrity check failed"));
+    }
 }

@@ -93,6 +93,47 @@ impl std::fmt::Debug for RatchetKeys {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn session_id_hex_and_display() {
+        let id = SessionId([0xAB; 32]);
+        assert_eq!(id.as_hex(), "abababababababababababababababababababababababababababababababab");
+        // Display shows first 16 hex chars
+        assert_eq!(format!("{id}"), "abababababababab");
+    }
+
+    #[test]
+    fn cipher_suite_default_and_props() {
+        let suite = CipherSuite::default();
+        assert_eq!(suite, CipherSuite::XChaCha20Poly1305);
+        assert_eq!(suite.nonce_len(), 24);
+        assert_eq!(suite.tag_len(), 16);
+        assert_eq!(suite.as_u8(), 0x01);
+    }
+
+    #[test]
+    fn cipher_suite_from_u8_invalid() {
+        assert!(CipherSuite::from_u8(0x00).is_none());
+        assert!(CipherSuite::from_u8(0xFF).is_none());
+        assert!(CipherSuite::from_u8(0x01).is_some());
+    }
+
+    #[test]
+    fn ratchet_keys_debug_redacts() {
+        let keys = RatchetKeys {
+            root: [0x11; 32],
+            send_chain: [0x22; 32],
+            recv_chain: [0x33; 32],
+        };
+        let debug = format!("{keys:?}");
+        assert!(debug.contains("[redacted]"));
+        assert!(!debug.contains("1111"));
+    }
+}
+
 /// A complete established session.
 #[derive(Debug)]
 pub struct Session {

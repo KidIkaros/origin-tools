@@ -47,3 +47,28 @@ impl From<String> for ChannelError {
         ChannelError::Other(s)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn from_string_conversion() {
+        let err: ChannelError = "something broke".to_string().into();
+        assert!(matches!(err, ChannelError::Other(_)));
+        assert_eq!(err.to_string(), "something broke");
+    }
+
+    #[test]
+    fn display_all_variants() {
+        assert!(ChannelError::Handshake("hs".into()).to_string().contains("hs"));
+        assert!(ChannelError::InvalidMessage("bad".into()).to_string().contains("bad"));
+        assert!(ChannelError::Decryption("dec".into()).to_string().contains("dec"));
+        assert!(ChannelError::Replay(42).to_string().contains("42"));
+        assert!(ChannelError::Negotiation("neg".into()).to_string().contains("neg"));
+        assert!(ChannelError::Codec("cd".into()).to_string().contains("cd"));
+        assert!(ChannelError::NoSession.to_string().contains("not established"));
+        assert!(ChannelError::Key("k".into()).to_string().contains("k"));
+        assert!(ChannelError::UsageLimitExceeded("lim".into()).to_string().contains("lim"));
+    }
+}

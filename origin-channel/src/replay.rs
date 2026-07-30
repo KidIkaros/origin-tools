@@ -42,7 +42,9 @@ impl ReplayWindow {
             // First message ever
             self.initialized = true;
             self.highest = seq;
-            self.set_bit(0);
+            let floor = self.highest.saturating_sub(self.window_size as u64 - 1);
+            let offset = (seq - floor) as usize;
+            self.set_bit(offset);
             return Ok(());
         }
 
@@ -53,9 +55,15 @@ impl ReplayWindow {
         }
 
         if seq > self.highest {
-            // Advance window
-            let shift = (seq - self.highest) as usize;
-            self.advance(shift);
+            // Advance window — shift bitmap by how much the floor moves,
+            // not by how much highest moves (they differ when floor is
+            // saturated at 0).
+            let old_floor = self.highest.saturating_sub(self.window_size as u64 - 1);
+            let new_floor = seq.saturating_sub(self.window_size as u64 - 1);
+            let floor_shift = (new_floor - old_floor) as usize;
+            if floor_shift > 0 {
+                self.advance(floor_shift);
+            }
             self.highest = seq;
         }
 
@@ -168,5 +176,46 @@ mod tests {
         // Old sequences are gone
         assert!(w.accept(999).is_ok()); // within new window
         assert!(w.accept(0).is_err()); // way below floor
+    }
+
+    #[test]
+    fn word_shift_advance() {
+        // Window of 128 (2 words). Shift by 65 (word_shift=1, bit_shift=1)
+        let mut w = ReplayWindow::new(128);
+        assert!(w.accept(0).is_ok());
+        assert!(w.accept(1).is_ok());
+        // Jump by 65 — triggers word_shift > 0
+        assert!(w.accept(65).is_ok());
+        // 0 and 1 should still be in window (floor = 65 - 127 = 0)
+        assert!(w.accept(0).is_err()); // duplicate
+        assert!(w.accept(1).is_err()); // duplicate
+        assert!(w.accept(2).is_ok()); // new, in window
+    }
+
+    #[test]
+    fn bit_shift_advance() {
+        // Shift by 3 (word_shift=0, bit_shift=3)
+        let mut w = ReplayWindow::new(64);
+        assert!(w.accept(0).is_ok());
+        assert!(w.accept(3).is_ok()); // shift=3, bit_shift=3
+        assert!(w.accept(0).is_err()); // duplicate
+        assert!(w.accept(1).is_ok()); // new
+        assert!(w.accept(2).is_ok()); // new
+    }
+
+    #[test]
+    fn get_bit_out_of_bounds_returns_false() {
+        let w = ReplayWindow::new(64);
+        // offset beyond bitmap length → false
+        assert!(!w.get_bit(9999));
+    }
+
+    #[test]
+    fn first_message_nonzero_seq() {
+        let mut w = ReplayWindow::new(64);
+        // First message doesn't have to be seq 0
+        assert!(w.accept(42).is_ok());
+        assert!(w.accept(42).is_err()); // duplicate
+        assert!(w.accept(43).is_ok());
     }
 }
