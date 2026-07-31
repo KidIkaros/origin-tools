@@ -1139,7 +1139,7 @@ dependencies = [
 
 [[package]]
 name = "origin-crypto-sdk"
-version = "0.6.5"
+version = "0.6.6"
 dependencies = [
  "argon2",
  "blake3",
@@ -1271,6 +1271,29 @@ dependencies = [
  "serde",
  "serde_json",
  "tempfile",
+]
+
+[[package]]
+name = "origin-secrets"
+version = "0.4.1"
+dependencies = [
+ "argon2",
+ "blake3",
+ "chacha20poly1305",
+ "clap",
+ "hex",
+ "origin-common",
+ "origin-crypto-sdk",
+ "origin-identity",
+ "origin-pass",
+ "origin-shard",
+ "rand",
+ "rpassword",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.19",
+ "zeroize",
 ]
 
 [[package]]

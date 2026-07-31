@@ -1,0 +1,32 @@
+[package]
+name = "origin-secrets"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Threshold secrets management — K-of-N recovery, post-quantum verification"
+
+[[bin]]
+name = "origin-secrets"
+path = "src/main.rs"
+
+[dependencies]
+origin-common = { path = "../origin-common" }
+origin-crypto-sdk.workspace = true
+origin-identity = { path = "../origin-identity" }
+origin-pass = { path = "../origin-pass" }
+origin-shard = { path = "../origin-shard" }
+clap = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+hex = { workspace = true }
+rpassword = { workspace = true }
+zeroize = { version = "1", features = ["derive"] }
+thiserror = "2"
+rand = "0.8"
+argon2 = "0.5"
+blake3 = "1"
+chacha20poly1305 = "0.10"
+
+[dev-dependencies]
+tempfile = "3"
