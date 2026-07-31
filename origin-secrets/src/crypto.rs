@@ -1,9 +1,11 @@
 //! Vault encryption and decryption operations
+//!
+//! All symmetric cryptography is delegated to `origin-crypto-sdk` so this
+//! crate builds on the foundation instead of re-implementing it.
 
 use crate::error::Error;
-use chacha20poly1305::aead::Aead;
-use chacha20poly1305::{Key, KeyInit, XChaCha20Poly1305};
-use rand::Rng;
+use crate::vault::MemoryTier;
+use origin_crypto_sdk::aead::XChaCha20Poly1305;
 use serde::{Deserialize, Serialize};
 
 /// Encrypted vault data
@@ -11,7 +13,7 @@ use serde::{Deserialize, Serialize};
 pub struct EncryptedVault {
     pub version: u8,
     pub created_at: String,
-    pub tier: crate::vault::MemoryTier,
+    pub tier: MemoryTier,
     pub fingerprint: String,
     pub salt: [u8; 16],
     pub nonce: [u8; 24],
@@ -42,24 +44,19 @@ impl Default for VaultData {
     }
 }
 
-/// Encrypt vault data with XChaCha20-Poly1305
+/// Encrypt vault data with XChaCha20-Poly1305 (origin-crypto-sdk)
 pub fn encrypt_vault_data(
     data: &VaultData,
     key: &[u8; 32],
     salt: [u8; 16],
     nonce: [u8; 24],
-    tier: crate::vault::MemoryTier,
+    tier: MemoryTier,
 ) -> Result<EncryptedVault, Error> {
-    let cipher_key = Key::from_slice(key);
-    let cipher_nonce = chacha20poly1305::XNonce::from_slice(&nonce);
-
     let plaintext = serde_json::to_vec(data)
         .map_err(|e| Error::CryptoError(format!("Failed to serialize vault data: {}", e)))?;
 
-    let cipher = XChaCha20Poly1305::new(cipher_key);
-    let ciphertext = cipher
-        .encrypt(cipher_nonce, plaintext.as_slice())
-        .map_err(|e| Error::CryptoError(format!("Failed to encrypt vault: {}", e)))?;
+    let ciphertext = XChaCha20Poly1305::encrypt(key, &nonce, &plaintext)
+        .map_err(|e| Error::CryptoError(format!("Failed to encrypt vault: {:?}", e)))?;
 
     // Generate fingerprint
     let mut combined = Vec::with_capacity(salt.len() + nonce.len());
@@ -84,15 +81,10 @@ pub fn encrypt_vault_data(
     })
 }
 
-/// Decrypt vault data from encrypted vault
+/// Decrypt vault data from encrypted vault (origin-crypto-sdk)
 pub fn decrypt_vault_data(encrypted: &EncryptedVault, key: &[u8; 32]) -> Result<VaultData, Error> {
-    let cipher_key = Key::from_slice(key);
-    let cipher_nonce = chacha20poly1305::XNonce::from_slice(&encrypted.nonce);
-
-    let cipher = XChaCha20Poly1305::new(cipher_key);
-    let plaintext = cipher
-        .decrypt(cipher_nonce, encrypted.ciphertext.as_slice())
-        .map_err(|e| Error::VaultDecryptionFailed(format!("Failed to decrypt vault: {}", e)))?;
+    let plaintext = XChaCha20Poly1305::decrypt(key, &encrypted.nonce, &encrypted.ciphertext)
+        .map_err(|e| Error::VaultDecryptionFailed(format!("Failed to decrypt vault: {:?}", e)))?;
 
     serde_json::from_slice(&plaintext)
         .map_err(|e| Error::VaultCorrupted(format!("Failed to deserialize vault: {}", e)))
@@ -101,8 +93,6 @@ pub fn decrypt_vault_data(encrypted: &EncryptedVault, key: &[u8; 32]) -> Result<
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::fs;
-    use std::path::Path;
 
     #[test]
     fn test_vault_data_new() {
@@ -128,7 +118,7 @@ mod tests {
         let salt = [1u8; 16];
         let nonce = [2u8; 24];
 
-        let encrypted = encrypt_vault_data(&data, &key, salt, nonce, crate::vault::MemoryTier::Standard).unwrap();
+        let encrypted = encrypt_vault_data(&data, &key, salt, nonce, MemoryTier::Standard).unwrap();
         let decrypted = decrypt_vault_data(&encrypted, &key).unwrap();
 
         assert_eq!(decrypted.master_seed, data.master_seed);
@@ -145,7 +135,7 @@ mod tests {
         let salt = [1u8; 16];
         let nonce = [2u8; 24];
 
-        let encrypted = encrypt_vault_data(&data, &key, salt, nonce, crate::vault::MemoryTier::Standard).unwrap();
+        let encrypted = encrypt_vault_data(&data, &key, salt, nonce, MemoryTier::Standard).unwrap();
         let result = decrypt_vault_data(&encrypted, &wrong_key);
 
         assert!(matches!(result, Err(Error::VaultDecryptionFailed(_))));
@@ -158,7 +148,7 @@ mod tests {
         let salt = [1u8; 16];
         let nonce = [2u8; 24];
 
-        let encrypted = encrypt_vault_data(&data, &key, salt, nonce, crate::vault::MemoryTier::Standard).unwrap();
+        let encrypted = encrypt_vault_data(&data, &key, salt, nonce, MemoryTier::Standard).unwrap();
 
         let serialized = serde_json::to_string(&encrypted).unwrap();
         let deserialized: EncryptedVault = serde_json::from_str(&serialized).unwrap();
@@ -174,8 +164,8 @@ mod tests {
         let salt = [1u8; 16];
         let nonce = [2u8; 24];
 
-        let encrypted1 = encrypt_vault_data(&data, &key, salt, nonce, crate::vault::MemoryTier::Standard).unwrap();
-        let encrypted2 = encrypt_vault_data(&data, &key, salt, nonce, crate::vault::MemoryTier::Standard).unwrap();
+        let encrypted1 = encrypt_vault_data(&data, &key, salt, nonce, MemoryTier::Standard).unwrap();
+        let encrypted2 = encrypt_vault_data(&data, &key, salt, nonce, MemoryTier::Standard).unwrap();
 
         assert_eq!(encrypted1.fingerprint, encrypted2.fingerprint);
     }
@@ -188,8 +178,8 @@ mod tests {
         let nonce1 = [2u8; 24];
         let nonce2 = [3u8; 24];
 
-        let encrypted1 = encrypt_vault_data(&data, &key, salt, nonce1, crate::vault::MemoryTier::Standard).unwrap();
-        let encrypted2 = encrypt_vault_data(&data, &key, salt, nonce2, crate::vault::MemoryTier::Standard).unwrap();
+        let encrypted1 = encrypt_vault_data(&data, &key, salt, nonce1, MemoryTier::Standard).unwrap();
+        let encrypted2 = encrypt_vault_data(&data, &key, salt, nonce2, MemoryTier::Standard).unwrap();
 
         assert_ne!(encrypted1.fingerprint, encrypted2.fingerprint);
     }
@@ -205,7 +195,7 @@ mod tests {
         let salt = [1u8; 16];
         let nonce = [2u8; 24];
 
-        let encrypted = encrypt_vault_data(&data, &key, salt, nonce, crate::vault::MemoryTier::Standard).unwrap();
+        let encrypted = encrypt_vault_data(&data, &key, salt, nonce, MemoryTier::Standard).unwrap();
         let decrypted = decrypt_vault_data(&encrypted, &key).unwrap();
 
         assert_eq!(decrypted.keys.len(), 100);
@@ -218,8 +208,8 @@ mod tests {
         let salt = [1u8; 16];
         let nonce = [2u8; 24];
 
-        let encrypted = encrypt_vault_data(&data, &key, salt, nonce, crate::vault::MemoryTier::Sovereign).unwrap();
-        assert_eq!(encrypted.tier, crate::vault::MemoryTier::Sovereign);
+        let encrypted = encrypt_vault_data(&data, &key, salt, nonce, MemoryTier::Sovereign).unwrap();
+        assert_eq!(encrypted.tier, MemoryTier::Sovereign);
     }
 }
 
@@ -229,7 +219,6 @@ mod integration_workflow_tests {
     use super::*;
     use crate::cli::InitArgs;
     use crate::commands::init::cmd_init;
-    use crate::vault::MemoryTier;
     use std::path::Path;
 
     #[test]
@@ -270,7 +259,12 @@ mod integration_workflow_tests {
             cmd_init(args.clone()).ok();
             let vault_json = std::fs::read_to_string("~/.origin/secrets.vault").unwrap();
             let vault: crate::vault::Vault = serde_json::from_str(&vault_json).unwrap();
-            assert_eq!(vault.tier, MemoryTier::from_str(tier).unwrap(), "Tier mismatch for: {}", tier);
+            assert_eq!(
+                vault.tier,
+                MemoryTier::from_str(tier).unwrap(),
+                "Tier mismatch for: {}",
+                tier
+            );
 
             std::fs::remove_file("~/.origin/secrets.vault").ok();
         }
@@ -289,7 +283,10 @@ mod integration_workflow_tests {
 
         cmd_init(args.clone()).ok();
         let result = cmd_init(args);
-        assert!(matches!(result.unwrap_err(), crate::error::Error::VaultAlreadyExists(_)));
+        assert!(matches!(
+            result.unwrap_err(),
+            crate::error::Error::VaultAlreadyExists(_)
+        ));
 
         std::fs::remove_file("~/.origin/secrets.vault").ok();
     }

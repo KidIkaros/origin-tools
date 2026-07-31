@@ -1,12 +1,44 @@
 //! Share data structures and operations
 
+use ed25519_dalek::Signature as Ed25519Signature;
+use origin_crypto_sdk::pqc::falcon1024::FalconSignature;
+use origin_crypto_sdk::signing::hybrid::Ed25519Falcon1024;
+use origin_crypto_sdk::CryptoError;
 use serde::{Deserialize, Serialize};
 
 /// Hybrid signature (Ed25519 + Falcon-1024)
+///
+/// Stored as raw bytes for JSON persistence; convert to/from the SDK's
+/// [`Ed25519Falcon1024`] via [`HybridSignature::to_sdk`] / [`from_sdk`].
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct HybridSignature {
     pub ed25519: Vec<u8>,
     pub falcon1024: Vec<u8>,
+}
+
+impl HybridSignature {
+    /// Build from the SDK's typed hybrid signature.
+    pub fn from_sdk(sig: &Ed25519Falcon1024) -> Self {
+        Self {
+            ed25519: sig.ed25519_sig.to_bytes().to_vec(),
+            falcon1024: sig.falcon_sig.as_bytes().to_vec(),
+        }
+    }
+
+    /// Reconstruct the SDK's typed hybrid signature for verification.
+    pub fn to_sdk(&self) -> Result<Ed25519Falcon1024, CryptoError> {
+        let ed25519_sig = Ed25519Signature::from_bytes(
+            self.ed25519
+                .as_slice()
+                .try_into()
+                .map_err(|_| CryptoError::InvalidParameter("bad ed25519 sig length".into()))?,
+        );
+        let falcon_sig = FalconSignature::from_bytes(&self.falcon1024)?;
+        Ok(Ed25519Falcon1024 {
+            ed25519_sig,
+            falcon_sig,
+        })
+    }
 }
 
 /// Share file format
@@ -27,6 +59,7 @@ pub struct Share {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use origin_crypto_sdk::signing::hybrid::HybridSigningKeyBundle;
 
     #[test]
     fn test_hybrid_signature_roundtrip() {
@@ -40,6 +73,20 @@ mod tests {
 
         assert_eq!(sig.ed25519, deserialized.ed25519);
         assert_eq!(sig.falcon1024, deserialized.falcon1024);
+    }
+
+    #[test]
+    fn test_hybrid_signature_sdk_roundtrip() {
+        // Deterministic seed -> stable keypair (no slow keygen in path beyond one derive)
+        let seed = [7u8; 32];
+        let bundle =
+            HybridSigningKeyBundle::from_seed(&seed, "origin-secrets/test").expect("valid seed");
+        let sdk_sig = bundle.sign_hybrid(b"vault-master-key");
+        let stored = HybridSignature::from_sdk(&sdk_sig);
+        let restored = stored.to_sdk().expect("rebuild from bytes");
+        // Field equality proves byte-preserving conversion
+        assert_eq!(stored.ed25519, restored.ed25519_sig.to_bytes().to_vec());
+        assert_eq!(stored.falcon1024, restored.falcon_sig.as_bytes().to_vec());
     }
 
     #[test]

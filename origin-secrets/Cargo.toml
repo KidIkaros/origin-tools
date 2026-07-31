@@ -24,9 +24,8 @@ rpassword = { workspace = true }
 zeroize = { version = "1", features = ["derive"] }
 thiserror = "2"
 rand = "0.8"
-argon2 = "0.5"
 blake3 = "1"
-chacha20poly1305 = "0.10"
+ed25519-dalek = { workspace = true }
 
 [dev-dependencies]
 tempfile = "3"

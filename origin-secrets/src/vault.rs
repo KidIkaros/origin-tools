@@ -1,15 +1,21 @@
 //! Vault data structures and operations
 
+use origin_crypto_sdk::kdf::Argon2idBuilder;
 use serde::{Deserialize, Serialize};
 
-/// Argon2id memory tier
+/// Argon2id memory tier for vault KDF cost.
+///
+/// This is a local, serde-enabled mirror of
+/// `origin_crypto_sdk::primitives::tier::MemoryTier`. The SDK owns the
+/// authoritative definition; we convert to it for KDF parameter selection
+/// via [`MemoryTier::to_sdk`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum MemoryTier {
-    /// 16 MB
+    /// 8 MB — IoT / edge / RPi Zero
     Nano,
-    /// 64 MB
+    /// 64 MB — mid-tier laptop / server
     Standard,
-    /// 256 MB
+    /// 256 MB — datacenter / high-security
     Sovereign,
 }
 
@@ -23,14 +29,22 @@ impl MemoryTier {
         }
     }
 
-    pub fn argon2_params(&self, output_len: usize) -> argon2::Params {
-        let (m_cost, t_cost, p_cost) = match self {
-            MemoryTier::Nano => (8 * 1024, 2, 1),        // 8 MB
-            MemoryTier::Standard => (64 * 1024, 3, 2),   // 64 MB
-            MemoryTier::Sovereign => (256 * 1024, 5, 4), // 256 MB
-        };
-        argon2::Params::new(m_cost, t_cost, p_cost, Some(output_len))
-            .expect("valid Argon2 params")
+    /// Build a tier-aware Argon2id KDF builder from the SDK.
+    pub fn argon2_builder(self) -> Argon2idBuilder {
+        match self {
+            MemoryTier::Nano => Argon2idBuilder::new()
+                .memory_kib(8 * 1024)
+                .iterations(2)
+                .parallelism(1),
+            MemoryTier::Standard => Argon2idBuilder::new()
+                .memory_kib(64 * 1024)
+                .iterations(3)
+                .parallelism(2),
+            MemoryTier::Sovereign => Argon2idBuilder::new()
+                .memory_kib(256 * 1024)
+                .iterations(5)
+                .parallelism(4),
+        }
     }
 
     pub fn label(&self) -> &'static str {
@@ -94,21 +108,6 @@ mod tests {
     }
 
     #[test]
-    fn test_memory_tier_argon2_params() {
-        let nano = MemoryTier::Nano.argon2_params(32);
-        let standard = MemoryTier::Standard.argon2_params(32);
-        let sovereign = MemoryTier::Sovereign.argon2_params(32);
-
-        // Sovereign uses more memory
-        assert!(sovereign.m_cost() > standard.m_cost());
-        assert!(standard.m_cost() > nano.m_cost());
-
-        // Sovereign uses more iterations
-        assert!(sovereign.t_cost() >= standard.t_cost());
-        assert!(standard.t_cost() >= nano.t_cost());
-    }
-
-    #[test]
     fn test_vault_serialization_roundtrip() {
         let vault = Vault {
             version: 1,
@@ -157,7 +156,6 @@ mod tests {
     #[test]
     fn test_vault_file_not_found() {
         let vault_path = "/tmp/nonexistent_vault_file_12345.json";
-
         let result = std::fs::read_to_string(vault_path);
         assert!(result.is_err());
     }

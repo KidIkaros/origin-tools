@@ -1,14 +1,10 @@
 use crate::cli::InitArgs;
-use crate::crypto::{VaultData, EncryptedVault, encrypt_vault_data};
+use crate::crypto::{encrypt_vault_data, VaultData};
 use crate::error::Error;
 use crate::vault::{MemoryTier, Vault};
-use argon2::password_hash::{PasswordHasher, SaltString};
-use argon2::Argon2;
 use rand::Rng;
-use serde_json;
 use std::fs;
 use std::path::Path;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Minimum passphrase length
 const MIN_PASSPHRASE_LENGTH: usize = 12;
@@ -45,18 +41,14 @@ pub fn cmd_init(args: InitArgs) -> Result<(), Error> {
     let salt: [u8; 16] = rng.gen();
     let nonce: [u8; 24] = rng.gen();
 
-    // Derive master key via Argon2id
-    let params = tier.argon2_params(32);
-    let argon2 = Argon2::new(argon2::Algorithm::Argon2id, argon2::Version::V0x13, params);
-
-    let salt_string = SaltString::encode_b64(&salt)
-        .map_err(|e| Error::CryptoError(format!("Failed to encode salt: {}", e)))?;
-
-    let password_hash = argon2
-        .hash_password(passphrase.as_bytes(), &salt_string)
-        .map_err(|e| Error::CryptoError(format!("Failed to hash password: {}", e)))?;
-
-    let master_key: [u8; 32] = password_hash.hash.unwrap().as_bytes().try_into()
+    // Derive master key via Argon2id (origin-crypto-sdk, tier-aware cost)
+    let builder = tier.argon2_builder().output_len(32);
+    let derived = builder
+        .derive(passphrase.as_bytes(), &salt)
+        .map_err(|e| Error::CryptoError(format!("Failed to derive key: {:?}", e)))?;
+    let master_key: [u8; 32] = derived
+        .as_slice()
+        .try_into()
         .map_err(|_| Error::CryptoError("Invalid key length from Argon2".to_string()))?;
 
     // Create vault data
