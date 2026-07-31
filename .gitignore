@@ -3,3 +3,6 @@
 *.swp
 *.swo
 .DS_Store
+
+# Stray vault/test artifacts
+origin-secrets/~/.origin/
