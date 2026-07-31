@@ -1277,10 +1277,9 @@ dependencies = [
 name = "origin-secrets"
 version = "0.4.1"
 dependencies = [
- "argon2",
  "blake3",
- "chacha20poly1305",
  "clap",
+ "ed25519-dalek",
  "hex",
  "origin-common",
  "origin-crypto-sdk",

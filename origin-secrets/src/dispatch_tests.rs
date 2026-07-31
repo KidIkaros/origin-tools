@@ -29,7 +29,9 @@ fn test_dispatch_init() {
 }
 
 #[test]
-fn test_dispatch_shard_not_implemented() {
+fn test_dispatch_shard_routes_to_impl() {
+    // shard is implemented; dispatch should reach cmd_shard and fail on the
+    // missing default vault (not return NotImplemented).
     let cli = make_cli(Commands::Shard(ShardArgs {
         key: "master".to_string(),
         threshold: 3,
@@ -37,7 +39,9 @@ fn test_dispatch_shard_not_implemented() {
     }));
 
     let result = dispatch(cli);
-    assert!(matches!(result, Err(Error::NotImplemented(_))));
+    assert!(!matches!(result, Err(Error::NotImplemented(_))));
+    // Default vault path does not exist in test env -> VaultNotFound.
+    assert!(matches!(result, Err(Error::VaultNotFound(_))));
 }
 
 #[test]

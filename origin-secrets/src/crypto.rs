@@ -90,6 +90,24 @@ pub fn decrypt_vault_data(encrypted: &EncryptedVault, key: &[u8; 32]) -> Result<
         .map_err(|e| Error::VaultCorrupted(format!("Failed to deserialize vault: {}", e)))
 }
 
+/// Derive a 32-byte vault master key from a passphrase via the SDK's
+/// tier-aware Argon2id KDF. Mirrors the derivation used during `init`.
+pub fn derive_vault_key(
+    passphrase: &[u8],
+    salt: &[u8; 16],
+    tier: MemoryTier,
+) -> Result<[u8; 32], Error> {
+    let derived = tier
+        .argon2_builder()
+        .output_len(32)
+        .derive(passphrase, salt)
+        .map_err(|e| Error::CryptoError(format!("Failed to derive key: {:?}", e)))?;
+    derived
+        .as_slice()
+        .try_into()
+        .map_err(|_| Error::CryptoError("Invalid key length from Argon2".to_string()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
