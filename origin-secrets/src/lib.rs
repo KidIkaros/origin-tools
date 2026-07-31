@@ -30,8 +30,8 @@ pub fn dispatch(cli: Cli) -> Result<(), Error> {
         cli::Commands::Init(args) => commands::init::cmd_init(args),
         cli::Commands::Shard(args) => commands::shard::cmd_shard(args, &cli.vault, passphrase).map(|_| ()),
         cli::Commands::ExportShare(args) => commands::export::cmd_export_share(args),
-        cli::Commands::Recover(args) => commands::recover::cmd_recover(args),
-        cli::Commands::Verify(args) => commands::verify::cmd_verify(args),
+        cli::Commands::Recover(args) => commands::recover::cmd_recover(args).map(|_| ()),
+        cli::Commands::Verify(args) => commands::verify::cmd_verify(args, &cli.vault, passphrase),
         cli::Commands::Audit(args) => commands::audit::cmd_audit(args),
     }
 }

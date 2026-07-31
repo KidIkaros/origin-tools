@@ -57,18 +57,23 @@ fn test_dispatch_export_not_implemented() {
 }
 
 #[test]
-fn test_dispatch_recover_not_implemented() {
+fn test_dispatch_recover_routes_to_impl() {
+    // recover is implemented; dispatch should reach cmd_recover and fail on the
+    // missing share files (not return NotImplemented).
     let cli = make_cli(Commands::Recover(RecoverArgs {
         shares: vec!["/tmp/s1".into(), "/tmp/s2".into()],
         out: None,
     }));
 
     let result = dispatch(cli);
-    assert!(matches!(result, Err(Error::NotImplemented(_))));
+    assert!(!matches!(result, Err(Error::NotImplemented(_))));
+    assert!(matches!(result, Err(Error::ShareNotFound { .. })));
 }
 
 #[test]
-fn test_dispatch_verify_not_implemented() {
+fn test_dispatch_verify_routes_to_impl() {
+    // verify is implemented; dispatch with a nonexistent vault path should reach
+    // cmd_verify and return VaultNotFound (not NotImplemented).
     let cli = make_cli(Commands::Verify(VerifyArgs {
         vault_path: Some("/tmp/vault.json".into()),
         share: None,
@@ -76,7 +81,8 @@ fn test_dispatch_verify_not_implemented() {
     }));
 
     let result = dispatch(cli);
-    assert!(matches!(result, Err(Error::NotImplemented(_))));
+    assert!(!matches!(result, Err(Error::NotImplemented(_))));
+    assert!(matches!(result, Err(Error::VaultNotFound(_))));
 }
 
 #[test]
