@@ -1,8 +1,8 @@
 //! Tests for dispatch function and CLI parsing
 
 use crate::cli::{AuditArgs, Cli, Commands, ExportArgs, InitArgs, RecoverArgs, ShardArgs, VerifyArgs};
-use crate::error::Error;
 use crate::dispatch;
+use crate::error::Error;
 use clap::Parser;
 use std::path::PathBuf;
 
@@ -45,7 +45,9 @@ fn test_dispatch_shard_routes_to_impl() {
 }
 
 #[test]
-fn test_dispatch_export_not_implemented() {
+fn test_dispatch_export_routes_to_impl() {
+    // export-share is implemented; dispatch should reach cmd_export_share and
+    // fail on the missing share file (not return NotImplemented).
     let cli = make_cli(Commands::ExportShare(ExportArgs {
         share: 1,
         out: "/tmp/share.json".into(),
@@ -53,7 +55,8 @@ fn test_dispatch_export_not_implemented() {
     }));
 
     let result = dispatch(cli);
-    assert!(matches!(result, Err(Error::NotImplemented(_))));
+    assert!(!matches!(result, Err(Error::NotImplemented(_))));
+    assert!(matches!(result, Err(Error::ShareNotFound { .. })));
 }
 
 #[test]
@@ -86,7 +89,9 @@ fn test_dispatch_verify_routes_to_impl() {
 }
 
 #[test]
-fn test_dispatch_audit_not_implemented() {
+fn test_dispatch_audit_routes_to_impl() {
+    // audit is implemented; dispatch with a nonexistent vault path should reach
+    // cmd_audit and return VaultNotFound (not NotImplemented).
     let cli = make_cli(Commands::Audit(AuditArgs {
         show_recovery_log: false,
         show_all_logs: false,
@@ -100,16 +105,19 @@ fn test_dispatch_audit_not_implemented() {
     }));
 
     let result = dispatch(cli);
-    assert!(matches!(result, Err(Error::NotImplemented(_))));
+    assert!(!matches!(result, Err(Error::NotImplemented(_))));
+    assert!(matches!(result, Err(Error::VaultNotFound(_))));
 }
 
 #[test]
 fn test_cli_parsing_init() {
     let cli = Cli::parse_from([
         "origin-secrets",
-        "--vault", "/tmp/v.json",
+        "--vault",
+        "/tmp/v.json",
         "init",
-        "--tier", "sovereign",
+        "--tier",
+        "sovereign",
         "--no-prompt",
     ]);
 
@@ -128,9 +136,12 @@ fn test_cli_parsing_shard() {
     let cli = Cli::parse_from([
         "origin-secrets",
         "shard",
-        "--key", "master",
-        "--threshold", "3",
-        "--shares", "5",
+        "--key",
+        "master",
+        "--threshold",
+        "3",
+        "--shares",
+        "5",
     ]);
 
     match cli.command {
@@ -148,9 +159,12 @@ fn test_cli_parsing_export() {
     let cli = Cli::parse_from([
         "origin-secrets",
         "export-share",
-        "--share", "2",
-        "--out", "/tmp/s2.json",
-        "--recipient", "alice",
+        "--share",
+        "2",
+        "--out",
+        "/tmp/s2.json",
+        "--recipient",
+        "alice",
     ]);
 
     match cli.command {
@@ -165,11 +179,7 @@ fn test_cli_parsing_export() {
 
 #[test]
 fn test_cli_parsing_recover() {
-    let cli = Cli::parse_from([
-        "origin-secrets",
-        "recover",
-        "s1", "s2", "s3",
-    ]);
+    let cli = Cli::parse_from(["origin-secrets", "recover", "s1", "s2", "s3"]);
 
     match cli.command {
         Commands::Recover(args) => {
@@ -184,7 +194,8 @@ fn test_cli_parsing_verify() {
     let cli = Cli::parse_from([
         "origin-secrets",
         "verify",
-        "--vault-path", "/tmp/vault.json",
+        "--vault-path",
+        "/tmp/vault.json",
     ]);
 
     match cli.command {
@@ -200,7 +211,8 @@ fn test_cli_parsing_audit() {
     let cli = Cli::parse_from([
         "origin-secrets",
         "audit",
-        "--export-soc2", "/tmp/soc2.json",
+        "--export-soc2",
+        "/tmp/soc2.json",
     ]);
 
     match cli.command {
@@ -213,10 +225,7 @@ fn test_cli_parsing_audit() {
 
 #[test]
 fn test_cli_default_tier() {
-    let cli = Cli::parse_from([
-        "origin-secrets",
-        "init",
-    ]);
+    let cli = Cli::parse_from(["origin-secrets", "init"]);
 
     match cli.command {
         Commands::Init(args) => {
@@ -228,19 +237,11 @@ fn test_cli_default_tier() {
 
 #[test]
 fn test_cli_verbose_quiet_flags() {
-    let cli = Cli::parse_from([
-        "origin-secrets",
-        "--verbose",
-        "init",
-    ]);
+    let cli = Cli::parse_from(["origin-secrets", "--verbose", "init"]);
     assert!(cli.verbose);
     assert!(!cli.quiet);
 
-    let cli = Cli::parse_from([
-        "origin-secrets",
-        "--quiet",
-        "init",
-    ]);
+    let cli = Cli::parse_from(["origin-secrets", "--quiet", "init"]);
     assert!(cli.quiet);
     assert!(!cli.verbose);
 }
