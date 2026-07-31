@@ -96,7 +96,7 @@ fn re_sign_for_recipient(
         .as_slice()
         .try_into()
         .map_err(|_| Error::CryptoError("vault master seed wrong length".to_string()))?;
-    let bundle = HybridSigningKeyBundle::from_seed(seed, SHARE_SIGNING_DOMAIN)
+    let bundle = HybridSigningKeyBundle::from_seed_cached(seed, SHARE_SIGNING_DOMAIN)
         .map_err(|e| Error::SignatureGenerationFailed(format!("{e:?}")))?;
 
     // Bind share_data + recipient into the signature.

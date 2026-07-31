@@ -68,7 +68,7 @@ pub fn cmd_shard(
         .map_err(|e| Error::CryptoError(format!("Reed-Solomon encode failed: {e}")))?;
 
     // Derive the hybrid signing bundle from the master seed (deterministic).
-    let signer = HybridSigningKeyBundle::from_seed(&vault_data.master_seed, SHARE_SIGNING_DOMAIN)
+    let signer = HybridSigningKeyBundle::from_seed_cached(&vault_data.master_seed, SHARE_SIGNING_DOMAIN)
         .map_err(|e| Error::SignatureGenerationFailed(format!("{e:?}")))?;
 
     // Write each share file.

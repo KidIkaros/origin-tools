@@ -72,7 +72,7 @@ pub fn cmd_recover(args: RecoverArgs, new_passphrase: &str) -> Result<Vec<u8>, E
         .as_slice()
         .try_into()
         .map_err(|_| Error::CryptoError("recovered seed wrong length".to_string()))?;
-    let signer = HybridSigningKeyBundle::from_seed(seed, SHARE_SIGNING_DOMAIN)
+    let signer = HybridSigningKeyBundle::from_seed_cached(seed, SHARE_SIGNING_DOMAIN)
         .map_err(|e| Error::SignatureGenerationFailed(format!("{e:?}")))?;
     let ed_pk = signer.ed25519_pk();
     let falcon_pk = signer.falcon1024_pk();
