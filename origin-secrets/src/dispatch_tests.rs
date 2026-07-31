@@ -66,6 +66,8 @@ fn test_dispatch_recover_routes_to_impl() {
     let cli = make_cli(Commands::Recover(RecoverArgs {
         shares: vec!["/tmp/s1".into(), "/tmp/s2".into()],
         out: None,
+        vault_out: None,
+        tier: "standard".to_string(),
     }));
 
     let result = dispatch(cli);

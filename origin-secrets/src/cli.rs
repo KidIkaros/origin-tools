@@ -94,9 +94,20 @@ pub struct RecoverArgs {
     #[arg(required = true)]
     pub shares: Vec<PathBuf>,
 
-    /// Output file path (or stdout if omitted)
+    /// Output file path for the recovered seed (hex), or stdout if omitted
     #[arg(short = 'o', long)]
     pub out: Option<PathBuf>,
+
+    /// Rebuild a usable vault from the recovered seed and write it to this path.
+    /// The passphrase used is the one resolved by the dispatcher (e.g. from
+    /// --passphrase-file). Requires --vault-out to also set a tier via --tier.
+    #[arg(long)]
+    pub vault_out: Option<PathBuf>,
+
+    /// Security tier for the rebuilt vault (nano|standard|sovereign).
+    /// Defaults to standard. Only used with --vault-out.
+    #[arg(long, default_value = "standard")]
+    pub tier: String,
 }
 
 #[derive(Parser, Clone, Debug)]

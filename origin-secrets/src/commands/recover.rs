@@ -5,6 +5,7 @@ use crate::error::Error;
 use crate::share::{HybridSignature, Share};
 use origin_crypto_sdk::error_correction::ReedSolomonCodec;
 use origin_crypto_sdk::signing::hybrid::{Ed25519Falcon1024, HybridSigningKeyBundle};
+use std::path::Path;
 
 /// Domain separation label — must match `shard`.
 const SHARE_SIGNING_DOMAIN: &str = "origin-secrets/share/v1";
@@ -15,7 +16,11 @@ const SHARE_SIGNING_DOMAIN: &str = "origin-secrets/share/v1";
 /// The first `threshold` shares are used for erasure decoding; every supplied
 /// share's hybrid (Ed25519 + Falcon-1024) signature is verified against the
 /// key bundle derived from the recovered seed, rejecting tampered shares.
-pub fn cmd_recover(args: RecoverArgs) -> Result<Vec<u8>, Error> {
+///
+/// If `args.vault_out` is set, a fresh vault is rebuilt from the recovered seed
+/// and written to that path, encrypted with `new_passphrase` at the requested
+/// tier — giving the operator a usable vault again after a loss.
+pub fn cmd_recover(args: RecoverArgs, new_passphrase: &str) -> Result<Vec<u8>, Error> {
     if args.shares.is_empty() {
         return Err(Error::InsufficientShares {
             needed: 1,
@@ -83,6 +88,13 @@ pub fn cmd_recover(args: RecoverArgs) -> Result<Vec<u8>, Error> {
         })?;
     }
 
+    // Optional: rebuild a usable vault from the recovered seed.
+    if let Some(vault_out) = &args.vault_out {
+        let tier = parse_tier(&args.tier)?;
+        write_recovered_vault(vault_out, seed, new_passphrase, tier)?;
+        println!("Recovered vault written to: {}", vault_out.display());
+    }
+
     // Emit the recovered seed.
     match &args.out {
         Some(path) => {
@@ -98,23 +110,70 @@ pub fn cmd_recover(args: RecoverArgs) -> Result<Vec<u8>, Error> {
     Ok(recovered)
 }
 
+/// Parse a tier string into [`MemoryTier`].
+fn parse_tier(s: &str) -> Result<crate::vault::MemoryTier, Error> {
+    match s.to_ascii_lowercase().as_str() {
+        "nano" => Ok(crate::vault::MemoryTier::Nano),
+        "standard" => Ok(crate::vault::MemoryTier::Standard),
+        "sovereign" => Ok(crate::vault::MemoryTier::Sovereign),
+        other => Err(Error::InvalidThreshold {
+            threshold: 0,
+            total_shares: 0,
+        })
+        .map_err(|_| Error::CryptoError(format!("unknown tier: {other}")))?,
+    }
+}
+
+/// Encrypt `seed` into a fresh vault file at `path`.
+fn write_recovered_vault(
+    path: &Path,
+    seed: &[u8; 32],
+    passphrase: &str,
+    tier: crate::vault::MemoryTier,
+) -> Result<(), Error> {
+    use crate::crypto::{encrypt_vault_data, VaultData};
+    use crate::vault::Vault;
+
+    let salt: [u8; 16] = rand::random();
+    let nonce: [u8; 24] = rand::random();
+    let key = crate::crypto::derive_vault_key(passphrase.as_bytes(), &salt, tier)?;
+    let mut vd = VaultData::new();
+    vd.master_seed = *seed;
+    let enc = encrypt_vault_data(&vd, &key, salt, nonce, tier)?;
+    let vault = Vault {
+        version: enc.version,
+        created_at: enc.created_at.clone(),
+        tier: enc.tier,
+        fingerprint: enc.fingerprint.clone(),
+        salt: enc.salt,
+        nonce: enc.nonce,
+        ciphertext: enc.ciphertext,
+    };
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| Error::IoError(format!("create vault dir: {e}")))?;
+    }
+    std::fs::write(path, serde_json::to_string_pretty(&vault).map_err(|e| Error::IoError(e.to_string()))?)
+        .map_err(|e| Error::IoError(e.to_string()))?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::commands::shard::cmd_shard;
     use crate::cli::ShardArgs;
+    use crate::commands::shard::cmd_shard;
+    use crate::crypto::{decrypt_vault_data, derive_vault_key, encrypt_vault_data, VaultData};
+    use crate::vault::{MemoryTier, Vault};
     use std::path::PathBuf;
     use tempfile::tempdir;
 
     fn build_vault(dir: &std::path::Path) -> (PathBuf, String) {
-        use crate::crypto::{encrypt_vault_data, VaultData};
-        use crate::vault::{MemoryTier, Vault};
-
         let passphrase = "recover-passphrase-test";
         let salt = [7u8; 16];
         let nonce = [8u8; 24];
         let tier = MemoryTier::Standard;
-        let key = crate::crypto::derive_vault_key(passphrase.as_bytes(), &salt, tier).unwrap();
+        let key = derive_vault_key(passphrase.as_bytes(), &salt, tier).unwrap();
         let mut vd = VaultData::new();
         vd.master_seed = [99u8; 32];
         let enc = encrypt_vault_data(&vd, &key, salt, nonce, tier).unwrap();
@@ -143,19 +202,24 @@ mod tests {
         (vault_path, passphrase)
     }
 
+    fn share_paths(dir: &std::path::Path, n: u8) -> Vec<PathBuf> {
+        (1..=n)
+            .map(|i| dir.join("shares").join(format!("share_{:03}.json", i)))
+            .collect()
+    }
+
     #[test]
     fn test_recover_from_threshold_shares() {
         let dir = tempdir().unwrap();
         shard_dir(dir.path(), 3, 5);
 
-        let shares: Vec<PathBuf> = (1..=3)
-            .map(|n| dir.path().join("shares").join(format!("share_{:03}.json", n)))
-            .collect();
         let args = RecoverArgs {
-            shares,
+            shares: share_paths(dir.path(), 3),
             out: None,
+            vault_out: None,
+            tier: "standard".to_string(),
         };
-        let recovered = cmd_recover(args).unwrap();
+        let recovered = cmd_recover(args, "new-pass").unwrap();
         assert_eq!(recovered, vec![99u8; 32]); // build_vault uses [99;32] as master seed
     }
 
@@ -164,14 +228,13 @@ mod tests {
         let dir = tempdir().unwrap();
         shard_dir(dir.path(), 3, 5);
 
-        let shares: Vec<PathBuf> = (1..=2)
-            .map(|n| dir.path().join("shares").join(format!("share_{:03}.json", n)))
-            .collect();
         let args = RecoverArgs {
-            shares,
+            shares: share_paths(dir.path(), 2),
             out: None,
+            vault_out: None,
+            tier: "standard".to_string(),
         };
-        let result = cmd_recover(args);
+        let result = cmd_recover(args, "new-pass");
         assert!(matches!(
             result,
             Err(Error::InsufficientShares { needed: 3, provided: 2 })
@@ -183,17 +246,70 @@ mod tests {
         let dir = tempdir().unwrap();
         shard_dir(dir.path(), 2, 4);
 
-        let shares: Vec<PathBuf> = (1..=2)
-            .map(|n| dir.path().join("shares").join(format!("share_{:03}.json", n)))
-            .collect();
         let out = dir.path().join("recovered.txt");
         let args = RecoverArgs {
-            shares,
+            shares: share_paths(dir.path(), 2),
             out: Some(out.clone()),
+            vault_out: None,
+            tier: "standard".to_string(),
         };
-        let recovered = cmd_recover(args).unwrap();
+        let recovered = cmd_recover(args, "new-pass").unwrap();
         let written = std::fs::read_to_string(&out).unwrap();
         assert_eq!(written, hex::encode(&recovered));
+    }
+
+    #[test]
+    fn test_recover_rebuilds_vault() {
+        let dir = tempdir().unwrap();
+        shard_dir(dir.path(), 3, 5);
+
+        let vault_out = dir.path().join("recovered.vault");
+        let args = RecoverArgs {
+            shares: share_paths(dir.path(), 3),
+            out: None,
+            vault_out: Some(vault_out.clone()),
+            tier: "sovereign".to_string(),
+        };
+        let recovered = cmd_recover(args, "rebuilt-passphrase").unwrap();
+        assert_eq!(recovered, vec![99u8; 32]);
+
+        // The rebuilt vault must decrypt and yield the same master seed.
+        let raw = std::fs::read_to_string(&vault_out).unwrap();
+        let vault: Vault = serde_json::from_str(&raw).unwrap();
+        assert_eq!(vault.tier, MemoryTier::Sovereign);
+        let key = derive_vault_key(
+            "rebuilt-passphrase".as_bytes(),
+            &vault.salt,
+            MemoryTier::Sovereign,
+        )
+        .unwrap();
+        let enc = crate::crypto::EncryptedVault {
+            version: vault.version,
+            created_at: vault.created_at.clone(),
+            tier: vault.tier,
+            fingerprint: vault.fingerprint.clone(),
+            salt: vault.salt,
+            nonce: vault.nonce,
+            ciphertext: vault.ciphertext,
+        };
+        let vd = decrypt_vault_data(&enc, &key).unwrap();
+        assert_eq!(vd.master_seed, [99u8; 32]);
+    }
+
+    #[test]
+    fn test_recover_wrong_tier_string() {
+        let dir = tempdir().unwrap();
+        shard_dir(dir.path(), 2, 4);
+
+        let args = RecoverArgs {
+            shares: share_paths(dir.path(), 2),
+            out: None,
+            vault_out: Some(dir.path().join("x.vault")),
+            tier: "bogus".to_string(),
+        };
+        // Only fails because of the bad tier (seed recovery itself would succeed).
+        let result = cmd_recover(args, "p");
+        assert!(result.is_err());
     }
 
     #[test]
@@ -207,14 +323,13 @@ mod tests {
         share.share_data[0] ^= 0xFF;
         std::fs::write(&p, serde_json::to_string_pretty(&share).unwrap()).unwrap();
 
-        let shares: Vec<PathBuf> = (1..=2)
-            .map(|n| dir.path().join("shares").join(format!("share_{:03}.json", n)))
-            .collect();
         let args = RecoverArgs {
-            shares,
+            shares: share_paths(dir.path(), 2),
             out: None,
+            vault_out: None,
+            tier: "standard".to_string(),
         };
-        let result = cmd_recover(args);
+        let result = cmd_recover(args, "new-pass");
         assert!(matches!(
             result,
             Err(Error::ShareVerificationFailed { share_number: 1, .. })
@@ -226,8 +341,10 @@ mod tests {
         let args = RecoverArgs {
             shares: vec![],
             out: None,
+            vault_out: None,
+            tier: "standard".to_string(),
         };
-        let result = cmd_recover(args);
+        let result = cmd_recover(args, "new-pass");
         assert!(matches!(
             result,
             Err(Error::InsufficientShares { needed: 1, provided: 0 })
