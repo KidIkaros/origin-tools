@@ -22,6 +22,7 @@ pub enum Operation {
     Shard { threshold: u8, total_shares: u8 },
     ExportShare { share_number: u8, recipient: String },
     Recover { shares_used: Vec<String> },
+    RotatePassphrase { from_tier: String, to_tier: String },
     Verify { target: VerifyTarget },
     AuditExport { format: ComplianceFormat },
 }

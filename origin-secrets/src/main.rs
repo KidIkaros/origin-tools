@@ -31,6 +31,9 @@ fn command_name(cmd: &Commands) -> &'static str {
         Commands::Recover(_) => "recover",
         Commands::Verify(_) => "verify",
         Commands::Audit(_) => "audit",
+        Commands::RotatePassphrase(_) => "rotate-passphrase",
+        Commands::ListKeys(_) => "list-keys",
+        Commands::ListShares(_) => "list-shares",
         Commands::Completions(_) => "completions",
     }
 }

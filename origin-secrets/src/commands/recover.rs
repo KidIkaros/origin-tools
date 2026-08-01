@@ -120,7 +120,13 @@ pub fn cmd_recover(args: RecoverArgs, new_passphrase: &str, json: bool) -> Resul
             return Err(Error::PassphraseTooWeak { min_length: 12 });
         }
         let tier = parse_tier(&args.tier)?;
-        write_recovered_vault(vault_out, seed, new_passphrase, tier)?;
+        // P2.4: carry audit history + keys from a source vault when supplied.
+        let carried = if let Some(src) = &args.source_vault {
+            load_carried_vault(src, new_passphrase)?
+        } else {
+            None
+        };
+        write_recovered_vault(vault_out, seed, new_passphrase, tier, carried)?;
         if json {
             vault_out_path = Some(vault_out.display().to_string());
         } else {
@@ -196,20 +202,55 @@ fn parse_tier(s: &str) -> Result<crate::vault::MemoryTier, Error> {
 }
 
 /// Encrypt `seed` into a fresh vault file at `path`.
+///
+/// If `carried` is `Some`, its `audit_log` and `keys` are preserved in the new
+/// vault (P2.4 — a recovered vault carries forward its history) and a fresh
+/// `Recover` entry is appended. If `None`, the rebuilt vault starts with a
+/// single `Recover` entry recording this recovery.
 fn write_recovered_vault(
     path: &Path,
     seed: &[u8; 32],
     passphrase: &str,
     tier: crate::vault::MemoryTier,
+    carried: Option<crate::crypto::VaultData>,
 ) -> Result<(), Error> {
-    use crate::crypto::{encrypt_vault_data, VaultData};
+    use crate::crypto::encrypt_vault_data;
     use crate::vault::Vault;
 
     let salt: [u8; 16] = crate::crypto::random_array()?;
     let nonce: [u8; 24] = crate::crypto::random_array()?;
     let key = crate::crypto::derive_vault_key(passphrase.as_bytes(), &salt, tier)?;
-    let mut vd = VaultData::new();
+
+    let mut vd = carried.unwrap_or_default();
+    // Always set the master seed to the recovered seed — this is the whole
+    // point of recovery.
     vd.master_seed = *seed;
+
+    // Append a Recover audit entry so the rebuilt vault records how it was
+    // (re)constructed.
+    let timestamp = crate::observability::epoch_to_ymd_hms_now();
+    let signer = origin_crypto_sdk::signing::hybrid::HybridSigningKeyBundle::from_seed_cached(
+        seed,
+        "origin-secrets/audit/v1",
+    )
+    .map_err(|e| Error::SignatureGenerationFailed(format!("{e:?}")))?;
+    let audit_sig: origin_crypto_sdk::signing::hybrid::Ed25519Falcon1024 =
+        signer.sign_hybrid(b"audit:recover");
+    let recover_entry = crate::audit::AuditEntry {
+        entry_id: format!("recover-{}-{}", timestamp, hex::encode(&salt[..2])),
+        operation: crate::audit::Operation::Recover {
+            shares_used: vec![],
+        },
+        key_id: "*".to_string(),
+        timestamp: timestamp.clone(),
+        operator: "origin-secrets-cli".to_string(),
+        details: crate::audit::OperationDetails::Success {
+            message: "Vault rebuilt from threshold shares".to_string(),
+        },
+        signature: crate::share::HybridSignature::from_sdk(&audit_sig),
+    };
+    vd.audit_log.push(recover_entry);
+
     let enc = encrypt_vault_data(&vd, &key, salt, nonce, tier)?;
     let vault = Vault {
         version: enc.version,
@@ -232,9 +273,42 @@ fn write_recovered_vault(
     Ok(())
 }
 
+/// P2.4 helper: decrypt a source vault and return its `VaultData` so its audit
+/// log and keys can be carried into a recovered vault. The source is decrypted
+/// with the same passphrase that will encrypt the rebuilt vault.
+fn load_carried_vault(
+    src: &Path,
+    passphrase: &str,
+) -> Result<Option<crate::crypto::VaultData>, Error> {
+    let raw = match std::fs::read_to_string(src) {
+        Ok(r) => r,
+        // A missing or unreadable source is non-fatal: we just don't carry
+        // history. The recovery still succeeds.
+        Err(_) => return Ok(None),
+    };
+    let vault: crate::vault::Vault =
+        serde_json::from_str(&raw).map_err(|e| Error::VaultCorrupted(e.to_string()))?;
+    let key = crate::crypto::derive_vault_key(passphrase.as_bytes(), &vault.salt, vault.tier)?;
+    let enc = crate::crypto::EncryptedVault {
+        version: vault.version,
+        created_at: vault.created_at.clone(),
+        tier: vault.tier,
+        fingerprint: vault.fingerprint.clone(),
+        salt: vault.salt,
+        nonce: vault.nonce,
+        ciphertext: vault.ciphertext.clone(),
+    };
+    match crate::crypto::decrypt_vault_data(&enc, &key) {
+        Ok(vd) => Ok(Some(vd)),
+        // Wrong passphrase or corruption on the source is non-fatal here.
+        Err(_) => Ok(None),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::audit::Operation;
     use crate::cli::ShardArgs;
     use crate::commands::shard::cmd_shard;
     use crate::crypto::{decrypt_vault_data, derive_vault_key, encrypt_vault_data, VaultData};
@@ -294,6 +368,7 @@ mod tests {
             vault_out: None,
             tier: "standard".to_string(),
             force: false,
+            source_vault: None,
         };
         let recovered = cmd_recover(args, "new-pass", false).unwrap();
         assert_eq!(recovered, vec![99u8; 32]); // build_vault uses [99;32] as master seed
@@ -310,6 +385,7 @@ mod tests {
             vault_out: None,
             tier: "standard".to_string(),
             force: false,
+            source_vault: None,
         };
         let result = cmd_recover(args, "new-pass", false);
         assert!(matches!(
@@ -333,6 +409,7 @@ mod tests {
             vault_out: None,
             tier: "standard".to_string(),
             force: false,
+            source_vault: None,
         };
         let recovered = cmd_recover(args, "new-pass", false).unwrap();
         let written = std::fs::read_to_string(&out).unwrap();
@@ -351,6 +428,7 @@ mod tests {
             vault_out: Some(vault_out.clone()),
             tier: "sovereign".to_string(),
             force: false,
+            source_vault: None,
         };
         let recovered = cmd_recover(args, "rebuilt-passphrase", false).unwrap();
         assert_eq!(recovered, vec![99u8; 32]);
@@ -389,6 +467,7 @@ mod tests {
             vault_out: Some(dir.path().join("x.vault")),
             tier: "bogus".to_string(),
             force: false,
+            source_vault: None,
         };
         // Only fails because of the bad tier (seed recovery itself would succeed).
         let result = cmd_recover(args, "p", false);
@@ -412,6 +491,7 @@ mod tests {
             vault_out: None,
             tier: "standard".to_string(),
             force: false,
+            source_vault: None,
         };
         let result = cmd_recover(args, "new-pass", false);
         assert!(matches!(
@@ -431,6 +511,7 @@ mod tests {
             vault_out: None,
             tier: "standard".to_string(),
             force: false,
+            source_vault: None,
         };
         let result = cmd_recover(args, "new-pass", false);
         assert!(matches!(
@@ -439,6 +520,97 @@ mod tests {
                 needed: 1,
                 provided: 0
             })
+        ));
+    }
+
+    #[test]
+    fn test_recover_carries_source_vault_audit_history() {
+        let dir = tempdir().unwrap();
+        // Build the original vault, shard it (creating audit entries).
+        let (vault_path, passphrase) = build_vault(dir.path());
+        let sargs = ShardArgs {
+            key: "master".to_string(),
+            threshold: 3,
+            shares: 5,
+            force: false,
+        };
+        cmd_shard(sargs, &vault_path, &passphrase, false).unwrap();
+
+        // Recover from threshold shares, rebuilding a vault that carries the
+        // source vault's history (P2.4).
+        let recovered_vault = dir.path().join("recovered.vault");
+        let args = RecoverArgs {
+            shares: share_paths(dir.path(), 3),
+            out: None,
+            vault_out: Some(recovered_vault.clone()),
+            tier: "standard".to_string(),
+            force: false,
+            source_vault: Some(vault_path.clone()),
+        };
+        let recovered = cmd_recover(args, &passphrase, false).unwrap();
+        assert_eq!(recovered, vec![99u8; 32]);
+
+        // The recovered vault must carry the Shard entry AND a Recover entry.
+        let raw = std::fs::read_to_string(&recovered_vault).unwrap();
+        let vault: Vault = serde_json::from_str(&raw).unwrap();
+        let key =
+            derive_vault_key(passphrase.as_bytes(), &vault.salt, MemoryTier::Standard).unwrap();
+        let enc = crate::crypto::EncryptedVault {
+            version: vault.version,
+            created_at: vault.created_at.clone(),
+            tier: vault.tier,
+            fingerprint: vault.fingerprint.clone(),
+            salt: vault.salt,
+            nonce: vault.nonce,
+            ciphertext: vault.ciphertext.clone(),
+        };
+        let vd = decrypt_vault_data(&enc, &key).unwrap();
+        let has_shard = vd
+            .audit_log
+            .iter()
+            .any(|e| matches!(e.operation, Operation::Shard { .. }));
+        let has_recover = vd
+            .audit_log
+            .iter()
+            .any(|e| matches!(e.operation, Operation::Recover { .. }));
+        assert!(has_shard, "recovered vault must carry source Shard history");
+        assert!(has_recover, "recovered vault must record a Recover entry");
+    }
+
+    #[test]
+    fn test_recover_without_source_vault_has_only_recover_entry() {
+        let dir = tempdir().unwrap();
+        shard_dir(dir.path(), 3, 5);
+
+        let recovered_vault = dir.path().join("recovered.vault");
+        let args = RecoverArgs {
+            shares: share_paths(dir.path(), 3),
+            out: None,
+            vault_out: Some(recovered_vault.clone()),
+            tier: "standard".to_string(),
+            force: false,
+            source_vault: None,
+        };
+        cmd_recover(args, "new-passphrase-12", false).unwrap();
+
+        let raw = std::fs::read_to_string(&recovered_vault).unwrap();
+        let vault: Vault = serde_json::from_str(&raw).unwrap();
+        let key =
+            derive_vault_key(b"new-passphrase-12", &vault.salt, MemoryTier::Standard).unwrap();
+        let enc = crate::crypto::EncryptedVault {
+            version: vault.version,
+            created_at: vault.created_at.clone(),
+            tier: vault.tier,
+            fingerprint: vault.fingerprint.clone(),
+            salt: vault.salt,
+            nonce: vault.nonce,
+            ciphertext: vault.ciphertext.clone(),
+        };
+        let vd = decrypt_vault_data(&enc, &key).unwrap();
+        assert_eq!(vd.audit_log.len(), 1, "only the Recover entry expected");
+        assert!(matches!(
+            vd.audit_log[0].operation,
+            Operation::Recover { .. }
         ));
     }
 }

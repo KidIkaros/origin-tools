@@ -93,6 +93,20 @@ pub fn dispatch(cli: Cli) -> Result<(), Error> {
                 cli::Commands::Audit(args) => {
                     commands::audit::cmd_audit(args, &resolved_vault, &passphrase, json)
                 }
+                cli::Commands::RotatePassphrase(args) => commands::rotate::cmd_rotate_passphrase(
+                    args,
+                    &resolved_vault,
+                    &passphrase,
+                    json,
+                ),
+                cli::Commands::ListKeys(args) => {
+                    commands::keys::cmd_list_keys(args, &resolved_vault, &passphrase, json)
+                        .map(|_| ())
+                }
+                cli::Commands::ListShares(args) => {
+                    commands::shares::cmd_list_shares(args, &resolved_vault, &passphrase, json)
+                        .map(|_| ())
+                }
                 cli::Commands::Init(_) | cli::Commands::Completions(_) => unreachable!(),
             }
         }

@@ -59,6 +59,24 @@ pub enum Commands {
         after_help = "Example:\n  origin-secrets -V ./secrets.vault -p ./pw.txt audit --export-soc2 soc2.json"
     )]
     Audit(AuditArgs),
+    /// Rotate the vault passphrase (and optionally the security tier) without
+    /// re-initializing. Re-encrypts the vault with a fresh salt and nonce;
+    /// audit history is preserved.
+    #[command(
+        after_help = "Example:\n  origin-secrets -V ./secrets.vault -p ./pw.txt rotate-passphrase --new-passphrase-file ./new-pw.txt\n  origin-secrets -V ./secrets.vault -p ./pw.txt rotate-passphrase --new-passphrase-file ./new-pw.txt --tier sovereign"
+    )]
+    RotatePassphrase(RotatePassphraseArgs),
+    /// List the key labels that have been sharded into this vault (from the
+    /// audit log). The vault holds a single master seed; these are the human
+    /// labels recorded at shard time.
+    #[command(after_help = "Example:\n  origin-secrets -V ./secrets.vault -p ./pw.txt list-keys")]
+    ListKeys(ListKeysArgs),
+    /// List the share files present beside this vault (in <vault_dir>/shares/),
+    /// with their share number, threshold, total, label, and recipient.
+    #[command(
+        after_help = "Example:\n  origin-secrets -V ./secrets.vault -p ./pw.txt list-shares"
+    )]
+    ListShares(ListSharesArgs),
     /// Generate shell completions
     #[command(about = "Generate shell completion scripts (bash/zsh/fish)")]
     Completions(CompletionsArgs),
@@ -129,6 +147,13 @@ pub struct RecoverArgs {
     /// --passphrase-file). Requires --vault-out to also set a tier via --tier.
     #[arg(long)]
     pub vault_out: Option<PathBuf>,
+
+    /// Source vault to carry audit history + keys from when rebuilding a vault
+    /// (P2.4). Optional: if omitted, the rebuilt vault starts with a single
+    /// Recover entry. The source vault is decrypted with the SAME passphrase
+    /// used to encrypt the rebuilt vault (the new passphrase).
+    #[arg(long)]
+    pub source_vault: Option<PathBuf>,
 
     /// Security tier for the rebuilt vault (nano|standard|sovereign).
     /// Defaults to standard. Only used with --vault-out. A passphrase-source
@@ -203,6 +228,26 @@ pub struct AuditArgs {
     #[arg(long)]
     pub force: bool,
 }
+
+#[derive(Parser, Clone, Debug)]
+pub struct RotatePassphraseArgs {
+    /// New passphrase file path (`-` reads from stdin). Required — the vault is
+    /// re-encrypted under this passphrase.
+    #[arg(long)]
+    pub new_passphrase_file: Option<PathBuf>,
+
+    /// New security tier (nano|standard|sovereign). Defaults to the vault's
+    /// current tier (passphrase rotation only). Supplying a different tier also
+    /// upgrades the vault's KDF cost (P2.5 tier upgrade without rebuild).
+    #[arg(long, default_value = "standard")]
+    pub tier: String,
+}
+
+#[derive(Parser, Clone, Debug)]
+pub struct ListKeysArgs {}
+
+#[derive(Parser, Clone, Debug)]
+pub struct ListSharesArgs {}
 
 #[derive(Parser, Clone, Debug)]
 pub struct CompletionsArgs {

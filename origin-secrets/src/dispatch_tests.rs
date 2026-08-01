@@ -145,6 +145,7 @@ fn test_dispatch_recover_routes_to_impl() {
             vault_out: None,
             tier: "standard".to_string(),
             force: false,
+            source_vault: None,
         }),
     };
 

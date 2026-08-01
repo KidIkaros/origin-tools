@@ -91,8 +91,11 @@ origin-secrets -V ./secrets.vault -p ./pw.txt recover \
 Any 3 of the 5 shares reconstruct the seed. Fewer than K fails closed.
 In human mode the seed is **never** printed to the terminal — capture it with
 `-o/--out` (to a file) or `--json` (in the `seed_hex` field). A rebuilt vault
-can be written with `--vault-out <PATH>` (refuses to overwrite unless
-`--force`).
+A rebuilt vault can be written with `--vault-out <PATH>` (refuses to overwrite unless
+`--force`). Pass `--source-vault <PATH>` to **carry the source vault's audit history and
+keys** into the rebuilt vault (P2.4) — the rebuilt vault records a `Recover` entry and,
+when a source is supplied, preserves the prior `Shard`/`Rotate`/etc. history. Without
+`--source-vault` the rebuilt vault still records a single `Recover` entry.
 
 ### 5. Verify integrity (Week 4)
 
@@ -118,6 +121,37 @@ origin-secrets -V ./secrets.vault -p ./pw.txt audit --export-hipaa hipaa.json
 Compliance exports refuse to overwrite an existing file unless `--force` is
 given. Only one compliance export may be requested per invocation.
 
+### 6b. Day-2 operations (lifecycle)
+
+These commands cover ongoing vault maintenance without re-initializing.
+
+**Rotate the passphrase (and optionally the tier)** — re-encrypts the vault under a new
+passphrase with a fresh salt + nonce (forward secrecy); the old passphrase can no longer
+decrypt it. Audit history is preserved. Supplying `--tier` also upgrades the KDF cost
+(P2.5) without rebuilding:
+
+```bash
+origin-secrets -V ./secrets.vault -p ./pw.txt rotate-passphrase --new-passphrase-file ./new-pw.txt
+origin-secrets -V ./secrets.vault -p ./pw.txt rotate-passphrase --new-passphrase-file ./new-pw.txt --tier sovereign
+```
+
+The new passphrase follows the same `resolve_passphrase` policy as every command
+(`--new-passphrase-file` accepts `-` for stdin) and must be ≥ 12 characters.
+
+**List the keys in a vault** — shows the share labels recorded at shard time (from the
+audit log) plus any explicit key entries:
+
+```bash
+origin-secrets -V ./secrets.vault -p ./pw.txt list-keys
+```
+
+**List the shares beside a vault** — scans `<vault_dir>/shares/` and reports each share's
+number, threshold, total, label, and recipient:
+
+```bash
+origin-secrets -V ./secrets.vault -p ./pw.txt list-shares
+```
+
 ### 7. Failure journal (vault-independent)
 
 Failures are recorded to `~/.origin/failures.log` (one JSON line per event)
@@ -135,10 +169,11 @@ origin-secrets     audit --show-failures --json   # vault-independent, structure
 cargo test -p origin-secrets --release
 ```
 
-- 106 unit tests (inline `#[cfg(test)]`)
+- 145 lib unit tests (inline `#[cfg(test)]`)
 - 11 integration + security test binaries under `tests/integration/` and
   `tests/security/`
-- Coverage target: ≥ 90 % (cargo-tarpaulin)
+- Coverage target: ≥ 90 % (cargo-llvm-cov); current lib coverage ≈ 88 % lines
+  (new command modules 85–92 %)
 
 ## Security notes
 
