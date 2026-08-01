@@ -31,16 +31,10 @@ pub fn cmd_init(
     }
 
     // Resolve passphrase. Prefer the global -p/--passphrase-file (e.g. a mounted
-    // secret). Interactive prompting is not yet implemented; without a passphrase
+    // secret, or `-` to read from stdin for scripting without a temp file on
+    // disk). Interactive prompting is not yet implemented; without a passphrase
     // source we refuse rather than store a known-weak key.
-    let passphrase = if let Some(pf) = passphrase_file {
-        std::fs::read_to_string(pf)
-            .map_err(|e| Error::IoError(format!("reading passphrase file {pf:?}: {e}")))?
-            .trim_end_matches('\n')
-            .to_string()
-    } else {
-        return Result::Err(Error::PassphraseRequired);
-    };
+    let passphrase = crate::resolve_passphrase(passphrase_file)?;
 
     // Validate passphrase length
     if passphrase.len() < MIN_PASSPHRASE_LENGTH {

@@ -41,6 +41,9 @@ All commands accept a global `-V/--vault <PATH>` (default
 directory) and a **required** `-p/--passphrase-file <PATH>`.
 A passphrase source is mandatory — there is no built-in default, so every
 command refuses to run (returning `PassphraseRequired`) when `-p` is absent.
+Pass the passphrase via a **file** (`-p ./pw.txt`) or, for scripting without
+writing the secret to disk, via **stdin** (`-p -`, e.g.
+`echo "$PW" | origin-secrets -p - verify`).
 
 Add `--json` to any command for a structured success payload on stdout
 (e.g. `{"ok":true,"command":"init","vault":...,"tier":"standard",
@@ -156,7 +159,7 @@ process, and [DESIGN_DOC.md](./../DESIGN_DOC.md) for architecture.
 |---|---|---|
 | `0` | Success | — |
 | `1` | Internal / runtime error | crypto failure |
-| `2` | Usage error (passphrase missing/weak) | `PassphraseRequired`, `PassphraseTooWeak` |
+| `2` | Operator-fixable input/auth error | `PassphraseRequired`, `PassphraseTooWeak`, `VaultDecryptionFailed` (wrong passphrase) |
 | `3` | Not-found / input error | `VaultNotFound`, `ShareNotFound`, `InvalidThreshold`, `FileAlreadyExists` |
 | `127` | CLI parse error (clap) | unknown flag |
 

@@ -103,13 +103,15 @@ pub enum Severity {
 impl Error {
     /// Process exit code for this error, by category:
     ///   1 = internal/runtime failure (crypto, I/O, corruption, unexpected)
-    ///   2 = usage error (passphrase missing/weak) — fix the invocation
+    ///   2 = operator-fixable input/auth error (passphrase missing/weak, wrong
+    ///      passphrase) — fix the invocation and retry
     ///   3 = not-found / input error (vault/share/key missing, bad threshold)
     pub fn exit_code(&self) -> i32 {
         match self {
             Error::PassphraseRequired
             | Error::PassphraseTooWeak { .. }
-            | Error::PassphraseMismatch => 2,
+            | Error::PassphraseMismatch
+            | Error::VaultDecryptionFailed(_) => 2,
             Error::VaultNotFound(_)
             | Error::VaultAlreadyExists(_)
             | Error::ShareNotFound { .. }

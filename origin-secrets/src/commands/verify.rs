@@ -28,37 +28,58 @@ pub fn cmd_verify(
     json: bool,
 ) -> Result<(), Error> {
     if let Some(path) = &args.share {
-        if args.vault_path.is_some() {
-            eprintln!(
-                "Warning: --vault-path is ignored when --share is given (verifying the share's own source vault)."
-            );
-        }
-        // The share's source vault lives beside its file: shares are written to
-        // `<vault_dir>/shares/share_<n>.json` (see cmd_shard), so the vault is
-        // the grandparent of the share file. Resolve the actual filename from
-        // the share's location, falling back to `secrets.vault` for the default
-        // layout. Verify against that vault — NOT the resolved default path,
-        // which may belong to a different key and would cause a false
-        // tamper-positive. Falls back to structural-only when the source vault
-        // is absent.
+        // Resolve a vault for full cryptographic verification, preferring the
+        // share's OWN source vault (the vault living beside the share file:
+        // shares are written to `<vault_dir>/shares/share_<n>.json`, so the
+        // vault is the grandparent of the share file). Verifying a share against
+        // its source vault is always correct — the share was signed by that
+        // vault's master seed. Only when no adjacent source vault exists (an
+        // exported/moved share) do we fall back to an explicitly supplied vault
+        // (`--vault-path` or the global `-V`), which lets an operator name the
+        // originating vault. Falls back to structural-only — with a clear
+        // warning — when neither is available.
         let source_vault = path
             .parent()
             .and_then(|shares_dir| shares_dir.parent())
-            .map(|vault_dir| {
-                // Prefer an explicitly-named vault in the same dir if present.
-                let default_name = vault_dir.join("secrets.vault");
-                if default_name.exists() {
-                    default_name
-                } else {
-                    vault_dir.join("secrets.vault")
-                }
-            });
-        if let Some(v) = &source_vault {
-            if v.exists() {
-                return verify_share(path, Some(v), passphrase, json);
+            .map(|vault_dir| vault_dir.join("secrets.vault"));
+
+        if let Some(src) = &source_vault {
+            if src.exists() {
+                return verify_share(path, Some(src), passphrase, json);
             }
         }
-        // No source vault present: standalone share -> structural validation.
+
+        // No adjacent source vault: try an explicitly supplied vault.
+        if let Some(explicit) = &args.vault_path {
+            if explicit.exists() {
+                return verify_share(path, Some(explicit), passphrase, json);
+            }
+        }
+        if vault_path.exists() {
+            return verify_share(path, Some(vault_path), passphrase, json);
+        }
+
+        // No candidate vault found: structural-only validation with a clear,
+        // actionable message (never imply the user did something wrong when a
+        // vault simply wasn't supplied).
+        if json {
+            println!(
+                "{}",
+                serde_json::json!({
+                    "ok": true,
+                    "command": "verify",
+                    "target": "share",
+                    "share": 0,
+                    "verified": false,
+                    "method": "structural",
+                    "warning": "no vault available for cryptographic verification; supply -V <vault> (or --vault-path) or place the share beside its source vault, or use `recover` for a full check",
+                })
+            );
+        } else {
+            println!(
+                "Cryptographic verification skipped: no vault available. Supply -V <vault> (or --vault-path), keep the share beside its source vault, or use `recover` for a full check."
+            );
+        }
         return verify_share(path, None, passphrase, json);
     }
 
@@ -219,10 +240,16 @@ fn verify_share(
     // Full cryptographic verification when a vault is available.
     if let Some(vault_path) = vault {
         let bundle = derive_share_signer(vault_path, passphrase, share.share_number)?;
+        // Exported shares sign share_data + recipient; original shares sign
+        // share_data only. Match the signing behaviour of `export`/`shard`.
+        let mut msg = share.share_data.clone();
+        if let Some(recipient) = &share.recipient {
+            msg.extend_from_slice(recipient.as_bytes());
+        }
         Ed25519Falcon1024::verify(
             bundle.ed25519_pk(),
             bundle.falcon1024_pk(),
-            &share.share_data,
+            &msg,
             &share
                 .signature
                 .to_sdk()
@@ -279,7 +306,7 @@ fn verify_share(
             share.fingerprint
         );
         println!(
-            "Cryptographic verification skipped (no vault supplied); use `recover` for full check."
+            "Cryptographic verification skipped (no vault available); supply -V <vault> or use `recover` for full check."
         );
     }
     Ok(())

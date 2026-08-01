@@ -19,6 +19,31 @@ pub use cli::Cli;
 pub use crypto::{decrypt_vault_data, encrypt_vault_data, EncryptedVault};
 pub use error::Error;
 
+/// Resolve the passphrase from `-p/--passphrase-file`.
+///
+/// - `None` → no source supplied → [`Error::PassphraseRequired`].
+/// - `Some(Path)` where the path is `-` → read from stdin (so scripts can pipe
+///   a secret without ever writing it to disk: `echo "$PW" | origin-secrets -p - ...`).
+/// - `Some(Path)` otherwise → read the file contents.
+///
+/// The trailing newline (and CR) is trimmed so a `echo`-written file does not
+/// contribute a stray `\n` to the passphrase.
+pub fn resolve_passphrase(passphrase_file: Option<&std::path::Path>) -> Result<String, Error> {
+    let path = passphrase_file.ok_or(Error::PassphraseRequired)?;
+    let raw = if path.as_os_str() == "-" {
+        use std::io::Read;
+        let mut buf = String::new();
+        std::io::stdin()
+            .read_to_string(&mut buf)
+            .map_err(|e| Error::IoError(format!("reading passphrase from stdin: {e}")))?;
+        buf
+    } else {
+        std::fs::read_to_string(path)
+            .map_err(|e| Error::IoError(format!("reading passphrase file {path:?}: {e}")))?
+    };
+    Ok(raw.trim_end_matches(['\n', '\r']).to_string())
+}
+
 /// Dispatch CLI command to appropriate handler
 pub fn dispatch(cli: Cli) -> Result<(), Error> {
     let json = cli.json;
@@ -41,19 +66,13 @@ pub fn dispatch(cli: Cli) -> Result<(), Error> {
         // back to a built-in default, which would let an operator believe a
         // vault is protected when it is trivially decryptable.
         other => {
-            let path = cli
-                .passphrase_file
-                .as_ref()
-                .ok_or(Error::PassphraseRequired)?;
-            let passphrase = std::fs::read_to_string(path)
-                .map_err(|e| Error::IoError(format!("reading passphrase file: {e}")))?;
-            let passphrase = passphrase.trim_end_matches(['\n', '\r']);
+            let passphrase = resolve_passphrase(cli.passphrase_file.as_deref())?;
             match other {
                 cli::Commands::Shard(args) => {
-                    commands::shard::cmd_shard(args, &resolved_vault, passphrase, json).map(|_| ())
+                    commands::shard::cmd_shard(args, &resolved_vault, &passphrase, json).map(|_| ())
                 }
                 cli::Commands::ExportShare(args) => {
-                    commands::export::cmd_export_share(args, &resolved_vault, passphrase, json)
+                    commands::export::cmd_export_share(args, &resolved_vault, &passphrase, json)
                         .map(|_| ())
                 }
                 cli::Commands::Recover(args) => {
@@ -61,16 +80,16 @@ pub fn dispatch(cli: Cli) -> Result<(), Error> {
                     // (--vault-out). A share-only recovery writes nothing to disk
                     // and never opens a vault, so the passphrase gate is skipped.
                     if args.vault_out.is_some() {
-                        commands::recover::cmd_recover(args, passphrase, json).map(|_| ())
+                        commands::recover::cmd_recover(args, &passphrase, json).map(|_| ())
                     } else {
                         commands::recover::cmd_recover(args, "", json).map(|_| ())
                     }
                 }
                 cli::Commands::Verify(args) => {
-                    commands::verify::cmd_verify(args, &resolved_vault, passphrase, json)
+                    commands::verify::cmd_verify(args, &resolved_vault, &passphrase, json)
                 }
                 cli::Commands::Audit(args) => {
-                    commands::audit::cmd_audit(args, &resolved_vault, passphrase, json)
+                    commands::audit::cmd_audit(args, &resolved_vault, &passphrase, json)
                 }
                 cli::Commands::Init(_) | cli::Commands::Completions(_) => unreachable!(),
             }
