@@ -9,6 +9,7 @@ pub mod crypto;
 #[cfg(test)]
 mod dispatch_tests;
 pub mod error;
+pub mod observability;
 pub mod share;
 #[cfg(test)]
 mod share_tests;
@@ -76,6 +77,7 @@ mod tests {
         let cli = Cli {
             vault: dir.path().join("test.vault"),
             passphrase_file: None,
+            json: false,
             command: cli::Commands::Init(cli::InitArgs {
                 tier: "standard".to_string(),
             }),

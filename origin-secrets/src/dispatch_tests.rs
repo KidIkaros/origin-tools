@@ -24,6 +24,7 @@ fn test_dispatch_init() {
     let cli = Cli {
         vault: vault.clone(),
         passphrase_file: None,
+        json: false,
         command: Commands::Init(InitArgs {
             tier: "standard".to_string(),
         }),
@@ -44,6 +45,7 @@ fn test_dispatch_requires_passphrase_without_flag() {
     let cli = Cli {
         vault: "/tmp/origin-secrets-missing-vault-do-not-create".into(),
         passphrase_file: None,
+        json: false,
         command: Commands::Shard(ShardArgs {
             key: "master".to_string(),
             threshold: 3,
@@ -63,6 +65,7 @@ fn test_dispatch_shard_routes_to_impl() {
     let cli = Cli {
         vault: "/tmp/origin-secrets-missing-vault-do-not-create".into(),
         passphrase_file: Some(passphrase_file()),
+        json: false,
         command: Commands::Shard(ShardArgs {
             key: "master".to_string(),
             threshold: 3,
@@ -94,6 +97,7 @@ fn test_dispatch_export_routes_to_impl() {
     let cli_init = Cli {
         vault: vault.clone(),
         passphrase_file: Some(passphrase_file()),
+        json: false,
         command: Commands::Init(InitArgs {
             tier: "standard".to_string(),
         }),
@@ -103,6 +107,7 @@ fn test_dispatch_export_routes_to_impl() {
     let cli = Cli {
         vault: vault.clone(),
         passphrase_file: Some(passphrase_file()),
+        json: false,
         command: Commands::ExportShare(ExportArgs {
             share: 1,
             out: dir.join("share.json"),
@@ -128,6 +133,7 @@ fn test_dispatch_recover_routes_to_impl() {
     let cli = Cli {
         vault: "/tmp/origin-secrets-missing-vault-do-not-create".into(),
         passphrase_file: Some(passphrase_file()),
+        json: false,
         command: Commands::Recover(RecoverArgs {
             shares: vec!["/tmp/s1".into(), "/tmp/s2".into()],
             out: None,
@@ -154,6 +160,7 @@ fn test_dispatch_verify_routes_to_impl() {
     let cli = Cli {
         vault: "/tmp/origin-secrets-missing-vault-do-not-create".into(),
         passphrase_file: Some(passphrase_file()),
+        json: false,
         command: Commands::Verify(VerifyArgs {
             vault_path: Some("/tmp/vault.json".into()),
             share: None,
@@ -179,9 +186,11 @@ fn test_dispatch_audit_routes_to_impl() {
     let cli = Cli {
         vault: "/tmp/origin-secrets-missing-vault-do-not-create".into(),
         passphrase_file: Some(passphrase_file()),
+        json: false,
         command: Commands::Audit(AuditArgs {
             show_recovery_log: false,
             show_all_logs: false,
+            show_failures: false,
             filter_key: None,
             filter_user: None,
             filter_start: None,

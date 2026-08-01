@@ -16,6 +16,11 @@ pub struct Cli {
     #[arg(short = 'p', long)]
     pub passphrase_file: Option<PathBuf>,
 
+    /// Machine-readable JSON output (for CI/automation; success prints
+    /// {"ok":true}, failure prints {"ok":false,"code":...,"severity":...}).
+    #[arg(long)]
+    pub json: bool,
+
     #[command(subcommand)]
     pub command: Commands,
 }
@@ -140,6 +145,10 @@ pub struct AuditArgs {
     /// Show all audit entries
     #[arg(long)]
     pub show_all_logs: bool,
+
+    /// Show the failure journal (recorded failures, incl. pre-vault errors)
+    #[arg(long)]
+    pub show_failures: bool,
 
     /// Filter by key ID
     #[arg(long)]

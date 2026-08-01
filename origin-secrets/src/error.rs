@@ -1,5 +1,6 @@
 //! Error types for Origin Secrets
 
+use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use thiserror::Error;
 
@@ -82,6 +83,16 @@ pub enum Error {
     NotImplemented(String),
 }
 
+/// Failure severity, for triage and the failure journal.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Severity {
+    Info,
+    Warn,
+    Error,
+    Critical,
+}
+
 impl Error {
     /// Process exit code for this error, by category:
     ///   1 = internal/runtime failure (crypto, I/O, corruption, unexpected)
@@ -101,6 +112,68 @@ impl Error {
             | Error::InsufficientShares { .. }
             | Error::InvalidThreshold { .. } => 3,
             _ => 1,
+        }
+    }
+
+    /// Stable, machine-readable error code (e.g. `VAULT_DECRYPT_FAILED`).
+    /// Used by the failure journal and `--json` output so failures are
+    /// correlated and queryable rather than dying in stderr as prose.
+    pub fn code(&self) -> &'static str {
+        match self {
+            Error::VaultNotFound(_) => "VAULT_NOT_FOUND",
+            Error::VaultAlreadyExists(_) => "VAULT_ALREADY_EXISTS",
+            Error::VaultCorrupted(_) => "VAULT_CORRUPTED",
+            Error::VaultDecryptionFailed(_) => "VAULT_DECRYPTION_FAILED",
+            Error::VaultEncryptionFailed(_) => "VAULT_ENCRYPTION_FAILED",
+            Error::KeyNotFound { .. } => "KEY_NOT_FOUND",
+            Error::KeyAlreadyExists { .. } => "KEY_ALREADY_EXISTS",
+            Error::ShareNotFound { .. } => "SHARE_NOT_FOUND",
+            Error::InsufficientShares { .. } => "INSUFFICIENT_SHARES",
+            Error::ShareVerificationFailed { .. } => "SHARE_VERIFICATION_FAILED",
+            Error::ShareCorrupted { .. } => "SHARE_CORRUPTED",
+            Error::InvalidThreshold { .. } => "INVALID_THRESHOLD",
+            Error::SignatureVerificationFailed(_) => "SIGNATURE_VERIFICATION_FAILED",
+            Error::SignatureGenerationFailed(_) => "SIGNATURE_GENERATION_FAILED",
+            Error::ComplianceExportFailed { .. } => "COMPLIANCE_EXPORT_FAILED",
+            Error::AuditLogNotFound => "AUDIT_LOG_NOT_FOUND",
+            Error::IoError(_) => "IO_ERROR",
+            Error::CryptoError(_) => "CRYPTO_ERROR",
+            Error::PassphraseTooWeak { .. } => "PASSPHRASE_TOO_WEAK",
+            Error::PassphraseRequired => "PASSPHRASE_REQUIRED",
+            Error::PassphraseMismatch => "PASSPHRASE_MISMATCH",
+            Error::NotImplemented(_) => "NOT_IMPLEMENTED",
+        }
+    }
+
+    /// Severity for triage and the failure journal.
+    pub fn severity(&self) -> Severity {
+        match self {
+            // Usage errors are operator-fixable, not system faults.
+            Error::PassphraseRequired
+            | Error::PassphraseTooWeak { .. }
+            | Error::PassphraseMismatch => Severity::Warn,
+            // Not-found / input errors are expected-class failures.
+            Error::VaultNotFound(_)
+            | Error::VaultAlreadyExists(_)
+            | Error::ShareNotFound { .. }
+            | Error::KeyNotFound { .. }
+            | Error::KeyAlreadyExists { .. }
+            | Error::AuditLogNotFound
+            | Error::InsufficientShares { .. }
+            | Error::InvalidThreshold { .. } => Severity::Warn,
+            // Corruption / tamper / signature failure = security-relevant.
+            Error::VaultCorrupted(_)
+            | Error::ShareCorrupted { .. }
+            | Error::ShareVerificationFailed { .. }
+            | Error::SignatureVerificationFailed(_) => Severity::Critical,
+            // Crypto / IO / decrypt failures are serious but often input-driven.
+            Error::VaultDecryptionFailed(_)
+            | Error::VaultEncryptionFailed(_)
+            | Error::CryptoError(_)
+            | Error::IoError(_) => Severity::Error,
+            Error::ComplianceExportFailed { .. }
+            | Error::SignatureGenerationFailed(_)
+            | Error::NotImplemented(_) => Severity::Error,
         }
     }
 }

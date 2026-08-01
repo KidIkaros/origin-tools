@@ -15,6 +15,15 @@ use std::path::Path;
 /// Compliance exports (`export_soc2` / `export_pcidss` / `export_hipaa`) write
 /// the filtered entries as a JSON evidence file tagged with the framework.
 pub fn cmd_audit(args: AuditArgs, vault_path: &Path, passphrase: &str) -> Result<(), Error> {
+    // Failure journal is vault-independent — handle it first so it works even
+    // when the vault is missing or the passphrase is wrong.
+    if args.show_failures {
+        let failures = crate::observability::read_failures();
+        let json = serde_json::to_string_pretty(&failures).unwrap_or_else(|_| "[]".to_string());
+        println!("{}", json);
+        return Ok(());
+    }
+
     let entries = load_audit_log(vault_path, passphrase)?;
 
     let filtered = filter_entries(entries, &args);
@@ -197,6 +206,7 @@ mod tests {
         let audit_args = AuditArgs {
             show_recovery_log: false,
             show_all_logs: false,
+            show_failures: false,
             filter_key: None,
             filter_user: None,
             filter_start: None,
@@ -223,6 +233,7 @@ mod tests {
         let audit_args = AuditArgs {
             show_recovery_log: false,
             show_all_logs: true,
+            show_failures: false,
             filter_key: None,
             filter_user: None,
             filter_start: None,
@@ -250,6 +261,7 @@ mod tests {
         let audit_args = AuditArgs {
             show_recovery_log: false,
             show_all_logs: false,
+            show_failures: false,
             filter_key: None,
             filter_user: None,
             filter_start: None,
@@ -280,6 +292,7 @@ mod tests {
         let audit_args = AuditArgs {
             show_recovery_log: false,
             show_all_logs: false,
+            show_failures: false,
             filter_key: None,
             filter_user: None,
             filter_start: None,
@@ -308,6 +321,7 @@ mod tests {
         let audit_args = AuditArgs {
             show_recovery_log: false,
             show_all_logs: true,
+            show_failures: false,
             filter_key: Some("master".to_string()),
             filter_user: None,
             filter_start: None,
@@ -328,6 +342,7 @@ mod tests {
         let audit_args = AuditArgs {
             show_recovery_log: false,
             show_all_logs: false,
+            show_failures: false,
             filter_key: None,
             filter_user: None,
             filter_start: None,
@@ -338,5 +353,26 @@ mod tests {
         };
         let result = cmd_audit(audit_args, &missing, "x");
         assert!(matches!(result, Err(Error::VaultNotFound(_))));
+    }
+
+    #[test]
+    fn test_audit_show_failures_reads_journal() {
+        // show_failures must work even with a missing vault (vault-independent).
+        let dir = tempdir().unwrap();
+        let missing = dir.path().join("nope.vault");
+        let audit_args = AuditArgs {
+            show_recovery_log: false,
+            show_all_logs: false,
+            show_failures: true,
+            filter_key: None,
+            filter_user: None,
+            filter_start: None,
+            filter_end: None,
+            export_soc2: None,
+            export_pcidss: None,
+            export_hipaa: None,
+        };
+        let result = cmd_audit(audit_args, &missing, "x");
+        assert!(result.is_ok());
     }
 }
