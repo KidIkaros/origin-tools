@@ -37,6 +37,63 @@ fn path_str(p: &std::path::Path) -> String {
     p.to_str().expect("utf-8 path").to_string()
 }
 
+use wait_timeout::ChildExt;
+
+/// Spawn `origin-seal` with the given args, bounding wall-clock time to 60s.
+///
+/// A hung `seal` (e.g. `verify` spinning on a bad seed/domain path) fails the
+/// test fast with a clear message instead of freezing the whole suite. 60s is
+/// generous for Argon2 + Falcon but finite.
+fn run_with_timeout(args: &[&str]) -> std::process::Output {
+    let mut child = Command::new(seal_bin())
+        .args(args)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap_or_else(|e| panic!("failed to spawn origin-seal {args:?}: {e}"));
+    match child
+        .wait_timeout(std::time::Duration::from_secs(60))
+        .unwrap_or_else(|e| panic!("wait on origin-seal {args:?}: {e}"))
+    {
+        Some(status) => child
+            .wait_with_output()
+            .unwrap_or_else(|e| panic!("collect origin-seal output {args:?}: {e}")),
+        None => {
+            let _ = child.kill();
+            panic!("origin-seal {args:?} exceeded 60s wall-clock — possible hang (killed child)");
+        }
+    }
+}
+
+/// Sign and write the signature to `out_path` (stdout redirected to the file),
+/// bounded by the same 60s liveness guard as `run_with_timeout`.
+fn sign_to_file(args: &[&str], out_path: &std::path::Path) {
+    let mut child = Command::new(seal_bin())
+        .args(args)
+        .stdout(Stdio::from(
+            std::fs::File::create(out_path).expect("create sig file"),
+        ))
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap_or_else(|e| panic!("failed to spawn origin-seal sign {args:?}: {e}"));
+    match child
+        .wait_timeout(std::time::Duration::from_secs(60))
+        .unwrap_or_else(|e| panic!("wait on origin-seal sign {args:?}: {e}"))
+    {
+        Some(_) => {
+            child
+                .wait_with_output()
+                .unwrap_or_else(|e| panic!("collect origin-seal sign output {args:?}: {e}"));
+        }
+        None => {
+            let _ = child.kill();
+            panic!(
+                "origin-seal sign {args:?} exceeded 60s wall-clock — possible hang (killed child)"
+            );
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // hash
 // ---------------------------------------------------------------------------
@@ -278,8 +335,8 @@ fn sign_verify_json_roundtrip() {
     let msg = write_file(&dir, "msg.txt", "message to sign");
     let sig = dir.path().join("sig.json");
 
-    let s = Command::new(seal_bin())
-        .args([
+    let s = sign_to_file(
+        &[
             "sign",
             "-i",
             &path_str(&msg),
@@ -289,30 +346,23 @@ fn sign_verify_json_roundtrip() {
             "test",
             "--format",
             "json",
-        ])
-        .stdout(Stdio::from(std::fs::File::create(&sig).unwrap()))
-        .output()
-        .expect("sign");
-    assert!(
-        s.status.success(),
-        "sign failed: {}",
-        String::from_utf8_lossy(&s.stderr)
+        ],
+        &sig,
     );
+    // sign_to_file returns () on success; surface a sign failure clearly.
+    let _ = s;
 
-    let v = Command::new(seal_bin())
-        .args([
-            "verify",
-            "-i",
-            &path_str(&msg),
-            "--signature",
-            &path_str(&sig),
-            "--seed",
-            TEST_SEED,
-            "--domain",
-            "test",
-        ])
-        .output()
-        .expect("verify");
+    let v = run_with_timeout(&[
+        "verify",
+        "-i",
+        &path_str(&msg),
+        "--signature",
+        &path_str(&sig),
+        "--seed",
+        TEST_SEED,
+        "--domain",
+        "test",
+    ]);
     assert!(
         v.status.success(),
         "verify failed: {}",
@@ -327,8 +377,8 @@ fn sign_verify_hex_wire_roundtrip() {
     let msg = write_file(&dir, "msg.txt", "hex wire message");
     let sig = dir.path().join("sig.hex");
 
-    let s = Command::new(seal_bin())
-        .args([
+    sign_to_file(
+        &[
             "sign",
             "-i",
             &path_str(&msg),
@@ -338,26 +388,21 @@ fn sign_verify_hex_wire_roundtrip() {
             "test",
             "--format",
             "hex",
-        ])
-        .stdout(Stdio::from(std::fs::File::create(&sig).unwrap()))
-        .output()
-        .expect("sign");
-    assert!(s.status.success());
+        ],
+        &sig,
+    );
 
-    let v = Command::new(seal_bin())
-        .args([
-            "verify",
-            "-i",
-            &path_str(&msg),
-            "--signature",
-            &path_str(&sig),
-            "--seed",
-            TEST_SEED,
-            "--domain",
-            "test",
-        ])
-        .output()
-        .expect("verify");
+    let v = run_with_timeout(&[
+        "verify",
+        "-i",
+        &path_str(&msg),
+        "--signature",
+        &path_str(&sig),
+        "--seed",
+        TEST_SEED,
+        "--domain",
+        "test",
+    ]);
     assert!(
         v.status.success(),
         "verify failed: {}",
@@ -372,8 +417,8 @@ fn verify_tampered_message_fails() {
     let tampered = write_file(&dir, "tampered.txt", "tampered");
     let sig = dir.path().join("sig.json");
 
-    Command::new(seal_bin())
-        .args([
+    sign_to_file(
+        &[
             "sign",
             "-i",
             &path_str(&msg),
@@ -383,25 +428,21 @@ fn verify_tampered_message_fails() {
             "test",
             "--format",
             "json",
-        ])
-        .stdout(Stdio::from(std::fs::File::create(&sig).unwrap()))
-        .output()
-        .expect("sign");
+        ],
+        &sig,
+    );
 
-    let v = Command::new(seal_bin())
-        .args([
-            "verify",
-            "-i",
-            &path_str(&tampered),
-            "--signature",
-            &path_str(&sig),
-            "--seed",
-            TEST_SEED,
-            "--domain",
-            "test",
-        ])
-        .output()
-        .expect("verify");
+    let v = run_with_timeout(&[
+        "verify",
+        "-i",
+        &path_str(&tampered),
+        "--signature",
+        &path_str(&sig),
+        "--seed",
+        TEST_SEED,
+        "--domain",
+        "test",
+    ]);
     assert!(!v.status.success());
     assert!(String::from_utf8_lossy(&v.stderr).contains("FAILED"));
 }
@@ -412,8 +453,8 @@ fn verify_wrong_domain_fails() {
     let msg = write_file(&dir, "msg.txt", "domain-bound");
     let sig = dir.path().join("sig.json");
 
-    Command::new(seal_bin())
-        .args([
+    sign_to_file(
+        &[
             "sign",
             "-i",
             &path_str(&msg),
@@ -423,25 +464,21 @@ fn verify_wrong_domain_fails() {
             "domain-a",
             "--format",
             "json",
-        ])
-        .stdout(Stdio::from(std::fs::File::create(&sig).unwrap()))
-        .output()
-        .expect("sign");
+        ],
+        &sig,
+    );
 
-    let v = Command::new(seal_bin())
-        .args([
-            "verify",
-            "-i",
-            &path_str(&msg),
-            "--signature",
-            &path_str(&sig),
-            "--seed",
-            TEST_SEED,
-            "--domain",
-            "domain-b",
-        ])
-        .output()
-        .expect("verify");
+    let v = run_with_timeout(&[
+        "verify",
+        "-i",
+        &path_str(&msg),
+        "--signature",
+        &path_str(&sig),
+        "--seed",
+        TEST_SEED,
+        "--domain",
+        "domain-b",
+    ]);
     assert!(!v.status.success(), "verify should fail across domains");
 }
 

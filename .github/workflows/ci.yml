@@ -47,7 +47,9 @@ jobs:
         working-directory: origin-tools
 
       - name: Run tests
-        run: cargo test --workspace
+        # `timeout` fails the job if the suite hangs (e.g. a spawned sibling
+        # binary spinning) instead of burning CI minutes indefinitely.
+        run: timeout 600 cargo test --workspace
         working-directory: origin-tools
 
   clippy:

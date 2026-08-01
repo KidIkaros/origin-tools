@@ -18,6 +18,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 use tempfile::TempDir;
+use wait_timeout::ChildExt;
 
 /// Set up a suite identity inside an isolated ORIGIN_HOME directory.
 /// Returns the home dir path so tests can pass it as ORIGIN_HOME to child processes.
@@ -51,14 +52,47 @@ fn bin(name: &str) -> PathBuf {
 }
 
 /// Run a binary with an optional ORIGIN_HOME override.
+///
+/// Bounded by a 60s deadline so a hung sibling binary (e.g. a `verify` that
+/// spins) fails the test fast with a clear message instead of freezing the
+/// whole suite. 60s is generous for cross-tool composition (Argon2 + Reed-
+/// Solomon + Falcon verify) but finite.
 fn run(bin: &Path, args: &[&str], origin_home: Option<&Path>) -> std::process::Output {
     let mut cmd = Command::new(bin);
     cmd.args(args);
     if let Some(home) = origin_home {
         cmd.env("ORIGIN_HOME", home);
     }
-    cmd.output()
-        .unwrap_or_else(|e| panic!("failed to run {bin:?} {args:?}: {e}"))
+    let mut child = cmd
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap_or_else(|e| panic!("failed to spawn {bin:?} {args:?}: {e}"));
+    match child
+        .wait_timeout(std::time::Duration::from_secs(60))
+        .unwrap_or_else(|e| panic!("wait on {bin:?} {args:?}: {e}"))
+    {
+        Some(status) => {
+            let out = child
+                .wait_with_output()
+                .unwrap_or_else(|e| panic!("collect output {bin:?}: {e}"));
+            // Re-attach the status we already observed (wait_with_output
+            // consumes the child; reconstruct a comparable Output).
+            std::process::Output {
+                status,
+                stdout: out.stdout,
+                stderr: out.stderr,
+            }
+        }
+        None => {
+            let _ = child.kill();
+            panic!(
+                "{} {:?} exceeded 60s wall-clock — possible hang (killed child)",
+                bin.file_name().unwrap().to_string_lossy(),
+                args
+            );
+        }
+    }
 }
 
 fn _run_stdin(
