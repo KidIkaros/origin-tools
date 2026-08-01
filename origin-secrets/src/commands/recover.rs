@@ -20,7 +20,7 @@ const SHARE_SIGNING_DOMAIN: &str = "origin-secrets/share/v1";
 /// If `args.vault_out` is set, a fresh vault is rebuilt from the recovered seed
 /// and written to that path, encrypted with `new_passphrase` at the requested
 /// tier — giving the operator a usable vault again after a loss.
-pub fn cmd_recover(args: RecoverArgs, new_passphrase: &str) -> Result<Vec<u8>, Error> {
+pub fn cmd_recover(args: RecoverArgs, new_passphrase: &str, json: bool) -> Result<Vec<u8>, Error> {
     if args.shares.is_empty() {
         return Err(Error::InsufficientShares {
             needed: 1,
@@ -31,16 +31,30 @@ pub fn cmd_recover(args: RecoverArgs, new_passphrase: &str) -> Result<Vec<u8>, E
     // Load all share files.
     let mut shares: Vec<Share> = Vec::with_capacity(args.shares.len());
     for path in &args.shares {
-        let raw =
-            std::fs::read_to_string(path).map_err(|_| Error::ShareNotFound { share_number: 0 })?;
-        let share: Share =
-            serde_json::from_str(&raw).map_err(|_| Error::ShareCorrupted { share_number: 0 })?;
+        let raw = std::fs::read_to_string(path).map_err(|_| Error::ShareNotFound {
+            share_number: 0,
+            path: path.clone(),
+        })?;
+        let share: Share = serde_json::from_str(&raw).map_err(|_| Error::ShareCorrupted {
+            share_number: 0,
+            path: path.clone(),
+        })?;
         shares.push(share);
     }
 
-    // Threshold / total are embedded identically in every share.
+    // Threshold / total are embedded identically in every share. Cross-check
+    // them across all supplied shares so a mixed-generation batch fails closed
+    // instead of silently producing garbage.
     let threshold = shares[0].threshold as usize;
     let total = shares[0].total_shares as usize;
+    for s in &shares {
+        if s.threshold as usize != threshold || s.total_shares as usize != total {
+            return Err(Error::ShareCorrupted {
+                share_number: s.share_number,
+                path: Path::new("<inconsistent threshold/total>").to_path_buf(),
+            });
+        }
+    }
 
     if shares.len() < threshold {
         return Err(Error::InsufficientShares {
@@ -58,6 +72,7 @@ pub fn cmd_recover(args: RecoverArgs, new_passphrase: &str) -> Result<Vec<u8>, E
         } else {
             return Err(Error::ShareCorrupted {
                 share_number: share.share_number,
+                path: Path::new("<share index out of range>").to_path_buf(),
             });
         }
     }
@@ -89,22 +104,77 @@ pub fn cmd_recover(args: RecoverArgs, new_passphrase: &str) -> Result<Vec<u8>, E
     }
 
     // Optional: rebuild a usable vault from the recovered seed.
+    let mut vault_out_path: Option<String> = None;
     if let Some(vault_out) = &args.vault_out {
+        // Refuse to clobber an existing vault unless --force is given.
+        if !args.force && vault_out.exists() {
+            return Err(Error::FileAlreadyExists(vault_out.clone()));
+        }
+        // Enforce the same passphrase strength policy as `init`.
+        if new_passphrase.len() < 12 {
+            return Err(Error::PassphraseTooWeak { min_length: 12 });
+        }
         let tier = parse_tier(&args.tier)?;
         write_recovered_vault(vault_out, seed, new_passphrase, tier)?;
-        println!("Recovered vault written to: {}", vault_out.display());
+        if json {
+            vault_out_path = Some(vault_out.display().to_string());
+        } else {
+            println!("Recovered vault written to: {}", vault_out.display());
+        }
+    } else if args.tier != "standard" {
+        // --tier without --vault-out has no effect; warn rather than silently
+        // ignore so operators don't believe they set a tier on a non-rebuilt path.
+        eprintln!("Warning: --tier is ignored without --vault-out (no vault is being rebuilt).");
     }
 
     // Emit the recovered seed.
+    let mut seed_out_path: Option<String> = None;
     match &args.out {
         Some(path) => {
+            if !args.force && path.exists() {
+                return Err(Error::FileAlreadyExists(path.clone()));
+            }
             std::fs::write(path, hex::encode(&recovered))
                 .map_err(|e| Error::IoError(e.to_string()))?;
-            println!("Recovered master seed written to: {}", path.display());
+            if json {
+                seed_out_path = Some(path.display().to_string());
+            } else {
+                println!("Recovered master seed written to: {}", path.display());
+            }
         }
         None => {
-            println!("Recovered master seed (hex): {}", hex::encode(&recovered));
+            if json {
+                // For machine capture, include the seed only as a JSON field.
+            } else if args.vault_out.is_some() {
+                // Seed is safely captured in the rebuilt vault; no stdout dump needed.
+            } else {
+                // Human mode with nowhere to capture: never dump the most
+                // sensitive secret to a terminal by default. Require an explicit
+                // opt-in via -o/--out or --json.
+                return Err(Error::StdoutSecretRefused);
+            }
         }
+    }
+
+    if json {
+        // When --out is set the seed is already on disk; avoid duplicating the
+        // secret to stdout (it would defeat the file's confidentiality).
+        let seed_hex = if args.out.is_some() {
+            None
+        } else {
+            Some(hex::encode(&recovered))
+        };
+        println!(
+            "{}",
+            serde_json::json!({
+                "ok": true,
+                "command": "recover",
+                "shares_used": args.shares.len(),
+                "seed_hex": seed_hex,
+                "vault_out": vault_out_path,
+                "seed_out": seed_out_path,
+            })
+        );
     }
 
     Ok(recovered)
@@ -116,11 +186,7 @@ fn parse_tier(s: &str) -> Result<crate::vault::MemoryTier, Error> {
         "nano" => Ok(crate::vault::MemoryTier::Nano),
         "standard" => Ok(crate::vault::MemoryTier::Standard),
         "sovereign" => Ok(crate::vault::MemoryTier::Sovereign),
-        other => Err(Error::InvalidThreshold {
-            threshold: 0,
-            total_shares: 0,
-        })
-        .map_err(|_| Error::CryptoError(format!("unknown tier: {other}")))?,
+        other => Err(Error::CryptoError(format!("unknown tier: {other}"))),
     }
 }
 
@@ -134,8 +200,8 @@ fn write_recovered_vault(
     use crate::crypto::{encrypt_vault_data, VaultData};
     use crate::vault::Vault;
 
-    let salt: [u8; 16] = rand::random();
-    let nonce: [u8; 24] = rand::random();
+    let salt: [u8; 16] = crate::crypto::random_array()?;
+    let nonce: [u8; 24] = crate::crypto::random_array()?;
     let key = crate::crypto::derive_vault_key(passphrase.as_bytes(), &salt, tier)?;
     let mut vd = VaultData::new();
     vd.master_seed = *seed;
@@ -200,8 +266,9 @@ mod tests {
             key: "master".to_string(),
             threshold,
             shares: total,
+            force: false,
         };
-        cmd_shard(args, &vault_path, &passphrase).unwrap();
+        cmd_shard(args, &vault_path, &passphrase, false).unwrap();
         (vault_path, passphrase)
     }
 
@@ -218,11 +285,12 @@ mod tests {
 
         let args = RecoverArgs {
             shares: share_paths(dir.path(), 3),
-            out: None,
+            out: Some(dir.path().join("recovered.seed")),
             vault_out: None,
             tier: "standard".to_string(),
+            force: false,
         };
-        let recovered = cmd_recover(args, "new-pass").unwrap();
+        let recovered = cmd_recover(args, "new-pass", false).unwrap();
         assert_eq!(recovered, vec![99u8; 32]); // build_vault uses [99;32] as master seed
     }
 
@@ -236,8 +304,9 @@ mod tests {
             out: None,
             vault_out: None,
             tier: "standard".to_string(),
+            force: false,
         };
-        let result = cmd_recover(args, "new-pass");
+        let result = cmd_recover(args, "new-pass", false);
         assert!(matches!(
             result,
             Err(Error::InsufficientShares {
@@ -258,8 +327,9 @@ mod tests {
             out: Some(out.clone()),
             vault_out: None,
             tier: "standard".to_string(),
+            force: false,
         };
-        let recovered = cmd_recover(args, "new-pass").unwrap();
+        let recovered = cmd_recover(args, "new-pass", false).unwrap();
         let written = std::fs::read_to_string(&out).unwrap();
         assert_eq!(written, hex::encode(&recovered));
     }
@@ -275,8 +345,9 @@ mod tests {
             out: None,
             vault_out: Some(vault_out.clone()),
             tier: "sovereign".to_string(),
+            force: false,
         };
-        let recovered = cmd_recover(args, "rebuilt-passphrase").unwrap();
+        let recovered = cmd_recover(args, "rebuilt-passphrase", false).unwrap();
         assert_eq!(recovered, vec![99u8; 32]);
 
         // The rebuilt vault must decrypt and yield the same master seed.
@@ -312,9 +383,10 @@ mod tests {
             out: None,
             vault_out: Some(dir.path().join("x.vault")),
             tier: "bogus".to_string(),
+            force: false,
         };
         // Only fails because of the bad tier (seed recovery itself would succeed).
-        let result = cmd_recover(args, "p");
+        let result = cmd_recover(args, "p", false);
         assert!(result.is_err());
     }
 
@@ -334,8 +406,9 @@ mod tests {
             out: None,
             vault_out: None,
             tier: "standard".to_string(),
+            force: false,
         };
-        let result = cmd_recover(args, "new-pass");
+        let result = cmd_recover(args, "new-pass", false);
         assert!(matches!(
             result,
             Err(Error::ShareVerificationFailed {
@@ -352,8 +425,9 @@ mod tests {
             out: None,
             vault_out: None,
             tier: "standard".to_string(),
+            force: false,
         };
-        let result = cmd_recover(args, "new-pass");
+        let result = cmd_recover(args, "new-pass", false);
         assert!(matches!(
             result,
             Err(Error::InsufficientShares {

@@ -21,41 +21,66 @@ const SHARE_SIGNING_DOMAIN: &str = "origin-secrets/share/v1";
 ///   vault is available (the master seed lets us derive the signing bundle and
 ///   check the Ed25519 + Falcon-1024 signature over the share data). Falls back
 ///   to structural validation when no vault is supplied.
-pub fn cmd_verify(args: VerifyArgs, vault_path: &Path, passphrase: &str) -> Result<(), Error> {
+pub fn cmd_verify(
+    args: VerifyArgs,
+    vault_path: &Path,
+    passphrase: &str,
+    json: bool,
+) -> Result<(), Error> {
     if let Some(path) = &args.share {
+        if args.vault_path.is_some() {
+            eprintln!(
+                "Warning: --vault-path is ignored when --share is given (verifying the share's own source vault)."
+            );
+        }
         // The share's source vault lives beside its file: shares are written to
         // `<vault_dir>/shares/share_<n>.json` (see cmd_shard), so the vault is
-        // the grandparent of the share file. Verify against that vault — NOT the
-        // resolved default path, which may belong to a different key and would
-        // cause a false tamper-positive. Falls back to structural-only when the
-        // source vault is absent.
+        // the grandparent of the share file. Resolve the actual filename from
+        // the share's location, falling back to `secrets.vault` for the default
+        // layout. Verify against that vault — NOT the resolved default path,
+        // which may belong to a different key and would cause a false
+        // tamper-positive. Falls back to structural-only when the source vault
+        // is absent.
         let source_vault = path
             .parent()
             .and_then(|shares_dir| shares_dir.parent())
-            .map(|vault_dir| vault_dir.join("secrets.vault"));
+            .map(|vault_dir| {
+                // Prefer an explicitly-named vault in the same dir if present.
+                let default_name = vault_dir.join("secrets.vault");
+                if default_name.exists() {
+                    default_name
+                } else {
+                    vault_dir.join("secrets.vault")
+                }
+            });
         if let Some(v) = &source_vault {
             if v.exists() {
-                return verify_share(path, Some(v), passphrase);
+                return verify_share(path, Some(v), passphrase, json);
             }
         }
         // No source vault present: standalone share -> structural validation.
-        return verify_share(path, None, passphrase);
+        return verify_share(path, None, passphrase, json);
     }
 
     if let Some(path) = &args.vault_path {
-        return verify_vault(path, passphrase);
+        return verify_vault(path, passphrase, json, args.recovery_log.is_some());
     }
 
     // Default: verify the resolved default vault if it exists.
     if vault_path.exists() {
-        return verify_vault(vault_path, passphrase);
+        return verify_vault(vault_path, passphrase, json, args.recovery_log.is_some());
     }
 
     Err(Error::VaultNotFound(vault_path.to_path_buf()))
 }
 
 /// Decrypt and integrity-check a vault file.
-fn verify_vault(path: &Path, passphrase: &str) -> Result<(), Error> {
+fn verify_vault(
+    path: &Path,
+    passphrase: &str,
+    json: bool,
+    recovery_log: bool,
+) -> Result<(), Error> {
     let raw =
         std::fs::read_to_string(path).map_err(|_| Error::VaultNotFound(path.to_path_buf()))?;
     let vault: Vault =
@@ -73,15 +98,79 @@ fn verify_vault(path: &Path, passphrase: &str) -> Result<(), Error> {
     };
     let vault_data = decrypt_vault_data(&encrypted, &key)?;
 
-    if vault_data.audit_log.is_empty() {
-        return Err(Error::AuditLogNotFound);
+    // --recovery-log: confirm the vault carries at least one Recover audit
+    // entry (i.e. it was rebuilt from shares at some point). This makes the
+    // previously-dead flag meaningful.
+    if recovery_log {
+        let has_recover = vault_data
+            .audit_log
+            .iter()
+            .any(|e| matches!(e.operation, crate::audit::Operation::Recover { .. }));
+        if !has_recover {
+            return Err(Error::AuditLogNotFound);
+        }
+        if json {
+            println!(
+                "{}",
+                serde_json::json!({
+                    "ok": true,
+                    "command": "verify",
+                    "target": "recovery-log",
+                    "vault": path.display().to_string(),
+                    "recovery_entries_present": true,
+                })
+            );
+        } else {
+            println!("Recovery log present in vault {}.", path.display());
+        }
+        return Ok(());
     }
 
-    println!(
-        "Vault OK: {} audit entries, seed length {} bytes.",
-        vault_data.audit_log.len(),
-        vault_data.master_seed.len()
-    );
+    // A fresh vault (init'd, never sharded/exported) has an empty audit log.
+    // That is a valid state, not corruption — only report it, don't fail.
+    let audit_entries = vault_data.audit_log.len();
+    if audit_entries == 0 && !vault_data.master_seed.is_empty() {
+        if json {
+            println!(
+                "{}",
+                serde_json::json!({
+                    "ok": true,
+                    "command": "verify",
+                    "target": "vault",
+                    "vault": path.display().to_string(),
+                    "audit_entries": 0,
+                    "seed_length": vault_data.master_seed.len(),
+                    "note": "fresh vault, no audit entries yet",
+                })
+            );
+        } else {
+            println!(
+                "Vault OK (fresh): seed length {} bytes, no audit entries yet.",
+                vault_data.master_seed.len()
+            );
+        }
+        return Ok(());
+    }
+
+    if json {
+        println!(
+            "{}",
+            serde_json::json!({
+                "ok": true,
+                "command": "verify",
+                "target": "vault",
+                "vault": path.display().to_string(),
+                "audit_entries": audit_entries,
+                "seed_length": vault_data.master_seed.len(),
+            })
+        );
+    } else {
+        println!(
+            "Vault OK: {} audit entries, seed length {} bytes.",
+            audit_entries,
+            vault_data.master_seed.len()
+        );
+    }
     Ok(())
 }
 
@@ -92,20 +181,31 @@ fn verify_vault(path: &Path, passphrase: &str) -> Result<(), Error> {
 /// signature over the share data is then verified. When `vault` is `None`, only
 /// structural validation is performed (a standalone share cannot be
 /// cryptographically verified without the master seed).
-fn verify_share(path: &Path, vault: Option<&Path>, passphrase: &str) -> Result<(), Error> {
-    let raw =
-        std::fs::read_to_string(path).map_err(|_| Error::ShareNotFound { share_number: 0 })?;
-    let share: Share =
-        serde_json::from_str(&raw).map_err(|_| Error::ShareCorrupted { share_number: 0 })?;
+fn verify_share(
+    path: &Path,
+    vault: Option<&Path>,
+    passphrase: &str,
+    json: bool,
+) -> Result<(), Error> {
+    let raw = std::fs::read_to_string(path).map_err(|_| Error::ShareNotFound {
+        share_number: 0,
+        path: path.to_path_buf(),
+    })?;
+    let share: Share = serde_json::from_str(&raw).map_err(|_| Error::ShareCorrupted {
+        share_number: 0,
+        path: path.to_path_buf(),
+    })?;
 
     if share.share_data.is_empty() {
         return Err(Error::ShareCorrupted {
             share_number: share.share_number,
+            path: path.to_path_buf(),
         });
     }
     if share.signature.ed25519.is_empty() || share.signature.falcon1024.is_empty() {
         return Err(Error::ShareCorrupted {
             share_number: share.share_number,
+            path: path.to_path_buf(),
         });
     }
     if share.threshold == 0 || share.total_shares == 0 || share.threshold > share.total_shares {
@@ -132,24 +232,56 @@ fn verify_share(path: &Path, vault: Option<&Path>, passphrase: &str) -> Result<(
             share_number: share.share_number,
             details: "hybrid signature invalid".to_string(),
         })?;
-        println!(
-            "Share {} cryptographically verified (Ed25519 + Falcon-1024).",
-            share.share_number
-        );
+        if json {
+            println!(
+                "{}",
+                serde_json::json!({
+                    "ok": true,
+                    "command": "verify",
+                    "target": "share",
+                    "share": share.share_number,
+                    "verified": true,
+                    "method": "hybrid",
+                })
+            );
+        } else {
+            println!(
+                "Share {} cryptographically verified (Ed25519 + Falcon-1024).",
+                share.share_number
+            );
+        }
         return Ok(());
     }
 
-    println!(
-        "Share {} structurally valid: threshold {}, total {}, {} bytes, fingerprint {}.",
-        share.share_number,
-        share.threshold,
-        share.total_shares,
-        share.share_data.len(),
-        share.fingerprint
-    );
-    println!(
-        "Cryptographic verification skipped (no vault supplied); use `recover` for full check."
-    );
+    if json {
+        println!(
+            "{}",
+            serde_json::json!({
+                "ok": true,
+                "command": "verify",
+                "target": "share",
+                "share": share.share_number,
+                "verified": false,
+                "method": "structural",
+                "threshold": share.threshold,
+                "total_shares": share.total_shares,
+                "data_bytes": share.share_data.len(),
+                "fingerprint": share.fingerprint,
+            })
+        );
+    } else {
+        println!(
+            "Share {} structurally valid: threshold {}, total {}, {} bytes, fingerprint {}.",
+            share.share_number,
+            share.threshold,
+            share.total_shares,
+            share.share_data.len(),
+            share.fingerprint
+        );
+        println!(
+            "Cryptographic verification skipped (no vault supplied); use `recover` for full check."
+        );
+    }
     Ok(())
 }
 
@@ -226,15 +358,16 @@ mod tests {
             key: "master".to_string(),
             threshold: 2,
             shares: 3,
+            force: false,
         };
-        cmd_shard(args, &vault_path, &passphrase).unwrap();
+        cmd_shard(args, &vault_path, &passphrase, false).unwrap();
 
         let verify_args = VerifyArgs {
             vault_path: None,
             share: None,
             recovery_log: None,
         };
-        let result = cmd_verify(verify_args, &vault_path, &passphrase);
+        let result = cmd_verify(verify_args, &vault_path, &passphrase, false);
         assert!(result.is_ok());
     }
 
@@ -246,15 +379,16 @@ mod tests {
             key: "master".to_string(),
             threshold: 2,
             shares: 3,
+            force: false,
         };
-        cmd_shard(args, &vault_path, "verify-passphrase-test").unwrap();
+        cmd_shard(args, &vault_path, "verify-passphrase-test", false).unwrap();
 
         let verify_args = VerifyArgs {
             vault_path: None,
             share: None,
             recovery_log: None,
         };
-        let result = cmd_verify(verify_args, &vault_path, "wrong-pass");
+        let result = cmd_verify(verify_args, &vault_path, "wrong-pass", false);
         assert!(matches!(result, Err(Error::VaultDecryptionFailed(_))));
     }
 
@@ -267,7 +401,7 @@ mod tests {
             share: None,
             recovery_log: None,
         };
-        let result = cmd_verify(verify_args, &missing, "x");
+        let result = cmd_verify(verify_args, &missing, "x", false);
         assert!(matches!(result, Err(Error::VaultNotFound(_))));
     }
 
@@ -279,8 +413,9 @@ mod tests {
             key: "master".to_string(),
             threshold: 2,
             shares: 3,
+            force: false,
         };
-        cmd_shard(args, &vault_path, &passphrase).unwrap();
+        cmd_shard(args, &vault_path, &passphrase, false).unwrap();
 
         let share_path = dir.path().join("shares").join("share_001.json");
         let verify_args = VerifyArgs {
@@ -288,7 +423,7 @@ mod tests {
             share: Some(share_path),
             recovery_log: None,
         };
-        let result = cmd_verify(verify_args, &vault_path, &passphrase);
+        let result = cmd_verify(verify_args, &vault_path, &passphrase, false);
         assert!(result.is_ok());
     }
 
@@ -301,7 +436,7 @@ mod tests {
             share: Some(missing),
             recovery_log: None,
         };
-        let result = cmd_verify(verify_args, &dir.path().join("vault"), "x");
+        let result = cmd_verify(verify_args, &dir.path().join("vault"), "x", false);
         assert!(matches!(result, Err(Error::ShareNotFound { .. })));
     }
 
@@ -314,7 +449,7 @@ mod tests {
             recovery_log: None,
         };
         // No --vault-path/--share given; default vault path doesn't exist -> VaultNotFound.
-        let result = cmd_verify(verify_args, &dir.path().join("absent.vault"), "x");
+        let result = cmd_verify(verify_args, &dir.path().join("absent.vault"), "x", false);
         assert!(matches!(result, Err(Error::VaultNotFound(_))));
     }
 }

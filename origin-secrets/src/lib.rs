@@ -21,6 +21,9 @@ pub use error::Error;
 
 /// Dispatch CLI command to appropriate handler
 pub fn dispatch(cli: Cli) -> Result<(), Error> {
+    let json = cli.json;
+    // Expand a leading `~` in the vault path (clap does not do this itself).
+    let resolved_vault = cli::expand_tilde(cli.vault.clone());
     match cli.command {
         // Generating shell completions never touches a vault or passphrase.
         cli::Commands::Completions(args) => {
@@ -31,7 +34,7 @@ pub fn dispatch(cli: Cli) -> Result<(), Error> {
         // interactive prompting is not yet implemented). It reads the global
         // -p/--passphrase-file when supplied.
         cli::Commands::Init(args) => {
-            commands::init::cmd_init(args, &cli.vault, cli.passphrase_file.as_deref())
+            commands::init::cmd_init(args, &resolved_vault, cli.passphrase_file.as_deref(), json)
         }
         // Every other command opens or writes an encrypted vault and therefore
         // requires a passphrase. A missing -p is a hard error — we never fall
@@ -44,22 +47,30 @@ pub fn dispatch(cli: Cli) -> Result<(), Error> {
                 .ok_or(Error::PassphraseRequired)?;
             let passphrase = std::fs::read_to_string(path)
                 .map_err(|e| Error::IoError(format!("reading passphrase file: {e}")))?;
-            let passphrase = passphrase.trim_end_matches('\n');
+            let passphrase = passphrase.trim_end_matches(['\n', '\r']);
             match other {
                 cli::Commands::Shard(args) => {
-                    commands::shard::cmd_shard(args, &cli.vault, passphrase).map(|_| ())
+                    commands::shard::cmd_shard(args, &resolved_vault, passphrase, json).map(|_| ())
                 }
                 cli::Commands::ExportShare(args) => {
-                    commands::export::cmd_export_share(args, &cli.vault, passphrase).map(|_| ())
+                    commands::export::cmd_export_share(args, &resolved_vault, passphrase, json)
+                        .map(|_| ())
                 }
                 cli::Commands::Recover(args) => {
-                    commands::recover::cmd_recover(args, passphrase).map(|_| ())
+                    // `recover` only needs a passphrase when it rebuilds a vault
+                    // (--vault-out). A share-only recovery writes nothing to disk
+                    // and never opens a vault, so the passphrase gate is skipped.
+                    if args.vault_out.is_some() {
+                        commands::recover::cmd_recover(args, passphrase, json).map(|_| ())
+                    } else {
+                        commands::recover::cmd_recover(args, "", json).map(|_| ())
+                    }
                 }
                 cli::Commands::Verify(args) => {
-                    commands::verify::cmd_verify(args, &cli.vault, passphrase)
+                    commands::verify::cmd_verify(args, &resolved_vault, passphrase, json)
                 }
                 cli::Commands::Audit(args) => {
-                    commands::audit::cmd_audit(args, &cli.vault, passphrase)
+                    commands::audit::cmd_audit(args, &resolved_vault, passphrase, json)
                 }
                 cli::Commands::Init(_) | cli::Commands::Completions(_) => unreachable!(),
             }

@@ -47,3 +47,10 @@ serde_json = "1"
 hex = "0.4"
 rpassword = "7"
 ed25519-dalek = "2"
+
+# Optimize dependencies (Falcon-1024, ed25519-dalek, etc.) in dev builds.
+# Without this, PQC polynomial arithmetic runs ~10x slower at opt-level 0,
+# making sign/verify integration tests take 60s+ instead of ~6s.
+# Workspace crates stay at opt-level 0 for fast incremental compilation.
+[profile.dev.package."*"]
+opt-level = 2

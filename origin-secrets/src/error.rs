@@ -31,8 +31,8 @@ pub enum Error {
     KeyAlreadyExists { key_id: String },
 
     // Share errors
-    #[error("Share not found: {share_number}")]
-    ShareNotFound { share_number: u8 },
+    #[error("Share not found: {share_number} ({path})")]
+    ShareNotFound { share_number: u8, path: PathBuf },
 
     #[error("Insufficient shares: need {needed}, got {provided}")]
     InsufficientShares { needed: u8, provided: u8 },
@@ -40,8 +40,15 @@ pub enum Error {
     #[error("Share verification failed: {share_number} - {details}")]
     ShareVerificationFailed { share_number: u8, details: String },
 
-    #[error("Share corrupted: {share_number}")]
-    ShareCorrupted { share_number: u8 },
+    #[error("Share corrupted: {share_number} ({path})")]
+    ShareCorrupted { share_number: u8, path: PathBuf },
+
+    // Output-file conflicts
+    #[error("Output file already exists: {0} (refusing to overwrite; remove it or pass --force)")]
+    FileAlreadyExists(PathBuf),
+
+    #[error("Refusing to print the recovered master seed to stdout. Pass -o/--out <FILE> to write it to a file, or use --json for machine capture.")]
+    StdoutSecretRefused,
 
     // Threshold errors
     #[error("Invalid threshold: threshold {threshold} > total shares {total_shares}")]
@@ -110,7 +117,8 @@ impl Error {
             | Error::KeyAlreadyExists { .. }
             | Error::AuditLogNotFound
             | Error::InsufficientShares { .. }
-            | Error::InvalidThreshold { .. } => 3,
+            | Error::InvalidThreshold { .. }
+            | Error::FileAlreadyExists(_) => 3,
             _ => 1,
         }
     }
@@ -131,6 +139,8 @@ impl Error {
             Error::InsufficientShares { .. } => "INSUFFICIENT_SHARES",
             Error::ShareVerificationFailed { .. } => "SHARE_VERIFICATION_FAILED",
             Error::ShareCorrupted { .. } => "SHARE_CORRUPTED",
+            Error::FileAlreadyExists(_) => "FILE_ALREADY_EXISTS",
+            Error::StdoutSecretRefused => "STDOUT_SECRET_REFUSED",
             Error::InvalidThreshold { .. } => "INVALID_THRESHOLD",
             Error::SignatureVerificationFailed(_) => "SIGNATURE_VERIFICATION_FAILED",
             Error::SignatureGenerationFailed(_) => "SIGNATURE_GENERATION_FAILED",
@@ -160,7 +170,9 @@ impl Error {
             | Error::KeyAlreadyExists { .. }
             | Error::AuditLogNotFound
             | Error::InsufficientShares { .. }
-            | Error::InvalidThreshold { .. } => Severity::Warn,
+            | Error::InvalidThreshold { .. }
+            | Error::FileAlreadyExists(_)
+            | Error::StdoutSecretRefused => Severity::Warn,
             // Corruption / tamper / signature failure = security-relevant.
             Error::VaultCorrupted(_)
             | Error::ShareCorrupted { .. }
@@ -178,14 +190,14 @@ impl Error {
     }
 }
 
-impl From<std::io::Error> for Error {
-    fn from(err: std::io::Error) -> Self {
+impl From<serde_json::Error> for Error {
+    fn from(err: serde_json::Error) -> Self {
         Error::IoError(err.to_string())
     }
 }
 
-impl From<serde_json::Error> for Error {
-    fn from(err: serde_json::Error) -> Self {
+impl From<std::io::Error> for Error {
+    fn from(err: std::io::Error) -> Self {
         Error::IoError(err.to_string())
     }
 }
@@ -240,7 +252,10 @@ mod tests {
             Error::KeyAlreadyExists {
                 key_id: "k1".to_string(),
             },
-            Error::ShareNotFound { share_number: 1 },
+            Error::ShareNotFound {
+                share_number: 1,
+                path: PathBuf::from("/"),
+            },
             Error::InsufficientShares {
                 needed: 3,
                 provided: 2,
@@ -249,7 +264,10 @@ mod tests {
                 share_number: 1,
                 details: "bad sig".to_string(),
             },
-            Error::ShareCorrupted { share_number: 1 },
+            Error::ShareCorrupted {
+                share_number: 1,
+                path: PathBuf::from("/"),
+            },
             Error::InvalidThreshold {
                 threshold: 5,
                 total_shares: 3,

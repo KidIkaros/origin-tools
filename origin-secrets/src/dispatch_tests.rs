@@ -50,6 +50,7 @@ fn test_dispatch_requires_passphrase_without_flag() {
             key: "master".to_string(),
             threshold: 3,
             shares: 5,
+            force: false,
         }),
     };
     assert!(matches!(
@@ -70,6 +71,7 @@ fn test_dispatch_shard_routes_to_impl() {
             key: "master".to_string(),
             threshold: 3,
             shares: 5,
+            force: false,
         }),
     };
 
@@ -112,6 +114,7 @@ fn test_dispatch_export_routes_to_impl() {
             share: 1,
             out: dir.join("share.json"),
             recipient: Some("alice".to_string()),
+            force: false,
         }),
     };
 
@@ -139,6 +142,7 @@ fn test_dispatch_recover_routes_to_impl() {
             out: None,
             vault_out: None,
             tier: "standard".to_string(),
+            force: false,
         }),
     };
 
@@ -198,6 +202,7 @@ fn test_dispatch_audit_routes_to_impl() {
             export_soc2: None,
             export_pcidss: None,
             export_hipaa: None,
+            force: false,
         }),
     };
 

@@ -37,9 +37,16 @@ cargo build --release -p origin-secrets
 ## Usage
 
 All commands accept a global `-V/--vault <PATH>` (default
-`~/.origin/secrets.vault`) and a **required** `-p/--passphrase-file <PATH>`.
+`~/.origin/secrets.vault` — the leading `~` is expanded to your home
+directory) and a **required** `-p/--passphrase-file <PATH>`.
 A passphrase source is mandatory — there is no built-in default, so every
 command refuses to run (returning `PassphraseRequired`) when `-p` is absent.
+
+Add `--json` to any command for a structured success payload on stdout
+(e.g. `{"ok":true,"command":"init","vault":...,"tier":"standard",
+"fingerprint":"..."}`). Errors are always emitted as a JSON envelope when
+`--json` is set: `{"ok":false,"code":"VAULT_NOT_FOUND","severity":"warn",
+"message":...}` and exit with code `3`.
 
 ### 1. Initialize a vault (Week 1)
 
@@ -54,44 +61,69 @@ Creates an encrypted vault, derives a master seed, and prints a fingerprint.
 ### 2. Shard the master key (Week 2)
 
 ```bash
-origin-secrets -V ./secrets.vault shard --key master --threshold 3 --shares 5
+origin-secrets -V ./secrets.vault -p ./pw.txt shard --key master --threshold 3 --shares 5
 ```
 
-Writes `shares/share_001.json … share_005.json`, each signed.
+Writes `shares/share_001.json … share_005.json`, each signed. A prior set of
+shares in the vault's `shares/` directory is **refused** (stale-share guard) —
+use `--force` only if you intend to overwrite.
 
 ### 3. Export a share to a custodian (Week 3)
 
 ```bash
-origin-secrets -V ./secrets.vault export-share --share 1 --out share1.json --recipient alice
+origin-secrets -V ./secrets.vault -p ./pw.txt export-share --share 1 --out share1.json --recipient alice
 ```
 
-Produces an encrypted, recipient-bound share file.
+Produces an encrypted, recipient-bound share file. Writing to an existing
+`--out` path is refused unless `--force` is given.
 
 ### 4. Recover the master key (Week 3)
 
 ```bash
-origin-secrets -V ./secrets.vault recover shares/share_001.json shares/share_002.json shares/share_003.json -o recovered.seed
+origin-secrets -V ./secrets.vault -p ./pw.txt recover \
+  shares/share_001.json shares/share_002.json shares/share_003.json \
+  -o recovered.seed
 ```
 
 Any 3 of the 5 shares reconstruct the seed. Fewer than K fails closed.
+In human mode the seed is **never** printed to the terminal — capture it with
+`-o/--out` (to a file) or `--json` (in the `seed_hex` field). A rebuilt vault
+can be written with `--vault-out <PATH>` (refuses to overwrite unless
+`--force`).
 
 ### 5. Verify integrity (Week 4)
 
 ```bash
-origin-secrets -V ./secrets.vault verify --vault-path ./secrets.vault
-origin-secrets -V ./secrets.vault verify --share shares/share_001.json   # full hybrid-sig check when vault present
+origin-secrets -V ./secrets.vault -p ./pw.txt verify --vault-path ./secrets.vault
+origin-secrets -V ./secrets.vault -p ./pw.txt verify --share shares/share_001.json   # full hybrid-sig check when vault present
+origin-secrets -V ./secrets.vault -p ./pw.txt verify --recovery-log                  # confirm a Recover entry exists
 ```
 
 `verify --share` performs **full Ed25519 + Falcon-1024 verification** when the
 vault is supplied (it derives the share-signing bundle from the master seed).
+A freshly-initialized vault (no audit entries yet) verifies OK.
 
 ### 6. Audit & compliance export (Week 4)
 
 ```bash
-origin-secrets -V ./secrets.vault audit --show-recovery-log
-origin-secrets -V ./secrets.vault audit --export-soc2   soc2.json
-origin-secrets -V ./secrets.vault audit --export-pcidss pcidss.json
-origin-secrets -V ./secrets.vault audit --export-hipaa hipaa.json
+origin-secrets -V ./secrets.vault -p ./pw.txt audit --show-recovery-log
+origin-secrets -V ./secrets.vault -p ./pw.txt audit --export-soc2   soc2.json
+origin-secrets -V ./secrets.vault -p ./pw.txt audit --export-pcidss pcidss.json
+origin-secrets -V ./secrets.vault -p ./pw.txt audit --export-hipaa hipaa.json
+```
+
+Compliance exports refuse to overwrite an existing file unless `--force` is
+given. Only one compliance export may be requested per invocation.
+
+### 7. Failure journal (vault-independent)
+
+Failures are recorded to `~/.origin/failures.log` (one JSON line per event)
+independent of any vault, so you can audit *denied* operations even when the
+vault is missing or the passphrase is wrong:
+
+```bash
+origin-secrets -p ./pw.txt audit --show-failures
+origin-secrets     audit --show-failures --json   # vault-independent, structured output
 ```
 
 ## Testing
@@ -117,3 +149,18 @@ cargo test -p origin-secrets --release
 
 See [SECURITY.md](./SECURITY.md) for the full threat model and disclosure
 process, and [DESIGN_DOC.md](./../DESIGN_DOC.md) for architecture.
+
+## Exit codes & error model
+
+| Code | Meaning | Example |
+|---|---|---|
+| `0` | Success | — |
+| `1` | Internal / runtime error | crypto failure |
+| `2` | Usage error (passphrase missing/weak) | `PassphraseRequired`, `PassphraseTooWeak` |
+| `3` | Not-found / input error | `VaultNotFound`, `ShareNotFound`, `InvalidThreshold`, `FileAlreadyExists` |
+| `127` | CLI parse error (clap) | unknown flag |
+
+With `--json`, both success and error payloads are emitted as JSON on stdout:
+`{"ok":true,"command":..., ...}` or `{"ok":false,"code":...,"severity":...,
+"message":...}`. The failure journal (`~/.origin/failures.log`) records every
+error regardless of `--json`, keyed by `code` and `severity`.

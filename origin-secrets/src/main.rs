@@ -49,9 +49,6 @@ fn main() {
 
     let result = origin_secrets::dispatch(cli);
     if result.is_ok() {
-        if json {
-            println!("{}", json!({ "ok": true }));
-        }
         return;
     }
 

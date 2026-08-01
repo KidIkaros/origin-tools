@@ -9,10 +9,14 @@
 //!
 //! Every test writes passphrases/keys to files (never argv) and invokes
 //! `env!("CARGO_BIN_EXE_origin-seal")` via `std::process::Command`.
+//!
+//! All spawns are bounded by a 60-second wall-clock deadline (L2 liveness
+//! guard) so a hung binary fails the test fast instead of freezing the suite.
 
 use std::process::{Command, Stdio};
 
 use tempfile::TempDir;
+use wait_timeout::ChildExt;
 
 /// Path to the compiled `origin-seal` binary, set by cargo for integration tests.
 fn seal_bin() -> &'static str {
@@ -37,8 +41,6 @@ fn path_str(p: &std::path::Path) -> String {
     p.to_str().expect("utf-8 path").to_string()
 }
 
-use wait_timeout::ChildExt;
-
 /// Spawn `origin-seal` with the given args, bounding wall-clock time to 60s.
 ///
 /// A hung `seal` (e.g. `verify` spinning on a bad seed/domain path) fails the
@@ -55,7 +57,39 @@ fn run_with_timeout(args: &[&str]) -> std::process::Output {
         .wait_timeout(std::time::Duration::from_secs(60))
         .unwrap_or_else(|e| panic!("wait on origin-seal {args:?}: {e}"))
     {
-        Some(status) => child
+        Some(_) => child
+            .wait_with_output()
+            .unwrap_or_else(|e| panic!("collect origin-seal output {args:?}: {e}")),
+        None => {
+            let _ = child.kill();
+            panic!("origin-seal {args:?} exceeded 60s wall-clock — possible hang (killed child)");
+        }
+    }
+}
+
+/// Spawn `origin-seal` with stdin fed from `input`, bounded by 60s.
+fn run_with_stdin(args: &[&str], input: &[u8]) -> std::process::Output {
+    let mut child = Command::new(seal_bin())
+        .args(args)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap_or_else(|e| panic!("failed to spawn origin-seal {args:?}: {e}"));
+    {
+        use std::io::Write;
+        child
+            .stdin
+            .as_mut()
+            .unwrap()
+            .write_all(input)
+            .unwrap_or_else(|e| panic!("write stdin to origin-seal {args:?}: {e}"));
+    }
+    match child
+        .wait_timeout(std::time::Duration::from_secs(60))
+        .unwrap_or_else(|e| panic!("wait on origin-seal {args:?}: {e}"))
+    {
+        Some(_) => child
             .wait_with_output()
             .unwrap_or_else(|e| panic!("collect origin-seal output {args:?}: {e}")),
         None => {
@@ -101,17 +135,7 @@ fn sign_to_file(args: &[&str], out_path: &std::path::Path) {
 #[test]
 fn hash_sha3_256_known_vector() {
     // SHA3-256("hello") — known answer.
-    let out = Command::new(seal_bin())
-        .args(["hash", "--algo", "sha3-256"])
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .spawn()
-        .and_then(|mut c| {
-            use std::io::Write;
-            c.stdin.as_mut().unwrap().write_all(b"hello").unwrap();
-            c.wait_with_output()
-        })
-        .expect("run seal hash");
+    let out = run_with_stdin(&["hash", "--algo", "sha3-256"], b"hello");
     assert!(out.status.success());
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert_eq!(
@@ -125,10 +149,7 @@ fn hash_blake3_deterministic() {
     let dir = TempDir::new().unwrap();
     let inp = write_file(&dir, "in.txt", "deterministic input");
     let run = || {
-        let out = Command::new(seal_bin())
-            .args(["hash", "--algo", "blake3", "-i", &path_str(&inp)])
-            .output()
-            .expect("run");
+        let out = run_with_timeout(&["hash", "--algo", "blake3", "-i", &path_str(&inp)]);
         assert!(out.status.success());
         String::from_utf8_lossy(&out.stdout).trim().to_string()
     };
@@ -147,40 +168,34 @@ fn encrypt_decrypt_roundtrip() {
     let ct = dir.path().join("ct.bin");
     let out = dir.path().join("out.txt");
 
-    let enc = Command::new(seal_bin())
-        .args([
-            "encrypt",
-            "-i",
-            &path_str(&pt),
-            "-o",
-            &path_str(&ct),
-            "--passphrase-file",
-            &path_str(&pw),
-            "--tier",
-            "nano",
-        ])
-        .output()
-        .expect("encrypt");
+    let enc = run_with_timeout(&[
+        "encrypt",
+        "-i",
+        &path_str(&pt),
+        "-o",
+        &path_str(&ct),
+        "--passphrase-file",
+        &path_str(&pw),
+        "--tier",
+        "nano",
+    ]);
     assert!(
         enc.status.success(),
         "encrypt failed: {}",
         String::from_utf8_lossy(&enc.stderr)
     );
 
-    let dec = Command::new(seal_bin())
-        .args([
-            "decrypt",
-            "-i",
-            &path_str(&ct),
-            "-o",
-            &path_str(&out),
-            "--passphrase-file",
-            &path_str(&pw),
-            "--tier",
-            "nano",
-        ])
-        .output()
-        .expect("decrypt");
+    let dec = run_with_timeout(&[
+        "decrypt",
+        "-i",
+        &path_str(&ct),
+        "-o",
+        &path_str(&out),
+        "--passphrase-file",
+        &path_str(&pw),
+        "--tier",
+        "nano",
+    ]);
     assert!(
         dec.status.success(),
         "decrypt failed: {}",
@@ -201,33 +216,27 @@ fn decrypt_wrong_passphrase_fails() {
     let bad = write_file(&dir, "bad.txt", "wrong");
     let ct = dir.path().join("ct.bin");
 
-    Command::new(seal_bin())
-        .args([
-            "encrypt",
-            "-i",
-            &path_str(&pt),
-            "-o",
-            &path_str(&ct),
-            "--passphrase-file",
-            &path_str(&pw),
-            "--tier",
-            "nano",
-        ])
-        .output()
-        .expect("encrypt");
+    run_with_timeout(&[
+        "encrypt",
+        "-i",
+        &path_str(&pt),
+        "-o",
+        &path_str(&ct),
+        "--passphrase-file",
+        &path_str(&pw),
+        "--tier",
+        "nano",
+    ]);
 
-    let dec = Command::new(seal_bin())
-        .args([
-            "decrypt",
-            "-i",
-            &path_str(&ct),
-            "--passphrase-file",
-            &path_str(&bad),
-            "--tier",
-            "nano",
-        ])
-        .output()
-        .expect("decrypt");
+    let dec = run_with_timeout(&[
+        "decrypt",
+        "-i",
+        &path_str(&ct),
+        "--passphrase-file",
+        &path_str(&bad),
+        "--tier",
+        "nano",
+    ]);
     assert!(!dec.status.success());
     let stderr = String::from_utf8_lossy(&dec.stderr);
     assert!(
@@ -243,33 +252,27 @@ fn decrypt_tier_mismatch_fails() {
     let pw = write_file(&dir, "pw.txt", "pw");
     let ct = dir.path().join("ct.bin");
 
-    Command::new(seal_bin())
-        .args([
-            "encrypt",
-            "-i",
-            &path_str(&pt),
-            "-o",
-            &path_str(&ct),
-            "--passphrase-file",
-            &path_str(&pw),
-            "--tier",
-            "nano",
-        ])
-        .output()
-        .expect("encrypt");
+    run_with_timeout(&[
+        "encrypt",
+        "-i",
+        &path_str(&pt),
+        "-o",
+        &path_str(&ct),
+        "--passphrase-file",
+        &path_str(&pw),
+        "--tier",
+        "nano",
+    ]);
 
-    let dec = Command::new(seal_bin())
-        .args([
-            "decrypt",
-            "-i",
-            &path_str(&ct),
-            "--passphrase-file",
-            &path_str(&pw),
-            "--tier",
-            "sovereign",
-        ])
-        .output()
-        .expect("decrypt");
+    let dec = run_with_timeout(&[
+        "decrypt",
+        "-i",
+        &path_str(&ct),
+        "--passphrase-file",
+        &path_str(&pw),
+        "--tier",
+        "sovereign",
+    ]);
     assert!(!dec.status.success());
     assert!(String::from_utf8_lossy(&dec.stderr).contains("tier mismatch"));
 }
@@ -282,21 +285,18 @@ fn encrypt_compress_roundtrip() {
     let pw = write_file(&dir, "pw.txt", "pw");
     let ct = dir.path().join("ct.bin");
 
-    let enc = Command::new(seal_bin())
-        .args([
-            "encrypt",
-            "-i",
-            &path_str(&pt),
-            "-o",
-            &path_str(&ct),
-            "--passphrase-file",
-            &path_str(&pw),
-            "--tier",
-            "nano",
-            "--compress",
-        ])
-        .output()
-        .expect("encrypt");
+    let enc = run_with_timeout(&[
+        "encrypt",
+        "-i",
+        &path_str(&pt),
+        "-o",
+        &path_str(&ct),
+        "--passphrase-file",
+        &path_str(&pw),
+        "--tier",
+        "nano",
+        "--compress",
+    ]);
     assert!(enc.status.success());
 
     // Compressed envelope must be smaller than plaintext.
@@ -307,18 +307,15 @@ fn encrypt_compress_roundtrip() {
         big.len()
     );
 
-    let dec = Command::new(seal_bin())
-        .args([
-            "decrypt",
-            "-i",
-            &path_str(&ct),
-            "--passphrase-file",
-            &path_str(&pw),
-            "--tier",
-            "nano",
-        ])
-        .output()
-        .expect("decrypt");
+    let dec = run_with_timeout(&[
+        "decrypt",
+        "-i",
+        &path_str(&ct),
+        "--passphrase-file",
+        &path_str(&pw),
+        "--tier",
+        "nano",
+    ]);
     assert!(dec.status.success());
     assert_eq!(String::from_utf8_lossy(&dec.stdout), big);
 }
@@ -335,7 +332,7 @@ fn sign_verify_json_roundtrip() {
     let msg = write_file(&dir, "msg.txt", "message to sign");
     let sig = dir.path().join("sig.json");
 
-    let s = sign_to_file(
+    sign_to_file(
         &[
             "sign",
             "-i",
@@ -349,8 +346,6 @@ fn sign_verify_json_roundtrip() {
         ],
         &sig,
     );
-    // sign_to_file returns () on success; surface a sign failure clearly.
-    let _ = s;
 
     let v = run_with_timeout(&[
         "verify",
@@ -491,18 +486,15 @@ fn kdf_deterministic_with_fixed_salt() {
     let dir = TempDir::new().unwrap();
     let pw = write_file(&dir, "pw.txt", "kdf-pass");
     let run = || {
-        let out = Command::new(seal_bin())
-            .args([
-                "kdf",
-                "--passphrase-file",
-                &path_str(&pw),
-                "--salt",
-                "00112233445566778899aabbccddeeff",
-                "--tier",
-                "nano",
-            ])
-            .output()
-            .expect("kdf");
+        let out = run_with_timeout(&[
+            "kdf",
+            "--passphrase-file",
+            &path_str(&pw),
+            "--salt",
+            "00112233445566778899aabbccddeeff",
+            "--tier",
+            "nano",
+        ]);
         assert!(out.status.success());
         String::from_utf8_lossy(&out.stdout).to_string()
     };
@@ -515,10 +507,7 @@ fn mac_deterministic() {
     let inp = write_file(&dir, "in.txt", "mac data");
     let key = "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff";
     let run = || {
-        let out = Command::new(seal_bin())
-            .args(["mac", "-i", &path_str(&inp), "--key", key])
-            .output()
-            .expect("mac");
+        let out = run_with_timeout(&["mac", "-i", &path_str(&inp), "--key", key]);
         assert!(out.status.success());
         String::from_utf8_lossy(&out.stdout).trim().to_string()
     };
@@ -538,18 +527,15 @@ fn decrypt_garbage_input_fails_cleanly() {
     let garbage = write_bytes(&dir, "garbage.bin", &[0x41u8; 64]);
     let pw = write_file(&dir, "pw.txt", "pw");
 
-    let dec = Command::new(seal_bin())
-        .args([
-            "decrypt",
-            "-i",
-            &path_str(&garbage),
-            "--passphrase-file",
-            &path_str(&pw),
-            "--tier",
-            "nano",
-        ])
-        .output()
-        .expect("decrypt");
+    let dec = run_with_timeout(&[
+        "decrypt",
+        "-i",
+        &path_str(&garbage),
+        "--passphrase-file",
+        &path_str(&pw),
+        "--tier",
+        "nano",
+    ]);
     assert!(!dec.status.success());
     assert!(String::from_utf8_lossy(&dec.stderr).contains("bad magic"));
 }
@@ -560,18 +546,15 @@ fn decrypt_too_short_input_fails_cleanly() {
     let short = write_bytes(&dir, "short.bin", b"tiny");
     let pw = write_file(&dir, "pw.txt", "pw");
 
-    let dec = Command::new(seal_bin())
-        .args([
-            "decrypt",
-            "-i",
-            &path_str(&short),
-            "--passphrase-file",
-            &path_str(&pw),
-            "--tier",
-            "nano",
-        ])
-        .output()
-        .expect("decrypt");
+    let dec = run_with_timeout(&[
+        "decrypt",
+        "-i",
+        &path_str(&short),
+        "--passphrase-file",
+        &path_str(&pw),
+        "--tier",
+        "nano",
+    ]);
     assert!(!dec.status.success());
     assert!(String::from_utf8_lossy(&dec.stderr).contains("too short"));
 }
@@ -582,18 +565,15 @@ fn unknown_tier_rejected() {
     let pt = write_file(&dir, "pt.txt", "x");
     let pw = write_file(&dir, "pw.txt", "pw");
 
-    let enc = Command::new(seal_bin())
-        .args([
-            "encrypt",
-            "-i",
-            &path_str(&pt),
-            "--passphrase-file",
-            &path_str(&pw),
-            "--tier",
-            "ultra",
-        ])
-        .output()
-        .expect("encrypt");
+    let enc = run_with_timeout(&[
+        "encrypt",
+        "-i",
+        &path_str(&pt),
+        "--passphrase-file",
+        &path_str(&pw),
+        "--tier",
+        "ultra",
+    ]);
     assert!(!enc.status.success());
     assert!(String::from_utf8_lossy(&enc.stderr).contains("unknown tier"));
 }
@@ -612,43 +592,37 @@ fn stream_roundtrip_multi_chunk() {
     let seal = dir.path().join("big.seal");
     let out = dir.path().join("big.out");
 
-    let enc = Command::new(seal_bin())
-        .args([
-            "encrypt",
-            "-i",
-            &path_str(&pt),
-            "-o",
-            &path_str(&seal),
-            "--passphrase-file",
-            &path_str(&pw),
-            "--tier",
-            "nano",
-            "--stream",
-            "--chunk-size",
-            "1048576",
-        ])
-        .output()
-        .expect("encrypt");
+    let enc = run_with_timeout(&[
+        "encrypt",
+        "-i",
+        &path_str(&pt),
+        "-o",
+        &path_str(&seal),
+        "--passphrase-file",
+        &path_str(&pw),
+        "--tier",
+        "nano",
+        "--stream",
+        "--chunk-size",
+        "1048576",
+    ]);
     assert!(
         enc.status.success(),
         "encrypt stderr: {}",
         String::from_utf8_lossy(&enc.stderr)
     );
 
-    let dec = Command::new(seal_bin())
-        .args([
-            "decrypt",
-            "-i",
-            &path_str(&seal),
-            "-o",
-            &path_str(&out),
-            "--passphrase-file",
-            &path_str(&pw),
-            "--tier",
-            "nano",
-        ])
-        .output()
-        .expect("decrypt");
+    let dec = run_with_timeout(&[
+        "decrypt",
+        "-i",
+        &path_str(&seal),
+        "-o",
+        &path_str(&out),
+        "--passphrase-file",
+        &path_str(&pw),
+        "--tier",
+        "nano",
+    ]);
     assert!(
         dec.status.success(),
         "decrypt stderr: {}",
@@ -668,43 +642,37 @@ fn stream_truncation_detected() {
     let seal = dir.path().join("big.seal");
     let out = dir.path().join("big.out");
 
-    Command::new(seal_bin())
-        .args([
-            "encrypt",
-            "-i",
-            &path_str(&pt),
-            "-o",
-            &path_str(&seal),
-            "--passphrase-file",
-            &path_str(&pw),
-            "--tier",
-            "nano",
-            "--stream",
-            "--chunk-size",
-            "1048576",
-        ])
-        .output()
-        .expect("encrypt");
+    run_with_timeout(&[
+        "encrypt",
+        "-i",
+        &path_str(&pt),
+        "-o",
+        &path_str(&seal),
+        "--passphrase-file",
+        &path_str(&pw),
+        "--tier",
+        "nano",
+        "--stream",
+        "--chunk-size",
+        "1048576",
+    ]);
 
     // Chop the last 100 bytes — removes the sentinel and part of a chunk.
     let full = std::fs::read(&seal).expect("read seal");
     let truncated = &full[..full.len() - 100];
     let trunc_path = write_bytes(&dir, "big.trunc.seal", truncated);
 
-    let dec = Command::new(seal_bin())
-        .args([
-            "decrypt",
-            "-i",
-            &path_str(&trunc_path),
-            "-o",
-            &path_str(&out),
-            "--passphrase-file",
-            &path_str(&pw),
-            "--tier",
-            "nano",
-        ])
-        .output()
-        .expect("decrypt");
+    let dec = run_with_timeout(&[
+        "decrypt",
+        "-i",
+        &path_str(&trunc_path),
+        "-o",
+        &path_str(&out),
+        "--passphrase-file",
+        &path_str(&pw),
+        "--tier",
+        "nano",
+    ]);
     assert!(!dec.status.success(), "truncated stream must fail");
     assert!(String::from_utf8_lossy(&dec.stderr).contains("truncat"));
 }
@@ -715,20 +683,17 @@ fn stream_and_compress_mutually_exclusive() {
     let pt = write_file(&dir, "pt.txt", "data");
     let pw = write_file(&dir, "pw.txt", "pw");
 
-    let enc = Command::new(seal_bin())
-        .args([
-            "encrypt",
-            "-i",
-            &path_str(&pt),
-            "--passphrase-file",
-            &path_str(&pw),
-            "--tier",
-            "nano",
-            "--stream",
-            "--compress",
-        ])
-        .output()
-        .expect("encrypt");
+    let enc = run_with_timeout(&[
+        "encrypt",
+        "-i",
+        &path_str(&pt),
+        "--passphrase-file",
+        &path_str(&pw),
+        "--tier",
+        "nano",
+        "--stream",
+        "--compress",
+    ]);
     assert!(!enc.status.success());
     assert!(String::from_utf8_lossy(&enc.stderr).contains("mutually exclusive"));
 }
@@ -743,38 +708,32 @@ fn stream_wrong_passphrase_fails() {
     let seal = dir.path().join("big.seal");
     let out = dir.path().join("big.out");
 
-    Command::new(seal_bin())
-        .args([
-            "encrypt",
-            "-i",
-            &path_str(&pt),
-            "-o",
-            &path_str(&seal),
-            "--passphrase-file",
-            &path_str(&pw),
-            "--tier",
-            "nano",
-            "--stream",
-            "--chunk-size",
-            "1048576",
-        ])
-        .output()
-        .expect("encrypt");
+    run_with_timeout(&[
+        "encrypt",
+        "-i",
+        &path_str(&pt),
+        "-o",
+        &path_str(&seal),
+        "--passphrase-file",
+        &path_str(&pw),
+        "--tier",
+        "nano",
+        "--stream",
+        "--chunk-size",
+        "1048576",
+    ]);
 
-    let dec = Command::new(seal_bin())
-        .args([
-            "decrypt",
-            "-i",
-            &path_str(&seal),
-            "-o",
-            &path_str(&out),
-            "--passphrase-file",
-            &path_str(&bad),
-            "--tier",
-            "nano",
-        ])
-        .output()
-        .expect("decrypt");
+    let dec = run_with_timeout(&[
+        "decrypt",
+        "-i",
+        &path_str(&seal),
+        "-o",
+        &path_str(&out),
+        "--passphrase-file",
+        &path_str(&bad),
+        "--tier",
+        "nano",
+    ]);
     assert!(!dec.status.success());
     assert!(String::from_utf8_lossy(&dec.stderr).contains("decryption failed"));
 }

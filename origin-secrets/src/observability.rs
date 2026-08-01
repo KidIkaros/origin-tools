@@ -45,10 +45,16 @@ pub fn record_failure(err: &Error, command: &str) {
     };
     if let Ok(json) = serde_json::to_string(&record) {
         let line = format!("{}\n", json);
+        let path = journal_path();
+        // Ensure the parent directory exists; otherwise the journal is silently
+        // inoperative on a fresh install (the file create() does not mkdir parents).
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
         let _ = std::fs::OpenOptions::new()
             .create(true)
             .append(true)
-            .open(journal_path())
+            .open(&path)
             .and_then(|mut f| std::io::Write::write_all(&mut f, line.as_bytes()));
     }
 }
@@ -76,6 +82,13 @@ fn chrono_timestamp() -> String {
     // Format as YYYY-MM-DDTHH:MM:SSZ (UTC-naive; sufficient for triage).
     let (y, mo, d, h, mi, s) = epoch_to_ymd_hms(secs);
     format!("{:04}-{:02}-{:02}T{:02}:{:02}:{:02}Z", y, mo, d, h, mi, s)
+}
+
+/// Public helper: current UTC timestamp as a correctly leap-year-handled
+/// ISO-8601 string. Reused by other commands (e.g. export) so there is a
+/// single source of truth for calendar conversion.
+pub fn epoch_to_ymd_hms_now() -> String {
+    chrono_timestamp()
 }
 
 /// Convert Unix seconds to a calendar breakdown (UTC, proleptic Gregorian).

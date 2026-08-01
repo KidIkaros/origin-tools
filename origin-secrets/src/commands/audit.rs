@@ -14,13 +14,37 @@ use std::path::Path;
 /// (`filter_key`, `filter_user`, `filter_start`, `filter_end`) narrow the set.
 /// Compliance exports (`export_soc2` / `export_pcidss` / `export_hipaa`) write
 /// the filtered entries as a JSON evidence file tagged with the framework.
-pub fn cmd_audit(args: AuditArgs, vault_path: &Path, passphrase: &str) -> Result<(), Error> {
+pub fn cmd_audit(
+    args: AuditArgs,
+    vault_path: &Path,
+    passphrase: &str,
+    json: bool,
+) -> Result<(), Error> {
     // Failure journal is vault-independent — handle it first so it works even
     // when the vault is missing or the passphrase is wrong.
     if args.show_failures {
         let failures = crate::observability::read_failures();
-        let json = serde_json::to_string_pretty(&failures).unwrap_or_else(|_| "[]".to_string());
-        println!("{}", json);
+        if json {
+            println!(
+                "{}",
+                serde_json::json!({
+                    "ok": true,
+                    "command": "audit",
+                    "failures": failures,
+                })
+            );
+        } else {
+            if failures.is_empty() {
+                println!("No recorded failures.");
+            } else {
+                for f in &failures {
+                    println!(
+                        "[{}] {} {:?} ({}): {}",
+                        f.timestamp, f.code, f.severity, f.command, f.message
+                    );
+                }
+            }
+        }
         return Ok(());
     }
 
@@ -28,9 +52,25 @@ pub fn cmd_audit(args: AuditArgs, vault_path: &Path, passphrase: &str) -> Result
 
     let filtered = filter_entries(entries, &args);
 
+    // Count how many compliance exports were requested; only one is honored.
+    let requested: Vec<&str> = [
+        args.export_soc2.as_ref().map(|_| "soc2"),
+        args.export_pcidss.as_ref().map(|_| "pcidss"),
+        args.export_hipaa.as_ref().map(|_| "hipaa"),
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
+    if requested.len() > 1 {
+        return Err(Error::ComplianceExportFailed {
+            framework: requested.join("+"),
+            details: "only one compliance export may be requested per invocation".to_string(),
+        });
+    }
+
     // Compliance exports take precedence when present.
     if let Some(path) = &args.export_soc2 {
-        return export_compliance(&filtered, ComplianceFormat::SOC2, path);
+        return export_compliance(&filtered, ComplianceFormat::SOC2, path, json, args.force);
     }
     if let Some(path) = &args.export_pcidss {
         return export_compliance(
@@ -39,6 +79,8 @@ pub fn cmd_audit(args: AuditArgs, vault_path: &Path, passphrase: &str) -> Result
                 version: "4.0".to_string(),
             },
             path,
+            json,
+            args.force,
         );
     }
     if let Some(path) = &args.export_hipaa {
@@ -48,32 +90,54 @@ pub fn cmd_audit(args: AuditArgs, vault_path: &Path, passphrase: &str) -> Result
                 section: "164.312".to_string(),
             },
             path,
+            json,
+            args.force,
         );
     }
 
     // Display modes.
     if args.show_recovery_log {
+        if args.show_all_logs {
+            eprintln!("Warning: --show-all-logs is ignored because --show-recovery-log was given.");
+        }
+        if any_filter_set(&args) {
+            eprintln!("Warning: audit filters are ignored with --show-failures/--show-recovery-log display modes.");
+        }
         let recovery: Vec<AuditEntry> = filtered
             .iter()
             .filter(|e| matches!(e.operation, Operation::Recover { .. }))
             .cloned()
             .collect();
-        print_entries(&recovery);
+        print_entries(&recovery, json, "recovery_log");
         return Ok(());
     }
 
     if args.show_all_logs {
-        print_entries(&filtered);
+        if any_filter_set(&args) {
+            eprintln!("Warning: audit filters are ignored with --show-recovery-log/--show-all-logs display modes.");
+        }
+        print_entries(&filtered, json, "all_logs");
         return Ok(());
     }
 
     // Default: summary.
-    println!("Audit log: {} entries.", filtered.len());
-    for e in &filtered {
+    if json {
         println!(
-            "  [{}] {:?} key={} operator={} ts={}",
-            e.entry_id, e.operation, e.key_id, e.operator, e.timestamp
+            "{}",
+            serde_json::json!({
+                "ok": true,
+                "command": "audit",
+                "entry_count": filtered.len(),
+            })
         );
+    } else {
+        println!("Audit log: {} entries.", filtered.len());
+        for e in &filtered {
+            println!(
+                "  [{}] {:?} key={} operator={} ts={}",
+                e.entry_id, e.operation, e.key_id, e.operator, e.timestamp
+            );
+        }
     }
     Ok(())
 }
@@ -129,10 +193,28 @@ fn filter_entries(entries: Vec<AuditEntry>, args: &AuditArgs) -> Vec<AuditEntry>
         .collect()
 }
 
-/// Print entries as pretty JSON.
-fn print_entries(entries: &[AuditEntry]) {
-    let json = serde_json::to_string_pretty(entries).unwrap_or_else(|_| "[]".to_string());
-    println!("{}", json);
+/// Print entries — human-readable list or pretty JSON depending on `json`.
+fn print_entries(entries: &[AuditEntry], json: bool, mode: &str) {
+    if json {
+        println!(
+            "{}",
+            serde_json::json!({
+                "ok": true,
+                "command": "audit",
+                "mode": mode,
+                "entry_count": entries.len(),
+                "entries": entries,
+            })
+        );
+    } else {
+        println!("Audit log: {} entries.", entries.len());
+        for e in entries {
+            println!(
+                "  [{}] {:?} key={} operator={} ts={}",
+                e.entry_id, e.operation, e.key_id, e.operator, e.timestamp
+            );
+        }
+    }
 }
 
 /// Write filtered entries as a compliance evidence file.
@@ -140,7 +222,13 @@ fn export_compliance(
     entries: &[AuditEntry],
     format: ComplianceFormat,
     path: &Path,
+    json: bool,
+    force: bool,
 ) -> Result<(), Error> {
+    // Refuse to clobber an existing evidence file unless --force is given.
+    if !force && path.exists() {
+        return Err(Error::FileAlreadyExists(path.to_path_buf()));
+    }
     let evidence = serde_json::json!({
         "format": format,
         "entry_count": entries.len(),
@@ -149,13 +237,34 @@ fn export_compliance(
     let serialized =
         serde_json::to_string_pretty(&evidence).map_err(|e| Error::IoError(e.to_string()))?;
     std::fs::write(path, serialized).map_err(|e| Error::IoError(e.to_string()))?;
-    println!(
-        "Exported {} audit entries as {:?} evidence to {}.",
-        entries.len(),
-        format,
-        path.display()
-    );
+    if json {
+        println!(
+            "{}",
+            serde_json::json!({
+                "ok": true,
+                "command": "audit",
+                "export": format,
+                "entry_count": entries.len(),
+                "path": path.display().to_string(),
+            })
+        );
+    } else {
+        println!(
+            "Exported {} audit entries as {:?} evidence to {}.",
+            entries.len(),
+            format,
+            path.display()
+        );
+    }
     Ok(())
+}
+
+/// True if any audit filter flag is set.
+fn any_filter_set(args: &AuditArgs) -> bool {
+    args.filter_key.is_some()
+        || args.filter_user.is_some()
+        || args.filter_start.is_some()
+        || args.filter_end.is_some()
 }
 
 #[cfg(test)]
@@ -200,8 +309,9 @@ mod tests {
             key: "master".to_string(),
             threshold: 2,
             shares: 3,
+            force: false,
         };
-        cmd_shard(args, &vault_path, &passphrase).unwrap();
+        cmd_shard(args, &vault_path, &passphrase, false).unwrap();
 
         let audit_args = AuditArgs {
             show_recovery_log: false,
@@ -214,8 +324,9 @@ mod tests {
             export_soc2: None,
             export_pcidss: None,
             export_hipaa: None,
+            force: false,
         };
-        let result = cmd_audit(audit_args, &vault_path, &passphrase);
+        let result = cmd_audit(audit_args, &vault_path, &passphrase, false);
         assert!(result.is_ok());
     }
 
@@ -227,8 +338,9 @@ mod tests {
             key: "master".to_string(),
             threshold: 2,
             shares: 3,
+            force: false,
         };
-        cmd_shard(args, &vault_path, &passphrase).unwrap();
+        cmd_shard(args, &vault_path, &passphrase, false).unwrap();
 
         let audit_args = AuditArgs {
             show_recovery_log: false,
@@ -241,8 +353,9 @@ mod tests {
             export_soc2: None,
             export_pcidss: None,
             export_hipaa: None,
+            force: false,
         };
-        let result = cmd_audit(audit_args, &vault_path, &passphrase);
+        let result = cmd_audit(audit_args, &vault_path, &passphrase, false);
         assert!(result.is_ok());
     }
 
@@ -254,8 +367,9 @@ mod tests {
             key: "master".to_string(),
             threshold: 2,
             shares: 3,
+            force: false,
         };
-        cmd_shard(args, &vault_path, &passphrase).unwrap();
+        cmd_shard(args, &vault_path, &passphrase, false).unwrap();
 
         let out = dir.path().join("soc2.json");
         let audit_args = AuditArgs {
@@ -269,8 +383,9 @@ mod tests {
             export_soc2: Some(out.clone()),
             export_pcidss: None,
             export_hipaa: None,
+            force: false,
         };
-        cmd_audit(audit_args, &vault_path, &passphrase).unwrap();
+        cmd_audit(audit_args, &vault_path, &passphrase, false).unwrap();
 
         let written = std::fs::read_to_string(&out).unwrap();
         assert!(written.contains("SOC2"));
@@ -285,8 +400,9 @@ mod tests {
             key: "master".to_string(),
             threshold: 2,
             shares: 3,
+            force: false,
         };
-        cmd_shard(args, &vault_path, &passphrase).unwrap();
+        cmd_shard(args, &vault_path, &passphrase, false).unwrap();
 
         let out = dir.path().join("hipaa.json");
         let audit_args = AuditArgs {
@@ -300,8 +416,9 @@ mod tests {
             export_soc2: None,
             export_pcidss: None,
             export_hipaa: Some(out.clone()),
+            force: false,
         };
-        cmd_audit(audit_args, &vault_path, &passphrase).unwrap();
+        cmd_audit(audit_args, &vault_path, &passphrase, false).unwrap();
 
         let written = std::fs::read_to_string(&out).unwrap();
         assert!(written.contains("Hipaa"));
@@ -315,8 +432,9 @@ mod tests {
             key: "master".to_string(),
             threshold: 2,
             shares: 3,
+            force: false,
         };
-        cmd_shard(args, &vault_path, &passphrase).unwrap();
+        cmd_shard(args, &vault_path, &passphrase, false).unwrap();
 
         let audit_args = AuditArgs {
             show_recovery_log: false,
@@ -329,9 +447,10 @@ mod tests {
             export_soc2: None,
             export_pcidss: None,
             export_hipaa: None,
+            force: false,
         };
         // Should still succeed and not panic.
-        let result = cmd_audit(audit_args, &vault_path, &passphrase);
+        let result = cmd_audit(audit_args, &vault_path, &passphrase, false);
         assert!(result.is_ok());
     }
 
@@ -350,8 +469,9 @@ mod tests {
             export_soc2: None,
             export_pcidss: None,
             export_hipaa: None,
+            force: false,
         };
-        let result = cmd_audit(audit_args, &missing, "x");
+        let result = cmd_audit(audit_args, &missing, "x", false);
         assert!(matches!(result, Err(Error::VaultNotFound(_))));
     }
 
@@ -371,8 +491,9 @@ mod tests {
             export_soc2: None,
             export_pcidss: None,
             export_hipaa: None,
+            force: false,
         };
-        let result = cmd_audit(audit_args, &missing, "x");
+        let result = cmd_audit(audit_args, &missing, "x", false);
         assert!(result.is_ok());
     }
 }

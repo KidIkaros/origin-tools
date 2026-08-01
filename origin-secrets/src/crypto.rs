@@ -8,6 +8,23 @@ use crate::vault::MemoryTier;
 use origin_crypto_sdk::aead::XChaCha20Poly1305;
 use serde::{Deserialize, Serialize};
 
+/// Fill `dest` with cryptographically secure random bytes sourced from the
+/// `origin-crypto-sdk` OS-CSPRNG wrapper (`getrandom(2)` / `/dev/urandom` /
+/// `BCryptGenRandom`). Origin-facing secret material (master seed, salt, nonce)
+/// MUST be generated through this helper — never via a raw `rand` instance — so
+/// every random byte in the system has a single, audited provenance.
+pub fn random_bytes(dest: &mut [u8]) -> Result<(), Error> {
+    origin_crypto_sdk::internal::getrandom::fill(dest)
+        .map_err(|e| Error::CryptoError(format!("RNG failure: {e}")))
+}
+
+/// Generate an N-byte random array via the SDK CSPRNG.
+pub fn random_array<const N: usize>() -> Result<[u8; N], Error> {
+    let mut buf = [0u8; N];
+    random_bytes(&mut buf)?;
+    Ok(buf)
+}
+
 /// Encrypted vault data
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct EncryptedVault {
@@ -267,6 +284,7 @@ mod integration_workflow_tests {
             args,
             Path::new("~/.origin/secrets.vault"),
             Some(pw_file().as_path()),
+            false,
         )
         .ok();
 
@@ -295,6 +313,7 @@ mod integration_workflow_tests {
                 args.clone(),
                 Path::new("~/.origin/secrets.vault"),
                 Some(pw_file().as_path()),
+                false,
             )
             .ok();
             let vault_json = std::fs::read_to_string("~/.origin/secrets.vault").unwrap();
@@ -324,12 +343,14 @@ mod integration_workflow_tests {
             args.clone(),
             Path::new("~/.origin/secrets.vault"),
             Some(pw_file().as_path()),
+            false,
         )
         .ok();
         let result = cmd_init(
             args,
             Path::new("~/.origin/secrets.vault"),
             Some(pw_file().as_path()),
+            false,
         );
         assert!(matches!(
             result.unwrap_err(),
@@ -357,6 +378,7 @@ mod integration_workflow_tests {
                 args,
                 Path::new("~/.origin/secrets.vault"),
                 Some(pw_file().as_path()),
+                false,
             )
             .ok();
             let vault_json = std::fs::read_to_string("~/.origin/secrets.vault").unwrap();

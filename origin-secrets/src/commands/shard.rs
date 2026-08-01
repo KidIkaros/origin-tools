@@ -9,7 +9,6 @@ use crate::vault::Vault;
 use origin_crypto_sdk::error_correction::ReedSolomonCodec;
 use origin_crypto_sdk::signing::hybrid::HybridSigningKeyBundle;
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Domain separation label for share signatures.
 const SHARE_SIGNING_DOMAIN: &str = "origin-secrets/share/v1";
@@ -26,9 +25,15 @@ pub fn cmd_shard(
     args: ShardArgs,
     vault_path: &Path,
     passphrase: &str,
+    json: bool,
 ) -> Result<Vec<Share>, Error> {
     let threshold = args.threshold;
     let total = args.shares;
+
+    // Validate key id is non-empty.
+    if args.key.trim().is_empty() {
+        return Err(Error::CryptoError("key id must not be empty".to_string()));
+    }
 
     // Validate threshold semantics: 1 <= threshold <= total.
     if threshold == 0 || threshold > total {
@@ -78,11 +83,32 @@ pub fn cmd_shard(
     let shares_dir = vault_dir.join("shares");
     std::fs::create_dir_all(&shares_dir).map_err(|e| Error::IoError(e.to_string()))?;
 
-    let timestamp = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_secs()
-        .to_string();
+    // C4: refuse to leave stale shares from a prior sharding behind. If the
+    // shares dir already contains share files that are NOT part of this
+    // generation's output set, fail closed so a later `recover` can't silently
+    // pick up a share belonging to a different master seed.
+    let expected: std::collections::HashSet<String> = (1..=total)
+        .map(|n| format!("share_{:03}.json", n))
+        .collect();
+    for entry in std::fs::read_dir(&shares_dir).map_err(|e| Error::IoError(e.to_string()))? {
+        let entry = entry.map_err(|e| Error::IoError(e.to_string()))?;
+        let fname = entry.file_name().to_string_lossy().to_string();
+        if fname.starts_with("share_") && fname.ends_with(".json") && !expected.contains(&fname) {
+            if args.force {
+                // Operator explicitly opted in: remove the stale share so the new
+                // generation is the only source of truth.
+                let _ = std::fs::remove_file(entry.path());
+                continue;
+            }
+            return Err(Error::IoError(format!(
+                "stale share file {}/{} from a previous sharding remains; remove it or use --force",
+                shares_dir.display(),
+                fname
+            )));
+        }
+    }
+
+    let timestamp = crate::observability::epoch_to_ymd_hms_now();
 
     let mut written = Vec::with_capacity(shards.len());
     for (i, shard_data) in shards.iter().enumerate() {
@@ -132,7 +158,7 @@ pub fn cmd_shard(
     // passphrase + salt), but XChaCha20-Poly1305 is a stream cipher and the
     // same (key, nonce) pair must never be reused — reusing vault.nonce would
     // be deterministic nonce reuse and leak the plaintext delta.
-    let reencrypt_nonce: [u8; 24] = rand::random();
+    let reencrypt_nonce: [u8; 24] = crate::crypto::random_array()?;
     let reencrypted =
         encrypt_vault_data(&vault_data, &key, vault.salt, reencrypt_nonce, vault.tier)?;
     let updated_vault = Vault {
@@ -148,11 +174,34 @@ pub fn cmd_shard(
         .map_err(|e| Error::IoError(format!("serialize vault: {e}")))?;
     std::fs::write(vault_path, updated_json).map_err(|e| Error::IoError(e.to_string()))?;
 
-    println!(
-        "Sharded master key '{}' into {} shares (threshold {}).",
-        args.key, total, threshold
-    );
-    println!("Share files written to: {}", shares_dir.display());
+    if json {
+        let share_files: Vec<String> = written
+            .iter()
+            .map(|s| {
+                shares_dir
+                    .join(format!("share_{:03}.json", s.share_number))
+                    .display()
+                    .to_string()
+            })
+            .collect();
+        println!(
+            "{}",
+            serde_json::json!({
+                "ok": true,
+                "command": "shard",
+                "key": args.key,
+                "threshold": threshold,
+                "total_shares": total,
+                "share_files": share_files,
+            })
+        );
+    } else {
+        println!(
+            "Sharded master key '{}' into {} shares (threshold {}).",
+            args.key, total, threshold
+        );
+        println!("Share files written to: {}", shares_dir.display());
+    }
 
     Ok(written)
 }
@@ -209,8 +258,9 @@ mod tests {
             key: "master".to_string(),
             threshold: 2,
             shares: 4,
+            force: false,
         };
-        cmd_shard(args, &vault_path, &passphrase).unwrap();
+        cmd_shard(args, &vault_path, &passphrase, false).unwrap();
 
         let after: Vault = {
             let raw = std::fs::read_to_string(&vault_path).unwrap();
@@ -268,9 +318,10 @@ mod tests {
             key: "master-key".to_string(),
             threshold: 3,
             shares: 5,
+            force: false,
         };
 
-        let shares = cmd_shard(args, &vault_path, &passphrase).unwrap();
+        let shares = cmd_shard(args, &vault_path, &passphrase, false).unwrap();
         assert_eq!(shares.len(), 5);
         for (i, s) in shares.iter().enumerate() {
             assert_eq!(s.share_number, (i + 1) as u8);
@@ -325,8 +376,9 @@ mod tests {
             key: "k".to_string(),
             threshold: 0,
             shares: 3,
+            force: false,
         };
-        let result = cmd_shard(args, &vault_path, &passphrase);
+        let result = cmd_shard(args, &vault_path, &passphrase, false);
         assert!(matches!(
             result,
             Err(Error::InvalidThreshold { threshold: 0, .. })
@@ -341,8 +393,9 @@ mod tests {
             key: "k".to_string(),
             threshold: 5,
             shares: 3,
+            force: false,
         };
-        let result = cmd_shard(args, &vault_path, &passphrase);
+        let result = cmd_shard(args, &vault_path, &passphrase, false);
         assert!(matches!(
             result,
             Err(Error::InvalidThreshold {
@@ -360,8 +413,9 @@ mod tests {
             key: "k".to_string(),
             threshold: 2,
             shares: 3,
+            force: false,
         };
-        let result = cmd_shard(args, &vault_path, "wrong-passphrase");
+        let result = cmd_shard(args, &vault_path, "wrong-passphrase", false);
         assert!(matches!(result, Err(Error::VaultDecryptionFailed(_))));
     }
 
@@ -373,8 +427,9 @@ mod tests {
             key: "k".to_string(),
             threshold: 2,
             shares: 3,
+            force: false,
         };
-        let result = cmd_shard(args, &missing, "x");
+        let result = cmd_shard(args, &missing, "x", false);
         assert!(matches!(result, Err(Error::VaultNotFound(_))));
     }
 
@@ -388,8 +443,9 @@ mod tests {
             key: "k".to_string(),
             threshold: 2,
             shares: 4,
+            force: false,
         };
-        let shares = cmd_shard(args, &vault_path, &passphrase).unwrap();
+        let shares = cmd_shard(args, &vault_path, &passphrase, false).unwrap();
         assert_eq!(shares.len(), 4);
 
         // Any K=2 shards must reconstruct the original 32-byte master seed.

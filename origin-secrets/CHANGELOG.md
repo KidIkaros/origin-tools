@@ -4,6 +4,61 @@ All notable changes to `origin-secrets` are documented here. The format is based
 [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), and this crate's releases are
 versioned independently of the `origin-tools` workspace (workspace `version = 0.4.1`).
 
+## [Unreleased] — pre-push audit remediation (46 findings)
+
+Remediation of the pre-push source/docs/UX audit (4 critical, 15 high, 10 medium,
+7 low, 10 doc). All changes are behavioral hardening and documentation; no public
+command signatures changed except the addition of `--force` opt-ins and the
+now-meaningful `--recovery-log` / `--show-failures` flags.
+
+### Security (critical)
+- `recover --json` no longer leaks the master seed hex in the success payload
+  when `--out` is supplied (the seed lives in the written file / rebuilt vault,
+  not on stdout). Seed is only present in `--json` output when `-o/--out` is set.
+- Vault path default `~/.origin/secrets.vault` is now expanded via a new
+  `expand_tilde()` helper; previously the literal `~` created a relative
+  directory named `~` in the CWD.
+- Audit compliance exports (`--export-soc2`/`--export-pcidss`/`--export-hipaa`)
+  now refuse to overwrite an existing file (`FileAlreadyExists`) unless `--force`.
+- `shard` refuses to leave stale shares from a prior run behind (it now errors
+  if `shares/` already contains share files); use `--force` to overwrite.
+
+### Changed (high)
+- `audit --show-failures`, `--show-all-logs`, `--show-recovery-log`, and
+  compliance exports now honor `--json` (previously printed human text).
+- Failure journal now `create_dir_all`s its parent directory before writing, so
+  the first failure on a fresh machine is recorded rather than dropped.
+- Share load/validation errors carry the offending file path.
+- Audit timestamps are now ISO-8601 UTC everywhere (a buggy epoch→UTC helper with
+  a wrong leap-year rule was removed); date-range filters now compare consistently.
+- `recover` passphrase is only required when `--vault-out` is set; otherwise the
+  recovered seed is written to `-o/--out` and the passphrase is not needed.
+- `--recovery-log` now performs a real check (vault must contain a `Recover`
+  audit entry) instead of being a no-op.
+- Freshly-initialized vaults (empty audit log) verify OK instead of erroring
+  with `AuditLogNotFound`.
+- `recover` cross-checks that every share shares the same `threshold`/`total_shares`.
+- `--vault-out` refuses overwrite unless `--force`; rebuilt vault enforces a
+  ≥12-char passphrase.
+- Operator field in audit entries is now a constant (`origin-secrets-cli`)
+  instead of the `USER` env var.
+
+### Added / Fixed (medium + low)
+- New error variants: `FileAlreadyExists`, `StdoutSecretRefused`.
+- `--json` success payloads on every command (threaded through dispatch).
+- `verify --share` warns when `--vault-path` is also given (ignored).
+- `--tier` without `--vault-out` warns instead of silently ignoring.
+- Passphrase is trimmed of trailing `\r`/`\n`.
+- Empty `--key` rejected by `shard`; `share_number == 0` rejected by `export-share`.
+- Conflicting / duplicate compliance exports are now errors or de-duplicated.
+- Man page (`man/origin-secrets.1`) and README updated for `--json`, failure
+  journal, error codes, and `--force` overwrite guards.
+
+### Tested
+- 133 tests (112 unit + integration/security) pass in `--release`.
+- `cargo clippy -p origin-secrets --all-targets -- -D warnings` clean.
+- `cargo fmt -p origin-secrets -- --check` clean.
+
 ## [0.4.2] — 2026-08-01
 
 First stable release of the Origin Secrets CLI: post-quantum threshold secret

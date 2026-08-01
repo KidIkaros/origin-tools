@@ -2,7 +2,6 @@ use crate::cli::InitArgs;
 use crate::crypto::{encrypt_vault_data, VaultData};
 use crate::error::Error;
 use crate::vault::{MemoryTier, Vault};
-use rand::Rng;
 use std::fs;
 use std::path::Path;
 
@@ -20,6 +19,7 @@ pub fn cmd_init(
     args: InitArgs,
     vault_path: &Path,
     passphrase_file: Option<&Path>,
+    json: bool,
 ) -> Result<(), Error> {
     // Parse tier
     let tier = MemoryTier::parse_tier(&args.tier)
@@ -49,10 +49,9 @@ pub fn cmd_init(
         });
     }
 
-    // Generate salt and nonce
-    let mut rng = rand::thread_rng();
-    let salt: [u8; 16] = rng.gen();
-    let nonce: [u8; 24] = rng.gen();
+    // Generate salt and nonce via the SDK CSPRNG (single audited RNG source).
+    let salt: [u8; 16] = super::super::crypto::random_array()?;
+    let nonce: [u8; 24] = super::super::crypto::random_array()?;
 
     // Derive master key via Argon2id (origin-crypto-sdk, tier-aware cost)
     let builder = tier.argon2_builder().output_len(32);
@@ -66,7 +65,7 @@ pub fn cmd_init(
 
     // Create vault data
     let mut vault_data = VaultData::new();
-    let master_seed: [u8; 32] = rng.gen();
+    let master_seed: [u8; 32] = super::super::crypto::random_array()?;
     vault_data.master_seed = master_seed;
 
     // Encrypt vault data
@@ -96,9 +95,22 @@ pub fn cmd_init(
     fs::write(vault_path, vault_json)
         .map_err(|e| Error::IoError(format!("Failed to write vault: {}", e)))?;
 
-    println!("Vault initialized: {:?}", vault_path);
-    println!("Tier: {}", tier);
-    println!("Fingerprint: {}", &encrypted.fingerprint);
+    if json {
+        println!(
+            "{}",
+            serde_json::json!({
+                "ok": true,
+                "command": "init",
+                "vault": vault_path.display().to_string(),
+                "tier": tier.to_string(),
+                "fingerprint": encrypted.fingerprint,
+            })
+        );
+    } else {
+        println!("Vault initialized: {:?}", vault_path);
+        println!("Tier: {}", tier);
+        println!("Fingerprint: {}", &encrypted.fingerprint);
+    }
 
     Ok(())
 }
@@ -117,7 +129,7 @@ mod tests {
         let args = InitArgs {
             tier: "standard".to_string(),
         };
-        let result = cmd_init(args, &vault_path, Some(pw_file.as_path()));
+        let result = cmd_init(args, &vault_path, Some(pw_file.as_path()), false);
         assert!(result.is_ok());
         assert!(vault_path.exists());
     }
@@ -131,7 +143,7 @@ mod tests {
         let args = InitArgs {
             tier: "nano".to_string(),
         };
-        let result = cmd_init(args, &vault_path, Some(pw_file.as_path()));
+        let result = cmd_init(args, &vault_path, Some(pw_file.as_path()), false);
         assert!(result.is_ok());
         assert!(vault_path.exists());
     }
@@ -145,7 +157,7 @@ mod tests {
         let args = InitArgs {
             tier: "sovereign".to_string(),
         };
-        let result = cmd_init(args, &vault_path, Some(pw_file.as_path()));
+        let result = cmd_init(args, &vault_path, Some(pw_file.as_path()), false);
         assert!(result.is_ok());
         assert!(vault_path.exists());
     }
@@ -161,7 +173,7 @@ mod tests {
         };
         // With a passphrase supplied, tier validation runs and rejects the
         // unknown tier as a CryptoError (wrapping the parse error).
-        let result = cmd_init(args, &vault_path, Some(pw_file.as_path()));
+        let result = cmd_init(args, &vault_path, Some(pw_file.as_path()), false);
         assert!(matches!(result.unwrap_err(), Error::CryptoError(_)));
     }
 
@@ -174,7 +186,7 @@ mod tests {
         let args = InitArgs {
             tier: "standard".to_string(),
         };
-        let result = cmd_init(args, &vault_path, None);
+        let result = cmd_init(args, &vault_path, None, false);
         assert!(matches!(result.unwrap_err(), Error::VaultAlreadyExists(_)));
     }
 
@@ -190,7 +202,7 @@ mod tests {
         };
         // Pass the passphrase file via the GLOBAL -p mechanism (third arg), the
         // same path the dispatcher uses. This must become the vault key.
-        let result = cmd_init(args, &vault_path, Some(pw_file.as_path()));
+        let result = cmd_init(args, &vault_path, Some(pw_file.as_path()), false);
         assert!(result.is_ok());
 
         // The saved vault must decrypt only with the file's passphrase, proving
@@ -233,7 +245,7 @@ mod tests {
         let args = InitArgs {
             tier: "standard".to_string(),
         };
-        let result = cmd_init(args, &vault_path, None);
+        let result = cmd_init(args, &vault_path, None, false);
         assert!(matches!(result, Result::Err(Error::PassphraseRequired)));
     }
 }

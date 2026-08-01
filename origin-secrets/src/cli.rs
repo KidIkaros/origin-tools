@@ -7,7 +7,7 @@ use std::path::PathBuf;
 #[command(name = "origin-secrets")]
 #[command(about = "Threshold secrets management — K-of-N recovery, post-quantum verification", long_about = None)]
 pub struct Cli {
-    /// Vault file path
+    /// Vault file path (a leading `~` is expanded to your home directory)
     #[arg(short = 'V', long, default_value = "~/.origin/secrets.vault")]
     pub vault: PathBuf,
 
@@ -17,7 +17,8 @@ pub struct Cli {
     pub passphrase_file: Option<PathBuf>,
 
     /// Machine-readable JSON output (for CI/automation; success prints
-    /// {"ok":true}, failure prints {"ok":false,"code":...,"severity":...}).
+    /// structured per-command JSON with "ok":true; failure prints
+    /// {"ok":false,"code":...,"severity":...,"message":...}).
     #[arg(long)]
     pub json: bool,
 
@@ -82,6 +83,11 @@ pub struct ShardArgs {
     /// Total shares to generate (N)
     #[arg(long)]
     pub shares: u8,
+
+    /// Overwrite a pre-existing `shares/` directory (refuses by default to avoid
+    /// leaving stale shares from a previous sharding behind).
+    #[arg(long)]
+    pub force: bool,
 }
 
 #[derive(Parser, Clone, Debug)]
@@ -97,6 +103,11 @@ pub struct ExportArgs {
     /// Recipient identifier
     #[arg(long)]
     pub recipient: Option<String>,
+
+    /// Overwrite --out if it already exists. By default an existing file is
+    /// refused (FileAlreadyExists).
+    #[arg(long)]
+    pub force: bool,
 }
 
 #[derive(Parser, Clone, Debug)]
@@ -116,9 +127,15 @@ pub struct RecoverArgs {
     pub vault_out: Option<PathBuf>,
 
     /// Security tier for the rebuilt vault (nano|standard|sovereign).
-    /// Defaults to standard. Only used with --vault-out.
+    /// Defaults to standard. Only used with --vault-out. A passphrase-source
+    /// is still required (the rebuilt vault is encrypted with --passphrase-file).
     #[arg(long, default_value = "standard")]
     pub tier: String,
+
+    /// Overwrite --vault-out if it already exists. By default an existing file
+    /// is refused (FileAlreadyExists) to avoid destroying a vault.
+    #[arg(long)]
+    pub force: bool,
 }
 
 #[derive(Parser, Clone, Debug)]
@@ -177,6 +194,10 @@ pub struct AuditArgs {
     /// Export HIPAA evidence
     #[arg(long)]
     pub export_hipaa: Option<PathBuf>,
+
+    /// Overwrite an existing compliance evidence file instead of refusing.
+    #[arg(long)]
+    pub force: bool,
 }
 
 #[derive(Parser, Clone, Debug)]
@@ -184,4 +205,34 @@ pub struct CompletionsArgs {
     /// Shell to generate completions for
     #[arg(value_enum)]
     pub shell: clap_complete::Shell,
+}
+
+/// Expand a leading `~` in a path to the user's home directory.
+///
+/// Clap does not expand `~` itself, so the default vault path
+/// `~/.origin/secrets.vault` would otherwise resolve to a literal relative
+/// directory named `~` in the current working directory. This keeps the
+/// user-friendly default meaningful.
+pub fn expand_tilde(path: PathBuf) -> PathBuf {
+    if !path.as_os_str().to_string_lossy().starts_with('~') {
+        return path;
+    }
+    let home = match std::env::var_os("HOME") {
+        Some(h) => h,
+        None => return path,
+    };
+    let home = PathBuf::from(home);
+    // Strip the leading `~` (and an optional `/` after it).
+    let rest = path
+        .as_os_str()
+        .to_string_lossy()
+        .chars()
+        .skip(1)
+        .skip_while(|c| *c == '/')
+        .collect::<String>();
+    if rest.is_empty() {
+        home
+    } else {
+        home.join(rest)
+    }
 }

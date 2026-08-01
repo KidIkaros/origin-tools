@@ -25,7 +25,15 @@ pub fn cmd_export_share(
     args: ExportArgs,
     vault_path: &Path,
     passphrase: &str,
+    json: bool,
 ) -> Result<Share, Error> {
+    // Validate the share number is in range (1-based; 0 is never valid).
+    if args.share == 0 {
+        return Err(Error::ShareCorrupted {
+            share_number: 0,
+            path: args.out.clone(),
+        });
+    }
     let shares_dir = vault_path
         .parent()
         .map(|p| p.join("shares"))
@@ -34,32 +42,53 @@ pub fn cmd_export_share(
 
     let raw = std::fs::read_to_string(&share_path).map_err(|_| Error::ShareNotFound {
         share_number: args.share,
+        path: share_path.clone(),
     })?;
     let mut share: Share = serde_json::from_str(&raw).map_err(|_| Error::ShareCorrupted {
         share_number: args.share,
+        path: share_path.clone(),
     })?;
 
     if let Some(recipient) = &args.recipient {
         // Re-sign the share binding it to the recipient, and log the export.
         re_sign_for_recipient(vault_path, passphrase, &mut share, recipient)?;
-        println!(
-            "Re-signed share {} for recipient '{}' and logged the export.",
-            args.share, recipient
-        );
-    } else {
+        if !json {
+            println!(
+                "Re-signed share {} for recipient '{}' and logged the export.",
+                args.share, recipient
+            );
+        }
+    } else if !json {
         println!("Exported share {} (no recipient binding).", args.share);
     }
 
     let serialized =
         serde_json::to_string_pretty(&share).map_err(|e| Error::IoError(e.to_string()))?;
+    // Refuse to clobber an existing output file unless --force is given.
+    if !args.force && args.out.exists() {
+        return Err(Error::FileAlreadyExists(args.out.clone()));
+    }
     std::fs::write(&args.out, serialized).map_err(|e| Error::IoError(e.to_string()))?;
 
-    println!(
-        "Exported share {} to {} (recipient: {}).",
-        args.share,
-        args.out.display(),
-        share.recipient.as_deref().unwrap_or("<none>")
-    );
+    if json {
+        println!(
+            "{}",
+            serde_json::json!({
+                "ok": true,
+                "command": "export-share",
+                "share": args.share,
+                "out": args.out.display().to_string(),
+                "recipient": share.recipient,
+            })
+        );
+    } else {
+        println!(
+            "Exported share {} to {} (recipient: {}).",
+            args.share,
+            args.out.display(),
+            share.recipient.as_deref().unwrap_or("<none>")
+        );
+    }
     Ok(share)
 }
 
@@ -113,7 +142,7 @@ fn re_sign_for_recipient(
         },
         key_id: share.key_id.clone(),
         timestamp: now_iso(),
-        operator: std::env::var("USER").unwrap_or_else(|_| "origin-secrets".to_string()),
+        operator: OPERATOR.to_string(),
         details: crate::audit::OperationDetails::Success {
             message: format!("Exported share {} to {}", share.share_number, recipient),
         },
@@ -124,7 +153,7 @@ fn re_sign_for_recipient(
     // Re-encrypt and write the vault back. Use a FRESH nonce: the key is
     // unchanged (same passphrase + salt), but XChaCha20-Poly1305 must never
     // reuse a (key, nonce) pair — reusing vault.nonce would leak the delta.
-    let reencrypt_nonce: [u8; 24] = rand::random();
+    let reencrypt_nonce: [u8; 24] = crate::crypto::random_array()?;
     let re_enc = crate::crypto::encrypt_vault_data(
         &vault_data,
         &key,
@@ -151,49 +180,11 @@ fn re_sign_for_recipient(
 
 /// Best-effort ISO-8601 UTC timestamp using only std.
 fn now_iso() -> String {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    let secs = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
-    // Format as YYYY-MM-DDTHH:MM:SSZ from Unix epoch (UTC, leap-second-naive).
-    let (y, mo, d, h, mi, s) = epoch_to_utc(secs);
-    format!("{:04}-{:02}-{:02}T{:02}:{:02}:{:02}Z", y, mo, d, h, mi, s)
+    crate::observability::epoch_to_ymd_hms_now()
 }
 
-/// Convert Unix seconds to a coarse UTC calendar datetime (no external crate).
-fn epoch_to_utc(mut t: u64) -> (u64, u32, u32, u32, u32, u32) {
-    let s = (t % 60) as u32;
-    t /= 60;
-    let mi = (t % 60) as u32;
-    t /= 60;
-    let h = (t % 24) as u32;
-    t /= 24;
-    let days = t;
-    // Days since 1970-01-01; approximate year/month/day ignoring leap years'
-    // minor drift (audit timestamps need only second-level monotonic ordering).
-    let mut year = 1970 + days / 365;
-    let mut day_of_year = (days % 365) as u32;
-    // Adjust for leap years up to `year`.
-    let leaps = ((year - 1969) / 4) as u32;
-    if day_of_year < leaps {
-        year -= 1;
-        day_of_year = (days % 365) as u32 + 365 - leaps;
-    } else {
-        day_of_year -= leaps;
-    }
-    const MONTH_DAYS: [u32; 12] = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
-    let mut mo = 1;
-    let mut rem = day_of_year;
-    for m in MONTH_DAYS.iter() {
-        if rem < *m {
-            break;
-        }
-        rem -= *m;
-        mo += 1;
-    }
-    (year, mo, rem + 1, h, mi, s)
-}
+/// Operator recorded in audit entries for this command.
+const OPERATOR: &str = "origin-secrets-cli";
 
 /// Small deterministic-ish id from share bytes (avoids a uuid dependency).
 fn uuidish(bytes: &[u8]) -> String {
@@ -246,16 +237,18 @@ mod tests {
             key: "master".to_string(),
             threshold: 2,
             shares: 3,
+            force: false,
         };
-        cmd_shard(args, &vault_path, &passphrase).unwrap();
+        cmd_shard(args, &vault_path, &passphrase, false).unwrap();
 
         let out = dir.path().join("exported_001.json");
         let export_args = ExportArgs {
             share: 1,
             out: out.clone(),
             recipient: Some("alice".to_string()),
+            force: false,
         };
-        let share = cmd_export_share(export_args, &vault_path, &passphrase).unwrap();
+        let share = cmd_export_share(export_args, &vault_path, &passphrase, false).unwrap();
         assert_eq!(share.share_number, 1);
         assert_eq!(share.recipient.as_deref(), Some("alice"));
 
@@ -297,16 +290,18 @@ mod tests {
             key: "master".to_string(),
             threshold: 2,
             shares: 3,
+            force: false,
         };
-        cmd_shard(args, &vault_path, &passphrase).unwrap();
+        cmd_shard(args, &vault_path, &passphrase, false).unwrap();
 
         let out = dir.path().join("exported_002.json");
         let export_args = ExportArgs {
             share: 2,
             out,
             recipient: None,
+            force: false,
         };
-        let share = cmd_export_share(export_args, &vault_path, &passphrase).unwrap();
+        let share = cmd_export_share(export_args, &vault_path, &passphrase, false).unwrap();
         assert_eq!(share.recipient, None);
     }
 
@@ -319,11 +314,15 @@ mod tests {
             share: 9, // not created
             out,
             recipient: None,
+            force: false,
         };
-        let result = cmd_export_share(export_args, &vault_path, "x");
+        let result = cmd_export_share(export_args, &vault_path, "x", false);
         assert!(matches!(
             result,
-            Err(Error::ShareNotFound { share_number: 9 })
+            Err(Error::ShareNotFound {
+                share_number: 9,
+                ..
+            })
         ));
     }
 
@@ -335,8 +334,9 @@ mod tests {
             key: "master".to_string(),
             threshold: 2,
             shares: 3,
+            force: false,
         };
-        cmd_shard(args, &vault_path, &passphrase).unwrap();
+        cmd_shard(args, &vault_path, &passphrase, false).unwrap();
 
         // Recipient export requires the vault passphrase; a wrong one fails.
         let out = dir.path().join("exported_003.json");
@@ -344,8 +344,9 @@ mod tests {
             share: 1,
             out,
             recipient: Some("bob".to_string()),
+            force: false,
         };
-        let result = cmd_export_share(export_args, &vault_path, "wrong-pass");
+        let result = cmd_export_share(export_args, &vault_path, "wrong-pass", false);
         assert!(matches!(result, Err(Error::VaultDecryptionFailed(_))));
     }
 }
