@@ -40,8 +40,9 @@ single point of failure inherent in a single encrypted vault.
 
 - Transport between custodians is not provided — shares are written to disk and
   must be moved over a secure channel by the operator.
-- The default passphrase in `dispatch` is a demo placeholder. Production MUST
-  use `-p/--passphrase-file`.
+- A passphrase is **mandatory** for every command (supplied via
+  `-p/--passphrase-file`). There is no demo default — running without `-p`
+  returns `PassphraseRequired`.
 - Hardware security modules / secure enclaves are not used for key material.
 - A web dashboard (custodian UX, quorum approvals) is planned for v2.0.
 

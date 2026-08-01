@@ -37,8 +37,9 @@ cargo build --release -p origin-secrets
 ## Usage
 
 All commands accept a global `-V/--vault <PATH>` (default
-`~/.origin/secrets.vault`) and an optional `-p/--passphrase-file <PATH>`
-(default: a demo passphrase — **set a real one in production**).
+`~/.origin/secrets.vault`) and a **required** `-p/--passphrase-file <PATH>`.
+A passphrase source is mandatory — there is no built-in default, so every
+command refuses to run (returning `PassphraseRequired`) when `-p` is absent.
 
 ### 1. Initialize a vault (Week 1)
 
@@ -107,8 +108,10 @@ cargo test -p origin-secrets --release
 - **No critical bugs** in v1.0 scope.
 - Tampering with the vault (ciphertext / salt / nonce) or any share
   (data / signature / recipient) is detected at `verify` / `recover`.
-- The default passphrase in `dispatch` is a placeholder for demos only.
-  Production deployments MUST supply `-p/--passphrase-file`.
+- A passphrase is **mandatory** for every command (supplied via
+  `-p/--passphrase-file`). There is no built-in default; running a command
+  without `-p` fails with `PassphraseRequired` rather than silently using a
+  weak key.
 
 See [SECURITY.md](./SECURITY.md) for the full threat model and disclosure
 process, and [DESIGN_DOC.md](./../DESIGN_DOC.md) for architecture.

@@ -8,9 +8,16 @@ use origin_secrets::cli::Cli;
 use origin_secrets::dispatch;
 
 /// Build a `Cli` invoking `origin-secrets -V <vault> <subcommand...>`.
+///
+/// Every command requires a passphrase source (-p); we attach a temp file next
+/// to the vault so the test exercises the real (non-demo) key-derivation path.
 fn cli(vault: &std::path::Path, args: &[&str]) -> Cli {
+    let pw = vault.parent().unwrap().join("pw.txt");
+    std::fs::write(&pw, "correct horse battery staple\n").unwrap();
     let mut full = vec!["origin-secrets", "-V"];
     full.push(vault.to_str().unwrap());
+    full.push("-p");
+    full.push(pw.to_str().unwrap());
     full.extend_from_slice(args);
     Cli::parse_from(full)
 }

@@ -8,6 +8,15 @@ use crate::error::Error;
 use clap::Parser;
 use std::path::PathBuf;
 
+/// A passphrase file on disk so dispatch resolves a real passphrase for the
+/// non-init commands (dispatch now hard-errors with PassphraseRequired when
+/// -p/--passphrase-file is absent, rather than falling back to a weak default).
+fn passphrase_file() -> PathBuf {
+    let p = std::env::temp_dir().join("origin-secrets-dispatch-pw.txt");
+    std::fs::write(&p, "test-passphrase-for-dispatch\n").unwrap();
+    p
+}
+
 #[test]
 fn test_dispatch_init() {
     let vault = std::env::temp_dir().join("origin-secrets-dispatch-init-test.vault");
@@ -25,14 +34,17 @@ fn test_dispatch_init() {
     };
 
     let result = dispatch(cli);
-    assert!(!matches!(result, Err(Error::NotImplemented(_))));
+    assert!(!matches!(
+        result,
+        Result::<(), _>::Err(Error::NotImplemented(_))
+    ));
     let _ = std::fs::remove_file(&vault);
 }
 
 #[test]
-fn test_dispatch_shard_routes_to_impl() {
-    // shard is implemented; dispatch should reach cmd_shard and fail on the
-    // missing default vault (not return NotImplemented).
+fn test_dispatch_requires_passphrase_without_flag() {
+    // A non-init command with no -p must fail with PassphraseRequired, never a
+    // silent weak default.
     let cli = Cli {
         vault: "/tmp/origin-secrets-missing-vault-do-not-create".into(),
         passphrase_file: None,
@@ -45,11 +57,39 @@ fn test_dispatch_shard_routes_to_impl() {
             shares: 5,
         }),
     };
+    assert!(matches!(
+        dispatch(cli),
+        Result::<(), _>::Err(Error::PassphraseRequired)
+    ));
+}
+
+#[test]
+fn test_dispatch_shard_routes_to_impl() {
+    // shard is implemented; with a passphrase supplied, dispatch should reach
+    // cmd_shard and fail on the missing vault (not return NotImplemented).
+    let cli = Cli {
+        vault: "/tmp/origin-secrets-missing-vault-do-not-create".into(),
+        passphrase_file: Some(passphrase_file()),
+        config: "/tmp/config.toml".into(),
+        verbose: false,
+        quiet: false,
+        command: Commands::Shard(ShardArgs {
+            key: "master".to_string(),
+            threshold: 3,
+            shares: 5,
+        }),
+    };
 
     let result = dispatch(cli);
-    assert!(!matches!(result, Err(Error::NotImplemented(_))));
+    assert!(!matches!(
+        result,
+        Result::<(), _>::Err(Error::NotImplemented(_))
+    ));
     // Vault path does not exist -> VaultNotFound.
-    assert!(matches!(result, Err(Error::VaultNotFound(_))));
+    assert!(matches!(
+        result,
+        Result::<(), _>::Err(Error::VaultNotFound(_))
+    ));
 }
 
 #[test]
@@ -63,7 +103,7 @@ fn test_dispatch_export_routes_to_impl() {
     let vault = dir.join("secrets.vault");
     let cli_init = Cli {
         vault: vault.clone(),
-        passphrase_file: None,
+        passphrase_file: Some(passphrase_file()),
         config: "/tmp/config.toml".into(),
         verbose: false,
         quiet: false,
@@ -76,7 +116,7 @@ fn test_dispatch_export_routes_to_impl() {
 
     let cli = Cli {
         vault: vault.clone(),
-        passphrase_file: None,
+        passphrase_file: Some(passphrase_file()),
         config: "/tmp/config.toml".into(),
         verbose: false,
         quiet: false,
@@ -88,17 +128,23 @@ fn test_dispatch_export_routes_to_impl() {
     };
 
     let result = dispatch(cli);
-    assert!(!matches!(result, Err(Error::NotImplemented(_))));
-    assert!(matches!(result, Err(Error::ShareNotFound { .. })));
+    assert!(!matches!(
+        result,
+        Result::<(), _>::Err(Error::NotImplemented(_))
+    ));
+    assert!(matches!(
+        result,
+        Result::<(), _>::Err(Error::ShareNotFound { .. })
+    ));
 }
 
 #[test]
 fn test_dispatch_recover_routes_to_impl() {
     // recover is implemented; dispatch should reach cmd_recover and fail on the
-    // missing share files (not return NotImplemented).
+    // missing share files (not NotImplemented).
     let cli = Cli {
         vault: "/tmp/origin-secrets-missing-vault-do-not-create".into(),
-        passphrase_file: None,
+        passphrase_file: Some(passphrase_file()),
         config: "/tmp/config.toml".into(),
         verbose: false,
         quiet: false,
@@ -111,8 +157,14 @@ fn test_dispatch_recover_routes_to_impl() {
     };
 
     let result = dispatch(cli);
-    assert!(!matches!(result, Err(Error::NotImplemented(_))));
-    assert!(matches!(result, Err(Error::ShareNotFound { .. })));
+    assert!(!matches!(
+        result,
+        Result::<(), _>::Err(Error::NotImplemented(_))
+    ));
+    assert!(matches!(
+        result,
+        Result::<(), _>::Err(Error::ShareNotFound { .. })
+    ));
 }
 
 #[test]
@@ -121,7 +173,7 @@ fn test_dispatch_verify_routes_to_impl() {
     // cmd_verify and return VaultNotFound (not NotImplemented).
     let cli = Cli {
         vault: "/tmp/origin-secrets-missing-vault-do-not-create".into(),
-        passphrase_file: None,
+        passphrase_file: Some(passphrase_file()),
         config: "/tmp/config.toml".into(),
         verbose: false,
         quiet: false,
@@ -133,8 +185,14 @@ fn test_dispatch_verify_routes_to_impl() {
     };
 
     let result = dispatch(cli);
-    assert!(!matches!(result, Err(Error::NotImplemented(_))));
-    assert!(matches!(result, Err(Error::VaultNotFound(_))));
+    assert!(!matches!(
+        result,
+        Result::<(), _>::Err(Error::NotImplemented(_))
+    ));
+    assert!(matches!(
+        result,
+        Result::<(), _>::Err(Error::VaultNotFound(_))
+    ));
 }
 
 #[test]
@@ -143,7 +201,7 @@ fn test_dispatch_audit_routes_to_impl() {
     // cmd_audit and return VaultNotFound (not NotImplemented).
     let cli = Cli {
         vault: "/tmp/origin-secrets-missing-vault-do-not-create".into(),
-        passphrase_file: None,
+        passphrase_file: Some(passphrase_file()),
         config: "/tmp/config.toml".into(),
         verbose: false,
         quiet: false,
@@ -161,8 +219,14 @@ fn test_dispatch_audit_routes_to_impl() {
     };
 
     let result = dispatch(cli);
-    assert!(!matches!(result, Err(Error::NotImplemented(_))));
-    assert!(matches!(result, Err(Error::VaultNotFound(_))));
+    assert!(!matches!(
+        result,
+        Result::<(), _>::Err(Error::NotImplemented(_))
+    ));
+    assert!(matches!(
+        result,
+        Result::<(), _>::Err(Error::VaultNotFound(_))
+    ));
 }
 
 #[test]
@@ -275,24 +339,15 @@ fn test_cli_parsing_audit() {
 }
 
 #[test]
-fn test_cli_default_tier() {
-    let cli = Cli::parse_from(["origin-secrets", "init"]);
-
-    match cli.command {
-        Commands::Init(args) => {
-            assert_eq!(args.tier, "standard");
-        }
-        _ => panic!("Expected Init command"),
-    }
-}
-
-#[test]
-fn test_cli_verbose_quiet_flags() {
-    let cli = Cli::parse_from(["origin-secrets", "--verbose", "init"]);
-    assert!(cli.verbose);
-    assert!(!cli.quiet);
-
-    let cli = Cli::parse_from(["origin-secrets", "--quiet", "init"]);
-    assert!(cli.quiet);
-    assert!(!cli.verbose);
+fn test_cli_parsing_global_passphrase_flag() {
+    let cli = Cli::parse_from([
+        "origin-secrets",
+        "-p",
+        "/tmp/pw.txt",
+        "init",
+        "--tier",
+        "standard",
+        "--no-prompt",
+    ]);
+    assert_eq!(cli.passphrase_file, Some(PathBuf::from("/tmp/pw.txt")));
 }

@@ -1,7 +1,8 @@
 //! Security test: passphrase handling.
 //!
-//! Verifies that the wrong passphrase cannot decrypt a vault and that
-//! decryption failure is reported (not a silent wrong result).
+//! Verifies that the wrong/empty passphrase cannot decrypt a vault and that
+//! decryption failure is reported (not a silent wrong result). A passphrase
+//! source (-p) is mandatory for every command; there is no built-in default.
 
 use clap::Parser;
 use origin_secrets::cli::Cli;
@@ -20,24 +21,24 @@ fn cli(vault: &Path, passfile: Option<&Path>, args: &[&str]) -> Cli {
     Cli::parse_from(full)
 }
 
+fn write_pw(path: &Path, pw: &str) {
+    let mut f = std::fs::File::create(path).unwrap();
+    writeln!(f, "{pw}").unwrap();
+}
+
 #[test]
 fn wrong_passphrase_cannot_decrypt_vault() {
     let dir = tempfile::tempdir().unwrap();
     let vault = dir.path().join("secrets.vault");
 
-    // init with default passphrase (dispatch default)
-    dispatch(cli(
-        &vault,
-        None,
-        &["init", "--tier", "standard", "--no-prompt"],
-    ))
-    .unwrap();
+    // init with a known passphrase
+    let correct = dir.path().join("correct.pw");
+    write_pw(&correct, "correct horse battery staple");
+    dispatch(cli(&vault, Some(&correct), &["init", "--tier", "standard"])).unwrap();
 
     // write a WRONG passphrase to a file and try to shard (needs vault decrypt)
     let wrong = dir.path().join("wrong.pw");
-    let mut f = std::fs::File::create(&wrong).unwrap();
-    writeln!(f, "definitely-the-wrong-passphrase").unwrap();
-    drop(f);
+    write_pw(&wrong, "definitely-the-wrong-passphrase");
 
     let r = dispatch(cli(
         &vault,
@@ -60,13 +61,12 @@ fn empty_passphrase_file_rejected() {
     let dir = tempfile::tempdir().unwrap();
     let vault = dir.path().join("secrets.vault");
 
-    dispatch(cli(
-        &vault,
-        None,
-        &["init", "--tier", "standard", "--no-prompt"],
-    ))
-    .unwrap();
+    // init with a known passphrase
+    let correct = dir.path().join("correct.pw");
+    write_pw(&correct, "correct horse battery staple");
+    dispatch(cli(&vault, Some(&correct), &["init", "--tier", "standard"])).unwrap();
 
+    // an empty passphrase file must not decrypt the vault
     let empty = dir.path().join("empty.pw");
     std::fs::File::create(&empty).unwrap(); // 0-byte file -> empty passphrase
 
@@ -76,4 +76,21 @@ fn empty_passphrase_file_rejected() {
         &["verify", "--vault-path", vault.to_str().unwrap()],
     ));
     assert!(r.is_err(), "empty passphrase must not decrypt the vault");
+}
+
+#[test]
+fn missing_passphrase_is_rejected() {
+    // No -p at all must be refused (no silent weak default fallback).
+    let dir = tempfile::tempdir().unwrap();
+    let vault = dir.path().join("secrets.vault");
+    let r = dispatch(cli(
+        &vault,
+        None,
+        &["init", "--tier", "standard", "--no-prompt"],
+    ));
+    assert!(
+        matches!(r, Err(origin_secrets::Error::PassphraseRequired)),
+        "init without -p must return PassphraseRequired, got: {:?}",
+        r
+    );
 }

@@ -20,30 +20,44 @@ pub use error::Error;
 
 /// Dispatch CLI command to appropriate handler
 pub fn dispatch(cli: Cli) -> Result<(), Error> {
-    // Resolve passphrase: from file if provided, else a fixed test default.
-    // (Interactive prompting is a TODO; for now we support passphrase files.)
-    let passphrase = match &cli.passphrase_file {
-        Some(path) => std::fs::read_to_string(path)
-            .map_err(|e| Error::IoError(format!("reading passphrase file: {e}")))?,
-        None => "demo-passphrase-for-testing-only".to_string(),
-    };
-    let passphrase = passphrase.trim_end_matches('\n');
-
     match cli.command {
+        // `init` owns its passphrase policy (refuses without a source, since
+        // interactive prompting is not yet implemented). It reads the global
+        // -p/--passphrase-file when supplied.
         cli::Commands::Init(args) => {
             commands::init::cmd_init(args, &cli.vault, cli.passphrase_file.as_deref())
         }
-        cli::Commands::Shard(args) => {
-            commands::shard::cmd_shard(args, &cli.vault, passphrase).map(|_| ())
+        // Every other command opens or writes an encrypted vault and therefore
+        // requires a passphrase. A missing -p is a hard error — we never fall
+        // back to a built-in default, which would let an operator believe a
+        // vault is protected when it is trivially decryptable.
+        other => {
+            let path = cli
+                .passphrase_file
+                .as_ref()
+                .ok_or(Error::PassphraseRequired)?;
+            let passphrase = std::fs::read_to_string(path)
+                .map_err(|e| Error::IoError(format!("reading passphrase file: {e}")))?;
+            let passphrase = passphrase.trim_end_matches('\n');
+            match other {
+                cli::Commands::Shard(args) => {
+                    commands::shard::cmd_shard(args, &cli.vault, passphrase).map(|_| ())
+                }
+                cli::Commands::ExportShare(args) => {
+                    commands::export::cmd_export_share(args, &cli.vault, passphrase).map(|_| ())
+                }
+                cli::Commands::Recover(args) => {
+                    commands::recover::cmd_recover(args, passphrase).map(|_| ())
+                }
+                cli::Commands::Verify(args) => {
+                    commands::verify::cmd_verify(args, &cli.vault, passphrase)
+                }
+                cli::Commands::Audit(args) => {
+                    commands::audit::cmd_audit(args, &cli.vault, passphrase)
+                }
+                cli::Commands::Init(_) => unreachable!(),
+            }
         }
-        cli::Commands::ExportShare(args) => {
-            commands::export::cmd_export_share(args, &cli.vault, passphrase).map(|_| ())
-        }
-        cli::Commands::Recover(args) => {
-            commands::recover::cmd_recover(args, passphrase).map(|_| ())
-        }
-        cli::Commands::Verify(args) => commands::verify::cmd_verify(args, &cli.vault, passphrase),
-        cli::Commands::Audit(args) => commands::audit::cmd_audit(args, &cli.vault, passphrase),
     }
 }
 

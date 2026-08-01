@@ -244,6 +244,15 @@ mod integration_workflow_tests {
     use crate::commands::init::cmd_init;
     use std::path::Path;
 
+    /// A passphrase file on disk; cmd_init now requires a passphrase source via
+    /// -p/--passphrase-file (it never falls back to a demo string), so the
+    /// integration tests must supply one.
+    fn pw_file() -> std::path::PathBuf {
+        let p = std::env::temp_dir().join("osecrets_ci_pw.txt");
+        std::fs::write(&p, "correct horse battery staple\n").unwrap();
+        p
+    }
+
     #[test]
     fn test_init_creates_vault_structure() {
         let args = InitArgs {
@@ -255,7 +264,12 @@ mod integration_workflow_tests {
             std::fs::remove_file("~/.origin/secrets.vault").ok();
         }
 
-        cmd_init(args, Path::new("~/.origin/secrets.vault"), None).ok();
+        cmd_init(
+            args,
+            Path::new("~/.origin/secrets.vault"),
+            Some(pw_file().as_path()),
+        )
+        .ok();
 
         let vault_json = std::fs::read_to_string("~/.origin/secrets.vault").unwrap();
         let vault: crate::vault::Vault = serde_json::from_str(&vault_json).unwrap();
@@ -279,7 +293,12 @@ mod integration_workflow_tests {
                 no_prompt: true,
             };
 
-            cmd_init(args.clone(), Path::new("~/.origin/secrets.vault"), None).ok();
+            cmd_init(
+                args.clone(),
+                Path::new("~/.origin/secrets.vault"),
+                Some(pw_file().as_path()),
+            )
+            .ok();
             let vault_json = std::fs::read_to_string("~/.origin/secrets.vault").unwrap();
             let vault: crate::vault::Vault = serde_json::from_str(&vault_json).unwrap();
             assert_eq!(
@@ -304,8 +323,17 @@ mod integration_workflow_tests {
             no_prompt: true,
         };
 
-        cmd_init(args.clone(), Path::new("~/.origin/secrets.vault"), None).ok();
-        let result = cmd_init(args, Path::new("~/.origin/secrets.vault"), None);
+        cmd_init(
+            args.clone(),
+            Path::new("~/.origin/secrets.vault"),
+            Some(pw_file().as_path()),
+        )
+        .ok();
+        let result = cmd_init(
+            args,
+            Path::new("~/.origin/secrets.vault"),
+            Some(pw_file().as_path()),
+        );
         assert!(matches!(
             result.unwrap_err(),
             crate::error::Error::VaultAlreadyExists(_)
@@ -329,7 +357,12 @@ mod integration_workflow_tests {
                 no_prompt: true,
             };
 
-            cmd_init(args, Path::new("~/.origin/secrets.vault"), None).ok();
+            cmd_init(
+                args,
+                Path::new("~/.origin/secrets.vault"),
+                Some(pw_file().as_path()),
+            )
+            .ok();
             let vault_json = std::fs::read_to_string("~/.origin/secrets.vault").unwrap();
             let vault: crate::vault::Vault = serde_json::from_str(&vault_json).unwrap();
 

@@ -72,6 +72,9 @@ pub enum Error {
     #[error("Passphrase too weak (minimum {min_length} characters)")]
     PassphraseTooWeak { min_length: usize },
 
+    #[error("A passphrase is required: supply -p/--passphrase-file (interactive prompting is not yet supported)")]
+    PassphraseRequired,
+
     #[error("Passphrase mismatch")]
     PassphraseMismatch,
 

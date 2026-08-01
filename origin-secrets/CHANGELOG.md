@@ -35,12 +35,20 @@ management over the `origin-crypto-sdk`.
 - **Share verification binding:** `verify --share` verifies against the share's *own*
   source vault (derived from the share's on-disk location), not a default/resolved
   vault, preventing false tamper-positives across multiple vaults.
-- **Passphrase discipline:** `init` refuses to proceed without a passphrase source
-  (`-p/--passphrase-file` or interactive prompt); it never falls back to a hardcoded
-  default. A subcommand-local `-p` is intentionally ignored in favor of the global one
-  so all commands share one key-derivation path.
+- **Passphrase discipline:** no command falls back to a hardcoded default. `init`
+  and the dispatcher both refuse to proceed without a passphrase source
+  (`-p/--passphrase-file` or interactive prompt). The dispatcher returns a new
+  `PassphraseRequired` error for `shard`/`export-share`/`recover`/`verify`/`audit`
+  when `-p` is absent, so an operator can never silently encrypt or decrypt a vault
+  against a known weak string. A subcommand-local `-p` is intentionally ignored in
+  favor of the global one so all commands share one key-derivation path.
 
 ### Fixed (post-QC, same release)
+- `dispatch` previously fell back to a hardcoded demo passphrase for every command
+  other than `init` when `-p` was absent, so `shard`/`export-share`/`recover`/`verify`/
+  `audit` would silently encrypt/decrypt against a publicly-known string. The dispatcher
+  now returns `PassphraseRequired` for those commands when no `-p` is supplied, and the
+  demo fallback is gone entirely.
 - `init` previously ignored the global `-p/--passphrase-file` flag and silently
   encrypted the vault with a demo passphrase, causing every subsequent command using
   the real passphrase to fail with `VaultDecryptionFailed`. The passphrase now flows

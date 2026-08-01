@@ -32,20 +32,17 @@ pub fn cmd_init(
     }
 
     // Resolve passphrase. Prefer the global -p/--passphrase-file (e.g. a mounted
-    // secret). Without it, fall back to the demo string only under --no-prompt;
-    // otherwise refuse to store a known-weak key.
+    // secret). Interactive prompting is not yet implemented; without a passphrase
+    // source we refuse rather than store a known-weak key. `no_prompt` only
+    // suppresses an (unimplemented) interactive prompt — it does NOT waive the
+    // passphrase requirement.
     let passphrase = if let Some(pf) = passphrase_file {
         std::fs::read_to_string(pf)
             .map_err(|e| Error::IoError(format!("reading passphrase file {pf:?}: {e}")))?
             .trim_end_matches('\n')
             .to_string()
-    } else if args.no_prompt {
-        // Test/automation convenience only — never used for a real vault.
-        "demo-passphrase-for-testing-only".to_string()
     } else {
-        return Err(Error::PassphraseTooWeak {
-            min_length: MIN_PASSPHRASE_LENGTH,
-        });
+        return Result::Err(Error::PassphraseRequired);
     };
 
     // Validate passphrase length
@@ -118,11 +115,13 @@ mod tests {
     fn test_init_with_standard_tier() {
         let dir = tempdir().unwrap();
         let vault_path = dir.path().join("secrets.vault");
+        let pw_file = dir.path().join("pw.txt");
+        std::fs::write(&pw_file, "correct horse battery staple\n").unwrap();
         let args = InitArgs {
             tier: "standard".to_string(),
             no_prompt: true,
         };
-        let result = cmd_init(args, &vault_path, None);
+        let result = cmd_init(args, &vault_path, Some(pw_file.as_path()));
         assert!(result.is_ok());
         assert!(vault_path.exists());
     }
@@ -131,11 +130,13 @@ mod tests {
     fn test_init_with_nano_tier() {
         let dir = tempdir().unwrap();
         let vault_path = dir.path().join("secrets.vault");
+        let pw_file = dir.path().join("pw.txt");
+        std::fs::write(&pw_file, "correct horse battery staple\n").unwrap();
         let args = InitArgs {
             tier: "nano".to_string(),
             no_prompt: true,
         };
-        let result = cmd_init(args, &vault_path, None);
+        let result = cmd_init(args, &vault_path, Some(pw_file.as_path()));
         assert!(result.is_ok());
         assert!(vault_path.exists());
     }
@@ -144,11 +145,13 @@ mod tests {
     fn test_init_with_sovereign_tier() {
         let dir = tempdir().unwrap();
         let vault_path = dir.path().join("secrets.vault");
+        let pw_file = dir.path().join("pw.txt");
+        std::fs::write(&pw_file, "correct horse battery staple\n").unwrap();
         let args = InitArgs {
             tier: "sovereign".to_string(),
             no_prompt: true,
         };
-        let result = cmd_init(args, &vault_path, None);
+        let result = cmd_init(args, &vault_path, Some(pw_file.as_path()));
         assert!(result.is_ok());
         assert!(vault_path.exists());
     }
@@ -237,6 +240,6 @@ mod tests {
             no_prompt: false,
         };
         let result = cmd_init(args, &vault_path, None);
-        assert!(matches!(result, Err(Error::PassphraseTooWeak { .. })));
+        assert!(matches!(result, Result::Err(Error::PassphraseRequired)));
     }
 }

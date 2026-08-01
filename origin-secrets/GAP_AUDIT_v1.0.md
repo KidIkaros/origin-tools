@@ -32,7 +32,7 @@ silently accepted).
 ### MEDIUM — 3 found, 3 CLOSED
 | ID | Gap | Resolution | Status |
 |---|---|---|---|
-| M1 | `init` silently used a hardcoded 12-char demo passphrase and **ignored `--passphrase-file`**; the `passphrase.len() < 12` gate was therefore dead, and an operator-supplied `-p` file was dropped (the weak default became the real key). | `init` now reads `-p/--passphrase-file` when given; without it and without `--no-prompt` it **refuses** (`PassphraseTooWeak`) rather than fall back to a known-weak default. Added regression tests `test_init_reads_passphrase_file` (proves the file's passphrase is the key; the demo string does NOT decrypt) and `test_init_without_prompt_or_file_is_rejected`. | CLOSED |
+|| M1 | `init` silently used a hardcoded 12-char demo passphrase and **ignored `--passphrase-file`**; the `passphrase.len() < 12` gate was therefore dead, and an operator-supplied `-p` file was dropped (the weak default became the real key). | `init` and `dispatch` now require a passphrase source (`-p/--passphrase-file`); without it they **refuse** with `PassphraseRequired` rather than fall back to a known-weak default. The demo string is gone entirely. Added regression tests `test_init_reads_passphrase_file` (proves the file's passphrase is the key; the demo string does NOT decrypt) and `test_init_without_prompt_or_file_is_rejected`, plus `missing_passphrase_is_rejected` and `test_dispatch_requires_passphrase_without_flag`. | CLOSED |
 | M2 | `verify --share` performed only structural checks; crypto verification was delegated to `recover`, contradicting the W4 acceptance ("`verify --share` detects tampering"). | Upgraded `verify_share` to full hybrid-signature verification when a vault is supplied (derives the share-signing bundle from the master seed via `SHARE_SIGNING_DOMAIN`). | CLOSED |
 | M3 | `cmd_init` hardcoded `~/.origin/secrets.vault`, ignoring `-V/--vault` (dead flag). | `cmd_init(args, &cli.vault)` now honors the resolved vault path; dispatch passes `&cli.vault`. | CLOSED |
 
@@ -41,7 +41,7 @@ silently accepted).
 |---|---|---|
 | L1 | `lib.rs` dispatch retains `NotImplemented` arms for the 6 implemented commands (lib.rs 84.6%). Dead in v1.0, preserves the future-command seam (every module is a reusable protocol layer). | Keep until next command lands. |
 | L2 | `verify.rs` standalone-share fallback (no vault) is under-covered by tarpaulin's Falcon-instrumented run (verify.rs 80%). Logically trivial; covered by `init_shard_recover` in optimized runs. | Re-measure in v1.1. |
-| L3 | `dispatch` uses a demo default passphrase when `-p` is absent and `--no-prompt` is set (test path). Production invocations must supply `-p`; real `init` now refuses without a passphrase source. | Documented in README/SECURITY; enforced failure path exists at `init`. |
+|| L3 | `dispatch` previously used a demo default passphrase when `-p` was absent (the silent-weak-default anti-pattern, reachable via `init --no-prompt` and all other commands). | **CLOSED in post-QC fix:** the demo fallback is removed everywhere; `dispatch` returns `PassphraseRequired` for any command lacking `-p`, and `cmd_init` no longer special-cases `--no-prompt`. Documented in README/SECURITY. | CLOSED |
 
 ### OUT OF SCOPE (v1.0 by design — planned v2.0+)
 - Web dashboard / custodian UX (PRODUCT_SPEC Phase 2).

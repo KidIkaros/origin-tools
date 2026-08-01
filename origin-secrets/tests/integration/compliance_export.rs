@@ -6,14 +6,20 @@ use origin_secrets::dispatch;
 use std::path::Path;
 
 fn cli(vault: &Path, args: &[&str]) -> Cli {
+    // Every command requires a passphrase source (-p); attach a temp file.
+    let pw = vault.parent().unwrap().join("pw.txt");
+    std::fs::write(&pw, "correct horse battery staple\n").unwrap();
     let mut full = vec!["origin-secrets", "-V"];
     full.push(vault.to_str().unwrap());
+    full.push("-p");
+    full.push(pw.to_str().unwrap());
     full.extend_from_slice(args);
     Cli::parse_from(full)
 }
 
 fn init_and_shard(vault: &Path) {
-    dispatch(cli(vault, &["init", "--tier", "standard", "--no-prompt"])).unwrap();
+    // cli() injects the -p passphrase file, so init/shard get a real key.
+    dispatch(cli(vault, &["init", "--tier", "standard"])).unwrap();
     dispatch(cli(
         vault,
         &[
