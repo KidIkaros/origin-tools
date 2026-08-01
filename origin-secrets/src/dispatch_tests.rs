@@ -96,6 +96,8 @@ fn test_dispatch_export_routes_to_impl() {
         std::env::temp_dir().join(format!("origin-secrets-export-test-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let vault = dir.join("secrets.vault");
+    // Remove any stale vault from a prior test run so init starts clean.
+    let _ = std::fs::remove_file(&vault);
     let cli_init = Cli {
         vault: vault.clone(),
         passphrase_file: Some(passphrase_file()),
@@ -242,7 +244,7 @@ fn test_cli_parsing_shard() {
     let cli = Cli::parse_from([
         "origin-secrets",
         "shard",
-        "--key",
+        "--label",
         "master",
         "--threshold",
         "3",
