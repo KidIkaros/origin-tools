@@ -322,4 +322,49 @@ mod tests {
         let debug_str = format!("{:?}", err);
         assert!(debug_str.contains("VaultNotFound"));
     }
+
+    #[test]
+    fn test_exit_code_vault_decryption_failed_is_2() {
+        let err = Error::VaultDecryptionFailed("wrong key".to_string());
+        assert_eq!(err.exit_code(), 2);
+    }
+
+    #[test]
+    fn test_exit_code_passphrase_required_is_2() {
+        let err = Error::PassphraseRequired;
+        assert_eq!(err.exit_code(), 2);
+    }
+
+    #[test]
+    fn test_exit_code_passphrase_too_weak_is_2() {
+        let err = Error::PassphraseTooWeak { min_length: 12 };
+        assert_eq!(err.exit_code(), 2);
+    }
+
+    #[test]
+    fn test_exit_code_passphrase_mismatch_is_2() {
+        let err = Error::PassphraseMismatch;
+        assert_eq!(err.exit_code(), 2);
+    }
+
+    #[test]
+    fn test_exit_code_vault_not_found_is_3() {
+        let err = Error::VaultNotFound("/tmp/test.vault".into());
+        assert_eq!(err.exit_code(), 3);
+    }
+
+    #[test]
+    fn test_exit_code_share_not_found_is_3() {
+        let err = Error::ShareNotFound {
+            share_number: 1,
+            path: PathBuf::from("/"),
+        };
+        assert_eq!(err.exit_code(), 3);
+    }
+
+    #[test]
+    fn test_exit_code_generic_crypto_error_is_1() {
+        let err = Error::CryptoError("generic failure".to_string());
+        assert_eq!(err.exit_code(), 1);
+    }
 }

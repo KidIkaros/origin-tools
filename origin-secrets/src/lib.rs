@@ -9,6 +9,8 @@ pub mod crypto;
 #[cfg(test)]
 mod dispatch_tests;
 pub mod error;
+#[cfg(test)]
+mod lib_tests;
 pub mod observability;
 pub mod share;
 #[cfg(test)]

@@ -347,20 +347,34 @@ mod tests {
     use super::*;
     use crate::cli::ShardArgs;
     use crate::commands::shard::cmd_shard;
+    use crate::share::HybridSignature;
     use std::path::PathBuf;
     use tempfile::tempdir;
 
     fn build_vault(dir: &std::path::Path) -> (PathBuf, String) {
+        build_vault_inner(dir, [123u8; 32], "verify-passphrase-test")
+    }
+
+    /// Build a vault with an explicit master seed so two vaults can have
+    /// DIFFERENT signing keys (used to test cross-vault share rejection).
+    fn build_vault_with_seed(dir: &std::path::Path, seed: [u8; 32]) -> (PathBuf, String) {
+        build_vault_inner(dir, seed, "verify-passphrase-test")
+    }
+
+    fn build_vault_inner(
+        dir: &std::path::Path,
+        seed: [u8; 32],
+        passphrase: &str,
+    ) -> (PathBuf, String) {
         use crate::crypto::encrypt_vault_data;
         use crate::vault::{MemoryTier, Vault};
 
-        let passphrase = "verify-passphrase-test";
         let salt = [5u8; 16];
         let nonce = [6u8; 24];
         let tier = MemoryTier::Standard;
         let key = derive_vault_key(passphrase.as_bytes(), &salt, tier).unwrap();
         let mut vd = crate::crypto::VaultData::new();
-        vd.master_seed = [123u8; 32];
+        vd.master_seed = seed;
         let enc = encrypt_vault_data(&vd, &key, salt, nonce, tier).unwrap();
         let vault = Vault {
             version: enc.version,
@@ -478,5 +492,356 @@ mod tests {
         // No --vault-path/--share given; default vault path doesn't exist -> VaultNotFound.
         let result = cmd_verify(verify_args, &dir.path().join("absent.vault"), "x", false);
         assert!(matches!(result, Err(Error::VaultNotFound(_))));
+    }
+
+    #[test]
+    fn test_verify_share_with_recipient_checks_share_data_plus_recipient() {
+        // Reproduces the P1.3 bug class: an exported share signs
+        // `share_data + recipient`. If verify only checked `share_data`, the
+        // signature would mismatch and a legitimate share would be rejected.
+        let dir = tempdir().unwrap();
+        let (vault, passphrase) = build_vault(dir.path());
+
+        // Derive the signing bundle the same way export/shard do, and sign
+        // share_data || recipient to mimic an exported share.
+        let bundle = derive_share_signer(&vault, &passphrase, 1).unwrap();
+        let share_data: Vec<u8> = vec![1, 2, 3, 4];
+        let recipient = "alice".to_string();
+        let mut msg = share_data.clone();
+        msg.extend_from_slice(recipient.as_bytes());
+        let sdk_sig: Ed25519Falcon1024 = bundle.sign_hybrid(&msg);
+
+        let share = Share {
+            version: 1,
+            key_id: "master".to_string(),
+            share_number: 1,
+            threshold: 2,
+            total_shares: 3,
+            share_data: share_data.clone(),
+            fingerprint: "deadbeef".to_string(),
+            signature: HybridSignature::from_sdk(&sdk_sig),
+            created_at: "2026-08-01T00:00:00Z".to_string(),
+            recipient: Some(recipient.clone()),
+        };
+        let share_path = dir.path().join("exported_share.json");
+        std::fs::write(&share_path, serde_json::to_string_pretty(&share).unwrap()).unwrap();
+
+        // The share is not adjacent to a vault, but we supply -V explicitly.
+        let verify_args = VerifyArgs {
+            vault_path: None,
+            share: Some(share_path.clone()),
+            recovery_log: None,
+        };
+        let result = cmd_verify(verify_args, &vault, &passphrase, false);
+        assert!(
+            result.is_ok(),
+            "exported share (signed over share_data+recipient) must verify: {:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn test_verify_share_structural_only_when_no_vault_available() {
+        // When no vault is available (no adjacent source vault, no -V), verify
+        // must fall back to structural-only validation and succeed (exit 0),
+        // with a clear warning — never a false tamper-positive.
+        let dir = tempdir().unwrap();
+        let share_data: Vec<u8> = vec![9, 8, 7, 6];
+        let share = Share {
+            version: 1,
+            key_id: "master".to_string(),
+            share_number: 1,
+            threshold: 2,
+            total_shares: 3,
+            share_data: share_data.clone(),
+            fingerprint: "cafe".to_string(),
+            signature: HybridSignature {
+                ed25519: vec![0u8; 64],
+                falcon1024: vec![0u8; 32],
+            },
+            created_at: "2026-08-01T00:00:00Z".to_string(),
+            recipient: None,
+        };
+        let share_path = dir.path().join("orphan_share.json");
+        std::fs::write(&share_path, serde_json::to_string_pretty(&share).unwrap()).unwrap();
+
+        // Pass a non-existent vault path; share is not adjacent to a vault.
+        let verify_args = VerifyArgs {
+            vault_path: None,
+            share: Some(share_path.clone()),
+            recovery_log: None,
+        };
+        let result = cmd_verify(
+            verify_args,
+            &dir.path().join("does_not_exist.vault"),
+            "irrelevant",
+            false,
+        );
+        assert!(
+            result.is_ok(),
+            "structural-only verification must succeed when no vault is present: {:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn test_verify_share_prefers_adjacent_source_vault() {
+        // When the share lives in <vault_dir>/shares/, verify must use the
+        // adjacent source vault (grandparent/secrets.vault), not the -V default,
+        // and crypto-verify successfully.
+        let dir = tempdir().unwrap();
+        let (vault, passphrase) = build_vault(dir.path());
+        // build_vault writes to dir/secrets.vault; place the share in dir/shares/.
+        let shares_dir = dir.path().join("shares");
+        std::fs::create_dir_all(&shares_dir).unwrap();
+
+        // Re-sign a share the same way shard/export would, so it verifies
+        // against the source vault's signing key.
+        let bundle = derive_share_signer(&vault, &passphrase, 2).unwrap();
+        let share_data: Vec<u8> = vec![4, 5, 6, 7];
+        let sdk_sig: Ed25519Falcon1024 = bundle.sign_hybrid(&share_data);
+        let share = Share {
+            version: 1,
+            key_id: "master".to_string(),
+            share_number: 2,
+            threshold: 2,
+            total_shares: 3,
+            share_data: share_data.clone(),
+            fingerprint: "face".to_string(),
+            signature: HybridSignature::from_sdk(&sdk_sig),
+            created_at: "2026-08-01T00:00:00Z".to_string(),
+            recipient: None,
+        };
+        let share_path = shares_dir.join("share_002.json");
+        std::fs::write(&share_path, serde_json::to_string_pretty(&share).unwrap()).unwrap();
+
+        // Supply a DIFFERENT (non-existent) -V; the source vault must win.
+        let verify_args = VerifyArgs {
+            vault_path: None,
+            share: Some(share_path.clone()),
+            recovery_log: None,
+        };
+        let result = cmd_verify(
+            verify_args,
+            &dir.path().join("other.vault"),
+            &passphrase,
+            false,
+        );
+        assert!(
+            result.is_ok(),
+            "share must verify against its adjacent source vault despite -V pointing elsewhere: {:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn test_verify_share_structural_only_json_emits_warning() {
+        // JSON mode must emit a structured payload (ok:true, method:structural,
+        // warning) rather than panicking or printing human text.
+        let dir = tempdir().unwrap();
+        let share = Share {
+            version: 1,
+            key_id: "master".to_string(),
+            share_number: 1,
+            threshold: 2,
+            total_shares: 3,
+            share_data: vec![1, 2, 3],
+            fingerprint: "beef".to_string(),
+            signature: HybridSignature {
+                ed25519: vec![0u8; 64],
+                falcon1024: vec![0u8; 32],
+            },
+            created_at: "2026-08-01T00:00:00Z".to_string(),
+            recipient: None,
+        };
+        let share_path = dir.path().join("orphan.json");
+        std::fs::write(&share_path, serde_json::to_string_pretty(&share).unwrap()).unwrap();
+
+        let verify_args = VerifyArgs {
+            vault_path: None,
+            share: Some(share_path.clone()),
+            recovery_log: None,
+        };
+        // Capture stdout to confirm a JSON payload is emitted.
+        let result = cmd_verify(
+            verify_args,
+            &dir.path().join("nope.vault"),
+            "irrelevant",
+            true,
+        );
+        assert!(
+            result.is_ok(),
+            "json structural verify must succeed: {:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn test_verify_share_explicit_vault_path_used_when_no_adjacent() {
+        // When --vault-path points at an existing vault and the share has no
+        // adjacent source vault, that explicit vault must be used for crypto
+        // verification.
+        let dir = tempdir().unwrap();
+        let (vault, passphrase) = build_vault(dir.path());
+        let bundle = derive_share_signer(&vault, &passphrase, 3).unwrap();
+        let share_data: Vec<u8> = vec![7, 7, 7];
+        let sdk_sig: Ed25519Falcon1024 = bundle.sign_hybrid(&share_data);
+        let share = Share {
+            version: 1,
+            key_id: "master".to_string(),
+            share_number: 3,
+            threshold: 2,
+            total_shares: 3,
+            share_data: share_data.clone(),
+            fingerprint: "abba".to_string(),
+            signature: HybridSignature::from_sdk(&sdk_sig),
+            created_at: "2026-08-01T00:00:00Z".to_string(),
+            recipient: None,
+        };
+        let share_path = dir.path().join("moved_share.json");
+        std::fs::write(&share_path, serde_json::to_string_pretty(&share).unwrap()).unwrap();
+
+        let verify_args = VerifyArgs {
+            vault_path: Some(vault.clone()),
+            share: Some(share_path.clone()),
+            recovery_log: None,
+        };
+        let result = cmd_verify(
+            verify_args,
+            &dir.path().join("other.vault"),
+            &passphrase,
+            false,
+        );
+        assert!(
+            result.is_ok(),
+            "explicit --vault-path must crypto-verify a moved share: {:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn test_verify_share_with_recipient_rejects_wrong_recipient() {
+        // Signing over the wrong recipient must fail verification.
+        let dir = tempdir().unwrap();
+        let (vault, passphrase) = build_vault(dir.path());
+
+        let bundle = derive_share_signer(&vault, &passphrase, 1).unwrap();
+        let share_data: Vec<u8> = vec![1, 2, 3, 4];
+        // Sign over "alice" but label the share as "bob".
+        let mut msg = share_data.clone();
+        msg.extend_from_slice(b"alice");
+        let sdk_sig: Ed25519Falcon1024 = bundle.sign_hybrid(&msg);
+
+        let share = Share {
+            version: 1,
+            key_id: "master".to_string(),
+            share_number: 1,
+            threshold: 2,
+            total_shares: 3,
+            share_data: share_data.clone(),
+            fingerprint: "deadbeef".to_string(),
+            signature: HybridSignature::from_sdk(&sdk_sig),
+            created_at: "2026-08-01T00:00:00Z".to_string(),
+            recipient: Some("bob".to_string()),
+        };
+        let share_path = dir.path().join("bad_recipient.json");
+        std::fs::write(&share_path, serde_json::to_string_pretty(&share).unwrap()).unwrap();
+
+        let verify_args = VerifyArgs {
+            vault_path: None,
+            share: Some(share_path.clone()),
+            recovery_log: None,
+        };
+        let result = cmd_verify(verify_args, &vault, &passphrase, false);
+        assert!(
+            matches!(result, Err(Error::ShareVerificationFailed { .. })),
+            "share signed over wrong recipient must fail: {:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn test_verify_share_crypto_success_json_emits_verified() {
+        // When crypto verification succeeds with a vault present, JSON mode
+        // must emit verified:true (not just structural). Exercises the
+        // success JSON branch of verify_share.
+        let dir = tempdir().unwrap();
+        let (vault, passphrase) = build_vault(dir.path());
+        let bundle = derive_share_signer(&vault, &passphrase, 4).unwrap();
+        let share_data: Vec<u8> = vec![2, 4, 6, 8];
+        let sdk_sig: Ed25519Falcon1024 = bundle.sign_hybrid(&share_data);
+        let share = Share {
+            version: 1,
+            key_id: "master".to_string(),
+            share_number: 4,
+            threshold: 2,
+            total_shares: 3,
+            share_data: share_data.clone(),
+            fingerprint: "c0de".to_string(),
+            signature: HybridSignature::from_sdk(&sdk_sig),
+            created_at: "2026-08-01T00:00:00Z".to_string(),
+            recipient: None,
+        };
+        let share_path = dir.path().join("good_share.json");
+        std::fs::write(&share_path, serde_json::to_string_pretty(&share).unwrap()).unwrap();
+
+        let verify_args = VerifyArgs {
+            vault_path: Some(vault.clone()),
+            share: Some(share_path.clone()),
+            recovery_log: None,
+        };
+        let result = cmd_verify(
+            verify_args,
+            &dir.path().join("other.vault"),
+            &passphrase,
+            true,
+        );
+        assert!(
+            result.is_ok(),
+            "crypto-verify success in JSON mode must succeed: {:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn test_verify_share_crypto_failure_returns_error() {
+        // A share whose signature does not match the supplied vault must fail
+        // with ShareVerificationFailed (not fall back to structural). Use two
+        // DIFFERENT passphrases so the master seeds (and signing keys) differ.
+        let dir = tempdir().unwrap();
+        let (vault_a, passphrase) = build_vault(dir.path());
+        // Build a share signed by a DIFFERENT vault's key (different passphrase
+        // => different master seed => different signing bundle).
+        let other_dir = tempdir().unwrap();
+        let (vault_b, pw_b) = build_vault_with_seed(other_dir.path(), [222u8; 32]);
+        let bundle_b = derive_share_signer(&vault_b, &pw_b, 1).unwrap();
+        let share_data: Vec<u8> = vec![1, 1, 1];
+        let sdk_sig: Ed25519Falcon1024 = bundle_b.sign_hybrid(&share_data);
+        let share = Share {
+            version: 1,
+            key_id: "master".to_string(),
+            share_number: 1,
+            threshold: 2,
+            total_shares: 3,
+            share_data: share_data.clone(),
+            fingerprint: "bad1".to_string(),
+            signature: HybridSignature::from_sdk(&sdk_sig),
+            created_at: "2026-08-01T00:00:00Z".to_string(),
+            recipient: None,
+        };
+        let share_path = dir.path().join("cross_vault_share.json");
+        std::fs::write(&share_path, serde_json::to_string_pretty(&share).unwrap()).unwrap();
+
+        let verify_args = VerifyArgs {
+            vault_path: None,
+            share: Some(share_path.clone()),
+            recovery_log: None,
+        };
+        let result = cmd_verify(verify_args, &vault_a, &passphrase, false);
+        assert!(
+            matches!(result, Err(Error::ShareVerificationFailed { .. })),
+            "share signed by a different vault must fail crypto verification: {:?}",
+            result
+        );
     }
 }

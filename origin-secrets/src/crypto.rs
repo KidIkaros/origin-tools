@@ -259,15 +259,30 @@ mod integration_workflow_tests {
     use super::*;
     use crate::cli::InitArgs;
     use crate::commands::init::cmd_init;
-    use std::path::Path;
 
     /// A passphrase file on disk; cmd_init now requires a passphrase source via
     /// -p/--passphrase-file (it never falls back to a demo string), so the
-    /// integration tests must supply one.
+    /// integration tests must supply one. Written exactly once per process via
+    /// a OnceLock so parallel test threads never race on a shared file.
     fn pw_file() -> std::path::PathBuf {
-        let p = std::env::temp_dir().join("osecrets_ci_pw.txt");
-        std::fs::write(&p, "correct horse battery staple\n").unwrap();
-        p
+        use std::sync::OnceLock;
+        static PATH: OnceLock<std::path::PathBuf> = OnceLock::new();
+        PATH.get_or_init(|| {
+            let p = std::env::temp_dir().join(format!("osecrets_ci_pw_{}.txt", std::process::id()));
+            std::fs::write(&p, "correct horse battery staple\n").unwrap();
+            p
+        })
+        .clone()
+    }
+
+    /// Isolated vault path per test (PID + test tag) so parallel test runs
+    /// don't collide on a shared `~/.origin/secrets.vault`.
+    fn isolated_vault(tag: &str) -> std::path::PathBuf {
+        std::env::temp_dir().join(format!(
+            "osecrets_ci_vault_{}_{}.vault",
+            std::process::id(),
+            tag
+        ))
     }
 
     #[test]
@@ -275,48 +290,31 @@ mod integration_workflow_tests {
         let args = InitArgs {
             tier: "standard".to_string(),
         };
+        let vault_path = isolated_vault("struct");
 
-        if Path::new("~/.origin/secrets.vault").exists() {
-            std::fs::remove_file("~/.origin/secrets.vault").ok();
-        }
+        cmd_init(args, &vault_path, Some(pw_file().as_path()), false).ok();
 
-        cmd_init(
-            args,
-            Path::new("~/.origin/secrets.vault"),
-            Some(pw_file().as_path()),
-            false,
-        )
-        .ok();
-
-        let vault_json = std::fs::read_to_string("~/.origin/secrets.vault").unwrap();
+        let vault_json = std::fs::read_to_string(&vault_path).unwrap();
         let vault: crate::vault::Vault = serde_json::from_str(&vault_json).unwrap();
 
         assert_eq!(vault.version, 1);
         assert_eq!(vault.tier, MemoryTier::Standard);
         assert!(!vault.ciphertext.is_empty());
 
-        std::fs::remove_file("~/.origin/secrets.vault").ok();
+        std::fs::remove_file(&vault_path).ok();
     }
 
     #[test]
     fn test_init_with_all_tiers() {
         for tier in ["nano", "standard", "sovereign"] {
-            if Path::new("~/.origin/secrets.vault").exists() {
-                std::fs::remove_file("~/.origin/secrets.vault").ok();
-            }
+            let vault_path = isolated_vault(&format!("tier_{}", tier));
 
             let args = InitArgs {
                 tier: tier.to_string(),
             };
 
-            cmd_init(
-                args.clone(),
-                Path::new("~/.origin/secrets.vault"),
-                Some(pw_file().as_path()),
-                false,
-            )
-            .ok();
-            let vault_json = std::fs::read_to_string("~/.origin/secrets.vault").unwrap();
+            cmd_init(args.clone(), &vault_path, Some(pw_file().as_path()), false).ok();
+            let vault_json = std::fs::read_to_string(&vault_path).unwrap();
             let vault: crate::vault::Vault = serde_json::from_str(&vault_json).unwrap();
             assert_eq!(
                 vault.tier,
@@ -325,39 +323,26 @@ mod integration_workflow_tests {
                 tier
             );
 
-            std::fs::remove_file("~/.origin/secrets.vault").ok();
+            std::fs::remove_file(&vault_path).ok();
         }
     }
 
     #[test]
     fn test_init_vault_already_exists() {
-        if Path::new("~/.origin/secrets.vault").exists() {
-            std::fs::remove_file("~/.origin/secrets.vault").ok();
-        }
+        let vault_path = isolated_vault("exists");
 
         let args = InitArgs {
             tier: "standard".to_string(),
         };
 
-        cmd_init(
-            args.clone(),
-            Path::new("~/.origin/secrets.vault"),
-            Some(pw_file().as_path()),
-            false,
-        )
-        .ok();
-        let result = cmd_init(
-            args,
-            Path::new("~/.origin/secrets.vault"),
-            Some(pw_file().as_path()),
-            false,
-        );
+        cmd_init(args.clone(), &vault_path, Some(pw_file().as_path()), false).ok();
+        let result = cmd_init(args, &vault_path, Some(pw_file().as_path()), false);
         assert!(matches!(
             result.unwrap_err(),
             crate::error::Error::VaultAlreadyExists(_)
         ));
 
-        std::fs::remove_file("~/.origin/secrets.vault").ok();
+        std::fs::remove_file(&vault_path).ok();
     }
 
     #[test]
@@ -365,29 +350,21 @@ mod integration_workflow_tests {
         let mut salts = Vec::new();
         let mut nonces = Vec::new();
 
-        for _ in 0..3 {
-            if Path::new("~/.origin/secrets.vault").exists() {
-                std::fs::remove_file("~/.origin/secrets.vault").ok();
-            }
+        for i in 0..3 {
+            let vault_path = isolated_vault(&format!("uniq_{}", i));
 
             let args = InitArgs {
                 tier: "standard".to_string(),
             };
 
-            cmd_init(
-                args,
-                Path::new("~/.origin/secrets.vault"),
-                Some(pw_file().as_path()),
-                false,
-            )
-            .ok();
-            let vault_json = std::fs::read_to_string("~/.origin/secrets.vault").unwrap();
+            cmd_init(args, &vault_path, Some(pw_file().as_path()), false).ok();
+            let vault_json = std::fs::read_to_string(&vault_path).unwrap();
             let vault: crate::vault::Vault = serde_json::from_str(&vault_json).unwrap();
 
             salts.push(vault.salt);
             nonces.push(vault.nonce);
 
-            std::fs::remove_file("~/.origin/secrets.vault").ok();
+            std::fs::remove_file(&vault_path).ok();
         }
 
         let unique_salts: std::collections::HashSet<_> = salts.into_iter().collect();
