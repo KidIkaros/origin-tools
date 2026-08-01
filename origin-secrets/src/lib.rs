@@ -51,6 +51,7 @@ mod tests {
             command: cli::Commands::Init(cli::InitArgs {
                 tier: "standard".to_string(),
                 no_prompt: true,
+                passphrase_file: None,
             }),
         };
 

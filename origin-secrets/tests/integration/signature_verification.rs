@@ -87,3 +87,27 @@ fn vault_integrity_tamper_detected() {
     let r = dispatch(cli(&vault, &["verify", "--vault-path", vault.to_str().unwrap()]));
     assert!(r.is_err(), "tampered vault must fail verification");
 }
+
+#[test]
+fn verify_share_binds_to_source_vault_not_default() {
+    // Regression: `verify --share` must verify against the share's OWN source
+    // vault (its grandparent dir), not the resolved default vault path. A share
+    // from vault A must not be checked against vault B's signing key.
+    let dir = tempfile::tempdir().unwrap();
+    let vault_a = dir.path().join("vaultA").join("secrets.vault");
+    std::fs::create_dir_all(vault_a.parent().unwrap()).unwrap();
+    let vault_b = dir.path().join("vaultB").join("secrets.vault");
+    std::fs::create_dir_all(vault_b.parent().unwrap()).unwrap();
+
+    init_and_shard(&vault_a, 2, 3);
+    init_and_shard(&vault_b, 2, 3);
+
+    let share_a = vault_a.parent().unwrap().join("shares").join("share_001.json");
+    // Verify share A using vault B as the resolved default path. The fix routes
+    // verification to share A's own source vault (vaultA), so it must pass.
+    let r = dispatch(cli(
+        &vault_b,
+        &["verify", "--share", share_a.to_str().unwrap()],
+    ));
+    assert!(r.is_ok(), "share must verify against its source vault even when default points elsewhere: {:?}", r);
+}

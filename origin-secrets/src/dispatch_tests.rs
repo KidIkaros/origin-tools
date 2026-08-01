@@ -19,6 +19,7 @@ fn test_dispatch_init() {
         command: Commands::Init(InitArgs {
             tier: "standard".to_string(),
             no_prompt: true,
+            passphrase_file: None,
         }),
     };
 
@@ -67,6 +68,7 @@ fn test_dispatch_export_routes_to_impl() {
         command: Commands::Init(InitArgs {
             tier: "standard".to_string(),
             no_prompt: true,
+            passphrase_file: None,
         }),
     };
     assert!(dispatch(cli_init).is_ok());

@@ -56,6 +56,10 @@ pub struct InitArgs {
     /// Skip passphrase confirmation (dangerous)
     #[arg(long)]
     pub no_prompt: bool,
+
+    /// Passphrase file path (read as the vault passphrase).
+    #[arg(short = 'p', long)]
+    pub passphrase_file: Option<PathBuf>,
 }
 
 #[derive(Parser, Clone, Debug)]

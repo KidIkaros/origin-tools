@@ -123,12 +123,15 @@ fn re_sign_for_recipient(
     };
     vault_data.audit_log.push(entry);
 
-    // Re-encrypt and write the vault back.
+    // Re-encrypt and write the vault back. Use a FRESH nonce: the key is
+    // unchanged (same passphrase + salt), but XChaCha20-Poly1305 must never
+    // reuse a (key, nonce) pair — reusing vault.nonce would leak the delta.
+    let reencrypt_nonce: [u8; 24] = rand::random();
     let re_enc = crate::crypto::encrypt_vault_data(
         &vault_data,
         &key,
         vault.salt,
-        vault.nonce,
+        reencrypt_nonce,
         vault.tier,
     )?;
     let updated = Vault {

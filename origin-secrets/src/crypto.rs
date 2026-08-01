@@ -244,6 +244,7 @@ mod integration_workflow_tests {
         let args = InitArgs {
             tier: "standard".to_string(),
             no_prompt: true,
+            passphrase_file: None,
         };
 
         if Path::new("~/.origin/secrets.vault").exists() {
@@ -272,6 +273,7 @@ mod integration_workflow_tests {
             let args = InitArgs {
                 tier: tier.to_string(),
                 no_prompt: true,
+                passphrase_file: None,
             };
 
             cmd_init(args.clone(), Path::new("~/.origin/secrets.vault")).ok();
@@ -297,6 +299,7 @@ mod integration_workflow_tests {
         let args = InitArgs {
             tier: "standard".to_string(),
             no_prompt: true,
+            passphrase_file: None,
         };
 
         cmd_init(args.clone(), Path::new("~/.origin/secrets.vault")).ok();
@@ -322,6 +325,7 @@ mod integration_workflow_tests {
             let args = InitArgs {
                 tier: "standard".to_string(),
                 no_prompt: true,
+                passphrase_file: None,
             };
 
             cmd_init(args, Path::new("~/.origin/secrets.vault")).ok();

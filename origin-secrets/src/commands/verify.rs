@@ -23,10 +23,22 @@ const SHARE_SIGNING_DOMAIN: &str = "origin-secrets/share/v1";
 ///   to structural validation when no vault is supplied.
 pub fn cmd_verify(args: VerifyArgs, vault_path: &Path, passphrase: &str) -> Result<(), Error> {
     if let Some(path) = &args.share {
-        // Prefer full verification against the resolved default vault if present.
-        if vault_path.exists() {
-            return verify_share(path, Some(vault_path), passphrase);
+        // The share's source vault lives beside its file: shares are written to
+        // `<vault_dir>/shares/share_<n>.json` (see cmd_shard), so the vault is
+        // the grandparent of the share file. Verify against that vault — NOT the
+        // resolved default path, which may belong to a different key and would
+        // cause a false tamper-positive. Falls back to structural-only when the
+        // source vault is absent.
+        let source_vault = path
+            .parent()
+            .and_then(|shares_dir| shares_dir.parent())
+            .map(|vault_dir| vault_dir.join("secrets.vault"));
+        if let Some(v) = &source_vault {
+            if v.exists() {
+                return verify_share(path, Some(v), passphrase);
+            }
         }
+        // No source vault present: standalone share -> structural validation.
         return verify_share(path, None, passphrase);
     }
 
@@ -94,7 +106,8 @@ fn verify_share(path: &Path, vault: Option<&Path>, passphrase: &str) -> Result<(
             share_number: share.share_number,
         });
     }
-    if share.threshold == 0 || share.threshold > share.total_shares {
+    if share.threshold == 0 || share.total_shares == 0 || share.threshold > share.total_shares {
+        // shares must support recovery: 1 <= threshold <= total
         return Err(Error::InvalidThreshold {
             threshold: share.threshold,
             total_shares: share.total_shares,

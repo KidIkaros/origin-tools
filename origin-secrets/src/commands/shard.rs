@@ -129,7 +129,18 @@ pub fn cmd_shard(
     };
     vault_data.audit_log.push(audit_entry);
 
-    let reencrypted = encrypt_vault_data(&vault_data, &key, vault.salt, vault.nonce, vault.tier)?;
+    // Re-encrypt the vault with a FRESH nonce. The key is unchanged (same
+    // passphrase + salt), but XChaCha20-Poly1305 is a stream cipher and the
+    // same (key, nonce) pair must never be reused — reusing vault.nonce would
+    // be deterministic nonce reuse and leak the plaintext delta.
+    let reencrypt_nonce: [u8; 24] = rand::random();
+    let reencrypted = encrypt_vault_data(
+        &vault_data,
+        &key,
+        vault.salt,
+        reencrypt_nonce,
+        vault.tier,
+    )?;
     let updated_vault = Vault {
         version: reencrypted.version,
         created_at: reencrypted.created_at,
@@ -180,6 +191,73 @@ mod tests {
         let vault_path = dir.join("secrets.vault");
         std::fs::write(&vault_path, serde_json::to_string_pretty(&vault).unwrap()).unwrap();
         (vault_path, passphrase.to_string(), salt, nonce, tier)
+    }
+
+    /// Regression: re-encrypting the vault (e.g. on `shard`) must NOT reuse the
+    /// original (key, nonce) pair. XChaCha20-Poly1305 is a stream cipher; reuse
+    /// leaks the plaintext delta between the two ciphertexts. We assert the
+    /// vault's nonce changes after a re-encrypt, and both versions still decrypt.
+    #[test]
+    fn test_shard_does_not_reuse_nonce() {
+        let dir = tempdir().unwrap();
+        let (vault_path, passphrase, _, _, _) = make_vault_in_dir(dir.path());
+
+        // Capture the nonce right after init (make_vault_in_dir wrote it).
+        let before: Vault = {
+            let raw = std::fs::read_to_string(&vault_path).unwrap();
+            serde_json::from_str(&raw).unwrap()
+        };
+        let nonce_before = before.nonce;
+
+        let args = ShardArgs {
+            key: "master".to_string(),
+            threshold: 2,
+            shares: 4,
+        };
+        cmd_shard(args, &vault_path, &passphrase).unwrap();
+
+        let after: Vault = {
+            let raw = std::fs::read_to_string(&vault_path).unwrap();
+            serde_json::from_str(&raw).unwrap()
+        };
+        let nonce_after = after.nonce;
+
+        // Nonce must have changed (fresh random nonce on re-encrypt).
+        assert_ne!(
+            nonce_before, nonce_after,
+            "vault nonce was reused on re-encrypt — nonce-reuse vulnerability"
+        );
+
+        // Both ciphertexts must be independently decryptable under the same key.
+        let key = derive_vault_key(passphrase.as_bytes(), &before.salt, before.tier).unwrap();
+        let dec_before = decrypt_vault_data(
+            &EncryptedVault {
+                version: before.version,
+                created_at: before.created_at.clone(),
+                tier: before.tier,
+                fingerprint: before.fingerprint.clone(),
+                salt: before.salt,
+                nonce: before.nonce,
+                ciphertext: before.ciphertext.clone(),
+            },
+            &key,
+        );
+        let dec_after = decrypt_vault_data(
+            &EncryptedVault {
+                version: after.version,
+                created_at: after.created_at.clone(),
+                tier: after.tier,
+                fingerprint: after.fingerprint.clone(),
+                salt: after.salt,
+                nonce: after.nonce,
+                ciphertext: after.ciphertext.clone(),
+            },
+            &key,
+        );
+        assert!(dec_before.is_ok(), "original ciphertext no longer decrypts");
+        assert!(dec_after.is_ok(), "re-encrypted ciphertext does not decrypt");
+        // The re-encrypted vault should carry the new Shard audit entry.
+        assert_eq!(dec_after.unwrap().audit_log.len(), 1);
     }
 
     #[test]
