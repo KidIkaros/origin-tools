@@ -62,8 +62,13 @@ pub fn derive_message_key(chain_key: &[u8; 32]) -> Result<([u8; 32], [u8; 32])> 
         .map_err(|e| ChannelError::Key(format!("message key HKDF failed: {e}")))?;
 
     let mut next_chain = [0u8; 32];
-    hkdf_sha3_256(chain_key, None, CHAIN_ADVANCE_LABEL.as_bytes(), &mut next_chain)
-        .map_err(|e| ChannelError::Key(format!("chain advance HKDF failed: {e}")))?;
+    hkdf_sha3_256(
+        chain_key,
+        None,
+        CHAIN_ADVANCE_LABEL.as_bytes(),
+        &mut next_chain,
+    )
+    .map_err(|e| ChannelError::Key(format!("chain advance HKDF failed: {e}")))?;
 
     Ok((msg_key, next_chain))
 }
@@ -72,8 +77,13 @@ pub fn derive_message_key(chain_key: &[u8; 32]) -> Result<([u8; 32], [u8; 32])> 
 /// then derive fresh send and receive chain keys.
 pub fn dh_ratchet(root_key: &[u8; 32], dh_shared_secret: &[u8; 32]) -> Result<RatchetKeys> {
     let mut okm = [0u8; 96];
-    hkdf_sha3_256(root_key, Some(dh_shared_secret), DH_RATCHET_LABEL.as_bytes(), &mut okm)
-        .map_err(|e| ChannelError::Key(format!("DH ratchet HKDF failed: {e}")))?;
+    hkdf_sha3_256(
+        root_key,
+        Some(dh_shared_secret),
+        DH_RATCHET_LABEL.as_bytes(),
+        &mut okm,
+    )
+    .map_err(|e| ChannelError::Key(format!("DH ratchet HKDF failed: {e}")))?;
 
     let mut new_root = [0u8; 32];
     let mut send_chain = [0u8; 32];

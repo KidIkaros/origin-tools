@@ -63,8 +63,8 @@ impl CookieSecret {
         input.extend_from_slice(source_ip.as_bytes());
         input.extend_from_slice(&now.to_be_bytes());
 
-        let full = origin_crypto_sdk::kdf::mac::hmac_sha3_256(&self.current, &input)
-            .unwrap_or([0u8; 32]);
+        let full =
+            origin_crypto_sdk::kdf::mac::hmac_sha3_256(&self.current, &input).unwrap_or([0u8; 32]);
         let mut cookie = [0u8; 16];
         cookie.copy_from_slice(&full[..16]);
         cookie
@@ -92,9 +92,7 @@ impl CookieSecret {
             let mut prev_input = Vec::with_capacity(source_ip.len() + 8);
             prev_input.extend_from_slice(source_ip.as_bytes());
             prev_input.extend_from_slice(&now.to_be_bytes());
-            if let Ok(full) =
-                origin_crypto_sdk::kdf::mac::hmac_sha3_256(prev_secret, &prev_input)
-            {
+            if let Ok(full) = origin_crypto_sdk::kdf::mac::hmac_sha3_256(prev_secret, &prev_input) {
                 let mut prev_expected = [0u8; 16];
                 prev_expected.copy_from_slice(&full[..16]);
                 if prev_expected.ct_eq(cookie).into() {

@@ -55,9 +55,8 @@ impl Negotiation {
         }
         let mut suites = Vec::with_capacity(count);
         for &b in &data[2..2 + count] {
-            let suite = CipherSuite::from_u8(b).ok_or_else(|| {
-                ChannelError::Negotiation(format!("unknown suite 0x{b:02x}"))
-            })?;
+            let suite = CipherSuite::from_u8(b)
+                .ok_or_else(|| ChannelError::Negotiation(format!("unknown suite 0x{b:02x}")))?;
             suites.push(suite);
         }
         if suites.is_empty() {
@@ -95,9 +94,7 @@ mod tests {
     #[test]
     fn select_mutual() {
         let offer = Negotiation::offer();
-        let selected = offer
-            .select(&[CipherSuite::XChaCha20Poly1305])
-            .unwrap();
+        let selected = offer.select(&[CipherSuite::XChaCha20Poly1305]).unwrap();
         assert_eq!(selected, CipherSuite::XChaCha20Poly1305);
     }
 

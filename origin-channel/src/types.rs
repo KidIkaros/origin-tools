@@ -100,7 +100,10 @@ mod tests {
     #[test]
     fn session_id_hex_and_display() {
         let id = SessionId([0xAB; 32]);
-        assert_eq!(id.as_hex(), "abababababababababababababababababababababababababababababababab");
+        assert_eq!(
+            id.as_hex(),
+            "abababababababababababababababababababababababababababababababab"
+        );
         // Display shows first 16 hex chars
         assert_eq!(format!("{id}"), "abababababababab");
     }

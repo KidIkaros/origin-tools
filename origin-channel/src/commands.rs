@@ -34,8 +34,8 @@ pub fn dispatch(cli: crate::cli::Cli) -> Result<(), String> {
 
 fn resolve_path(raw: &str) -> Result<PathBuf, String> {
     if let Some(rest) = raw.strip_prefix("~/") {
-        let home = std::env::var("HOME")
-            .map_err(|_| "$HOME unset; pass an absolute path".to_string())?;
+        let home =
+            std::env::var("HOME").map_err(|_| "$HOME unset; pass an absolute path".to_string())?;
         Ok(PathBuf::from(home).join(rest))
     } else {
         Ok(PathBuf::from(raw))
@@ -45,7 +45,10 @@ fn resolve_path(raw: &str) -> Result<PathBuf, String> {
 fn cmd_keygen(args: KeygenArgs) -> Result<(), String> {
     let path = resolve_path(&args.output)?;
     if path.exists() && !args.force {
-        return Err(format!("{} already exists (use --force to overwrite)", path.display()));
+        return Err(format!(
+            "{} already exists (use --force to overwrite)",
+            path.display()
+        ));
     }
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)
@@ -68,7 +71,10 @@ fn cmd_keygen(args: KeygenArgs) -> Result<(), String> {
 
     eprintln!("Generated X25519 keypair at {}", path.display());
     eprintln!("  public key:  {}", hex::encode(public.as_bytes()));
-    eprintln!("  fingerprint: {}", hex::encode(sha3_256(public.as_bytes())));
+    eprintln!(
+        "  fingerprint: {}",
+        hex::encode(sha3_256(public.as_bytes()))
+    );
     Ok(())
 }
 
@@ -111,16 +117,26 @@ fn cmd_demo(args: DemoArgs) -> Result<(), String> {
     let msg1 = alice_hs.start().map_err(|e| format!("msg1: {e}"))?;
     eprintln!("msg1 (Alice → Bob): {} bytes", msg1.to_bytes().len());
 
-    let msg2 = bob_hs.process_msg1(&msg1).map_err(|e| format!("msg2: {e}"))?;
+    let msg2 = bob_hs
+        .process_msg1(&msg1)
+        .map_err(|e| format!("msg2: {e}"))?;
     eprintln!("msg2 (Bob → Alice): {} bytes", msg2.to_bytes().len());
 
-    let msg3 = alice_hs.process_msg2(&msg2).map_err(|e| format!("msg3: {e}"))?;
+    let msg3 = alice_hs
+        .process_msg2(&msg2)
+        .map_err(|e| format!("msg3: {e}"))?;
     eprintln!("msg3 (Alice → Bob): {} bytes", msg3.to_bytes().len());
 
-    bob_hs.process_msg3(&msg3).map_err(|e| format!("finalize bob: {e}"))?;
+    bob_hs
+        .process_msg3(&msg3)
+        .map_err(|e| format!("finalize bob: {e}"))?;
 
-    let (alice_ss, alice_sid) = alice_hs.finalize().map_err(|e| format!("alice finalize: {e}"))?;
-    let (bob_ss, bob_sid) = bob_hs.finalize().map_err(|e| format!("bob finalize: {e}"))?;
+    let (alice_ss, alice_sid) = alice_hs
+        .finalize()
+        .map_err(|e| format!("alice finalize: {e}"))?;
+    let (bob_ss, bob_sid) = bob_hs
+        .finalize()
+        .map_err(|e| format!("bob finalize: {e}"))?;
 
     assert_eq!(alice_ss, bob_ss);
     assert_eq!(alice_sid, bob_sid);
@@ -149,15 +165,14 @@ fn cmd_demo(args: DemoArgs) -> Result<(), String> {
             .map_err(|e| format!("encrypt: {e}"))?;
 
         // Frame it
-        let frame = codec::encode_typed(MSG_DATA, &msg.to_bytes())
-            .map_err(|e| format!("encode: {e}"))?;
+        let frame =
+            codec::encode_typed(MSG_DATA, &msg.to_bytes()).map_err(|e| format!("encode: {e}"))?;
 
         // Bob receives, decodes, and decrypts (replay + usage limited)
         let (_tag, inner, _consumed) = codec::decode_typed(&frame)
             .map_err(|e| format!("decode: {e}"))?
             .ok_or("incomplete frame")?;
-        let recv_msg = ChannelMessage::from_bytes(&inner)
-            .map_err(|e| format!("parse: {e}"))?;
+        let recv_msg = ChannelMessage::from_bytes(&inner).map_err(|e| format!("parse: {e}"))?;
 
         let decrypted = bob_session
             .decrypt(&recv_msg)

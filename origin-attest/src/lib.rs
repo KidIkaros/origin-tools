@@ -29,10 +29,10 @@ pub mod revocation;
 pub mod trust;
 pub mod types;
 
+pub use audit::{AuditEntry, AuditLog};
+pub use cookie::{Cookie, CookieSecret};
 pub use error::{AttestError, Result};
-pub use types::{CapabilityClaim, Endorsement, EndorsementChain, EndorsementTier};
-pub use trust::{TrustGraph, TrustGraphConfig, TrustNode, EndorsementEdge};
 pub use registry::{AgentRecord, AgentRegistry};
 pub use revocation::{RevocationJournal, RevocationRecord};
-pub use audit::{AuditEntry, AuditLog};
-pub use cookie::{CookieSecret, Cookie};
+pub use trust::{EndorsementEdge, TrustGraph, TrustGraphConfig, TrustNode};
+pub use types::{CapabilityClaim, Endorsement, EndorsementChain, EndorsementTier};

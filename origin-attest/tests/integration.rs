@@ -5,9 +5,8 @@
 //! journal integrity → audit log → anti-DoS cookies.
 
 use origin_attest::{
-    AgentRecord, AgentRegistry, AuditEntry, AuditLog, CapabilityClaim, CookieSecret,
-    Endorsement, EndorsementChain, EndorsementTier, RevocationJournal, RevocationRecord,
-    TrustGraph,
+    AgentRecord, AgentRegistry, AuditEntry, AuditLog, CapabilityClaim, CookieSecret, Endorsement,
+    EndorsementChain, EndorsementTier, RevocationJournal, RevocationRecord, TrustGraph,
 };
 use origin_crypto_sdk::signing::postquantum::Falcon1024Signer;
 
@@ -36,9 +35,7 @@ fn sign_claim(claim: &mut CapabilityClaim, signer: &Falcon1024Signer) {
 
 /// Helper: sign an endorsement with the given signer.
 fn sign_endorsement(endorsement: &mut Endorsement, signer: &Falcon1024Signer) {
-    endorsement.falcon_signature = signer
-        .sign(&endorsement.signable_bytes())
-        .expect("sign");
+    endorsement.falcon_signature = signer.sign(&endorsement.signable_bytes()).expect("sign");
 }
 
 /// Helper: build a Tier-2 endorsement.
@@ -153,7 +150,10 @@ fn full_attestation_pipeline() {
     assert!(chain.verify_integrity().is_ok());
 
     // Chain links: second endorsement's prev_hash == first's hash
-    assert_eq!(chain.endorsements[1].prev_hash, chain.endorsements[0].hash());
+    assert_eq!(
+        chain.endorsements[1].prev_hash,
+        chain.endorsements[0].hash()
+    );
 
     // Tamper detection
     let mut tampered_chain = chain.clone();

@@ -31,7 +31,9 @@ fn cmd_stamp(args: StampArgs) -> Result<(), String> {
     let stamp = Stamp::from_file(path).map_err(|e| format!("stamp: {e}"))?;
     let json = stamp.to_json().map_err(|e| format!("serialize: {e}"))?;
 
-    let out_path = args.output.unwrap_or_else(|| format!("{}.stamp.json", args.file));
+    let out_path = args
+        .output
+        .unwrap_or_else(|| format!("{}.stamp.json", args.file));
     std::fs::write(&out_path, &json).map_err(|e| format!("write {out_path}: {e}"))?;
 
     println!("Stamped: {}", args.file);
@@ -115,7 +117,14 @@ fn cmd_unwatermark(args: UnwatermarkArgs) -> Result<(), String> {
     if let Some(label) = &wm.label {
         println!("  label:         {label}");
     }
-    println!("  integrity:     {}", if wm.verify(&original) { "✓ valid" } else { "✗ TAMPERED" });
+    println!(
+        "  integrity:     {}",
+        if wm.verify(&original) {
+            "✓ valid"
+        } else {
+            "✗ TAMPERED"
+        }
+    );
 
     if let Some(strip_path) = args.strip {
         std::fs::write(&strip_path, &original).map_err(|e| format!("write {strip_path}: {e}"))?;
@@ -316,13 +325,21 @@ mod tests {
         assert!(dispatch(cli).is_ok());
 
         // Unwatermark
-        let cli = Cli::parse_from(["origin-provenance", "unwatermark", wm_file.to_str().unwrap()]);
+        let cli = Cli::parse_from([
+            "origin-provenance",
+            "unwatermark",
+            wm_file.to_str().unwrap(),
+        ]);
         assert!(dispatch(cli).is_ok());
 
         // Scan
         let scan_dir = tempfile::tempdir().unwrap();
         std::fs::write(scan_dir.path().join("s.txt"), b"scan").unwrap();
-        let cli = Cli::parse_from(["origin-provenance", "scan", scan_dir.path().to_str().unwrap()]);
+        let cli = Cli::parse_from([
+            "origin-provenance",
+            "scan",
+            scan_dir.path().to_str().unwrap(),
+        ]);
         assert!(dispatch(cli).is_ok());
 
         // Check

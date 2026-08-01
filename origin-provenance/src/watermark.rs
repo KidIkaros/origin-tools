@@ -55,7 +55,9 @@ impl Watermark {
     pub fn embed(&self, content: &[u8]) -> Result<Vec<u8>> {
         let json = serde_json::to_string(self)
             .map_err(|e| ProvenanceError::InvalidStamp(e.to_string()))?;
-        let mut out = Vec::with_capacity(content.len() + MARKER_START.len() + json.len() + MARKER_END.len() + 1);
+        let mut out = Vec::with_capacity(
+            content.len() + MARKER_START.len() + json.len() + MARKER_END.len() + 1,
+        );
         out.extend_from_slice(content);
         out.extend_from_slice(MARKER_START.as_bytes());
         out.extend_from_slice(json.as_bytes());

@@ -66,10 +66,7 @@ impl RevocationJournal {
 
     /// Hash of the last record (zeros if empty).
     pub fn tip_hash(&self) -> [u8; 32] {
-        self.records
-            .last()
-            .map(|r| r.hash())
-            .unwrap_or([0u8; 32])
+        self.records.last().map(|r| r.hash()).unwrap_or([0u8; 32])
     }
 
     /// Check if a given hash has been revoked.

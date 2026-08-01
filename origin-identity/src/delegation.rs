@@ -189,7 +189,11 @@ impl SignedDelegation {
             parent_falcon_pk: hex::encode(parent_bundle.falcon1024_pk().as_bytes()),
             parent_ed25519_pk: hex::encode(parent_bundle.ed25519_pk().to_bytes()),
             signature: hex::encode(
-                [sig.ed25519_sig.to_bytes().as_slice(), sig.falcon_sig.as_bytes()].concat(),
+                [
+                    sig.ed25519_sig.to_bytes().as_slice(),
+                    sig.falcon_sig.as_bytes(),
+                ]
+                .concat(),
             ),
         })
     }
@@ -204,8 +208,8 @@ impl SignedDelegation {
             .map_err(|e| format!("invalid parent_ed25519_pk hex: {e}"))?;
         let falcon_pk_bytes = hex::decode(&self.parent_falcon_pk)
             .map_err(|e| format!("invalid parent_falcon_pk hex: {e}"))?;
-        let sig_bytes = hex::decode(&self.signature)
-            .map_err(|e| format!("invalid signature hex: {e}"))?;
+        let sig_bytes =
+            hex::decode(&self.signature).map_err(|e| format!("invalid signature hex: {e}"))?;
 
         // Ed25519 signature is 64 bytes, Falcon-1024 is the rest
         if sig_bytes.len() < 64 {
@@ -213,10 +217,9 @@ impl SignedDelegation {
         }
         let ed25519_sig = ed25519_dalek::Signature::from_slice(&sig_bytes[..64])
             .map_err(|e| format!("invalid ed25519 signature: {e}"))?;
-        let falcon_sig = origin_crypto_sdk::pqc::falcon1024::FalconSignature::from_bytes(
-            &sig_bytes[64..],
-        )
-        .map_err(|e| format!("invalid falcon signature: {e}"))?;
+        let falcon_sig =
+            origin_crypto_sdk::pqc::falcon1024::FalconSignature::from_bytes(&sig_bytes[64..])
+                .map_err(|e| format!("invalid falcon signature: {e}"))?;
 
         let ed25519_pk = ed25519_dalek::VerifyingKey::from_bytes(
             ed25519_pk_bytes
@@ -225,10 +228,9 @@ impl SignedDelegation {
                 .map_err(|_| "invalid ed25519 pk length")?,
         )
         .map_err(|e| format!("invalid ed25519 pk: {e}"))?;
-        let falcon_pk = origin_crypto_sdk::pqc::falcon1024::FalconPublicKey::from_bytes(
-            &falcon_pk_bytes,
-        )
-        .map_err(|e| format!("invalid falcon pk: {e}"))?;
+        let falcon_pk =
+            origin_crypto_sdk::pqc::falcon1024::FalconPublicKey::from_bytes(&falcon_pk_bytes)
+                .map_err(|e| format!("invalid falcon pk: {e}"))?;
 
         let sdk_sig = Ed25519Falcon1024 {
             ed25519_sig,
@@ -299,11 +301,11 @@ impl DelegationChain {
         // embedded key must match the authoritative key for that root.
         let root = &self.links[0];
         let root_parent_fp = &root.attestation.parent_fingerprint;
-        let authoritative_pk = trusted_roots.get(root_parent_fp).ok_or_else(|| {
-            format!("root parent {root_parent_fp} is not a trusted root")
-        })?;
-        let embedded_pk = hex::decode(&root.parent_falcon_pk)
-            .map_err(|e| format!("invalid root pk hex: {e}"))?;
+        let authoritative_pk = trusted_roots
+            .get(root_parent_fp)
+            .ok_or_else(|| format!("root parent {root_parent_fp} is not a trusted root"))?;
+        let embedded_pk =
+            hex::decode(&root.parent_falcon_pk).map_err(|e| format!("invalid root pk hex: {e}"))?;
         if &embedded_pk != authoritative_pk {
             return Err("root link public key does not match trusted root".into());
         }
@@ -416,7 +418,11 @@ impl DelegationRevocation {
 
         Ok(DelegationRevocation {
             signature: hex::encode(
-                [sig.ed25519_sig.to_bytes().as_slice(), sig.falcon_sig.as_bytes()].concat(),
+                [
+                    sig.ed25519_sig.to_bytes().as_slice(),
+                    sig.falcon_sig.as_bytes(),
+                ]
+                .concat(),
             ),
             ..revocation
         })
@@ -436,18 +442,17 @@ impl DelegationRevocation {
             .map_err(|e| format!("invalid parent_ed25519_pk hex: {e}"))?;
         let falcon_pk_bytes = hex::decode(&self.parent_falcon_pk)
             .map_err(|e| format!("invalid parent_falcon_pk hex: {e}"))?;
-        let sig_bytes = hex::decode(&self.signature)
-            .map_err(|e| format!("invalid signature hex: {e}"))?;
+        let sig_bytes =
+            hex::decode(&self.signature).map_err(|e| format!("invalid signature hex: {e}"))?;
 
         if sig_bytes.len() < 64 {
             return Err("signature too short".into());
         }
         let ed25519_sig = ed25519_dalek::Signature::from_slice(&sig_bytes[..64])
             .map_err(|e| format!("invalid ed25519 signature: {e}"))?;
-        let falcon_sig = origin_crypto_sdk::pqc::falcon1024::FalconSignature::from_bytes(
-            &sig_bytes[64..],
-        )
-        .map_err(|e| format!("invalid falcon signature: {e}"))?;
+        let falcon_sig =
+            origin_crypto_sdk::pqc::falcon1024::FalconSignature::from_bytes(&sig_bytes[64..])
+                .map_err(|e| format!("invalid falcon signature: {e}"))?;
 
         let ed25519_pk = ed25519_dalek::VerifyingKey::from_bytes(
             ed25519_pk_bytes
@@ -456,10 +461,9 @@ impl DelegationRevocation {
                 .map_err(|_| "invalid ed25519 pk length")?,
         )
         .map_err(|e| format!("invalid ed25519 pk: {e}"))?;
-        let falcon_pk = origin_crypto_sdk::pqc::falcon1024::FalconPublicKey::from_bytes(
-            &falcon_pk_bytes,
-        )
-        .map_err(|e| format!("invalid falcon pk: {e}"))?;
+        let falcon_pk =
+            origin_crypto_sdk::pqc::falcon1024::FalconPublicKey::from_bytes(&falcon_pk_bytes)
+                .map_err(|e| format!("invalid falcon pk: {e}"))?;
 
         let sdk_sig = Ed25519Falcon1024 {
             ed25519_sig,
@@ -541,7 +545,10 @@ mod tests {
 
         let chain = DelegationChain::new(vec![link1, link2]);
         let mut trusted = HashMap::new();
-        trusted.insert(root_fp.clone(), hex::decode(&chain.links[0].parent_falcon_pk).unwrap());
+        trusted.insert(
+            root_fp.clone(),
+            hex::decode(&chain.links[0].parent_falcon_pk).unwrap(),
+        );
 
         let effective = chain.verify(&trusted, 2000).unwrap();
         // Effective = human() ∩ (SIGN | STAMP) = SIGN
@@ -589,7 +596,10 @@ mod tests {
 
         let chain = DelegationChain::new(vec![link]);
         let mut trusted = HashMap::new();
-        trusted.insert(root_fp, hex::decode(&chain.links[0].parent_falcon_pk).unwrap());
+        trusted.insert(
+            root_fp,
+            hex::decode(&chain.links[0].parent_falcon_pk).unwrap(),
+        );
 
         // Verify at time 5000 — past expiry (1000 + 3600 = 4600)
         assert!(chain.verify(&trusted, 5000).is_err());
@@ -630,7 +640,10 @@ mod tests {
 
         let chain = DelegationChain::new(vec![link1, link2]);
         let mut trusted = HashMap::new();
-        trusted.insert(root_fp, hex::decode(&chain.links[0].parent_falcon_pk).unwrap());
+        trusted.insert(
+            root_fp,
+            hex::decode(&chain.links[0].parent_falcon_pk).unwrap(),
+        );
 
         assert!(chain.verify(&trusted, 2000).is_err());
     }

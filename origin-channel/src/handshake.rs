@@ -62,11 +62,7 @@ impl Handshake {
     /// `static_secret`: our long-term X25519 identity key.
     /// `peer_static_pk`: the peer's long-term public key (required for IK).
     /// `is_initiator`: true if we start the handshake.
-    pub fn new(
-        static_secret: StaticSecret,
-        peer_static_pk: PublicKey,
-        is_initiator: bool,
-    ) -> Self {
+    pub fn new(static_secret: StaticSecret, peer_static_pk: PublicKey, is_initiator: bool) -> Self {
         Handshake {
             static_secret,
             ephemeral_secret: None,
@@ -300,11 +296,7 @@ mod tests {
         let (_carol_static, carol_pk) = make_keypair();
 
         // Alice-Bob handshake
-        let mut ab_alice = Handshake::new(
-            random_static_secret(),
-            bob_pk,
-            true,
-        );
+        let mut ab_alice = Handshake::new(random_static_secret(), bob_pk, true);
         let mut ab_bob = Handshake::new(bob_static, alice_pk, false);
         let m1 = ab_alice.start().unwrap();
         let m2 = ab_bob.process_msg1(&m1).unwrap();
@@ -313,11 +305,7 @@ mod tests {
         let (ss_ab, _) = ab_alice.finalize().unwrap();
 
         // Alice-Carol handshake (different ephemeral, different peer)
-        let mut ac_alice = Handshake::new(
-            random_static_secret(),
-            carol_pk,
-            true,
-        );
+        let mut ac_alice = Handshake::new(random_static_secret(), carol_pk, true);
         let m1c = ac_alice.start().unwrap();
         // We can't complete without Carol, but the secret would differ
         // Just verify the handshake state is different
