@@ -95,7 +95,12 @@ pub fn cmd_recover(args: RecoverArgs, new_passphrase: &str, json: bool) -> Resul
     for share in &shares {
         let sig: Ed25519Falcon1024 = HybridSignature::to_sdk(&share.signature)
             .map_err(|e| Error::SignatureVerificationFailed(format!("{e:?}")))?;
-        Ed25519Falcon1024::verify(ed_pk, falcon_pk, &share.share_data, &sig).map_err(|_| {
+        // Exported shares sign share_data + recipient; original shares sign share_data only.
+        let mut msg = share.share_data.clone();
+        if let Some(recipient) = &share.recipient {
+            msg.extend_from_slice(recipient.as_bytes());
+        }
+        Ed25519Falcon1024::verify(ed_pk, falcon_pk, &msg, &sig).map_err(|_| {
             Error::ShareVerificationFailed {
                 share_number: share.share_number,
                 details: "hybrid signature mismatch".to_string(),
