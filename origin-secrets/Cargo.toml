@@ -29,3 +29,33 @@ ed25519-dalek = { workspace = true }
 
 [dev-dependencies]
 tempfile = "3"
+
+# Integration and security tests live in subdirectories; cargo only auto-discovers
+# top-level tests/*.rs, so we declare each explicitly to preserve the layout.
+[[test]]
+name = "integration_init_shard_recover"
+path = "tests/integration/init_shard_recover.rs"
+
+[[test]]
+name = "integration_threshold_validation"
+path = "tests/integration/threshold_validation.rs"
+
+[[test]]
+name = "integration_signature_verification"
+path = "tests/integration/signature_verification.rs"
+
+[[test]]
+name = "integration_compliance_export"
+path = "tests/integration/compliance_export.rs"
+
+[[test]]
+name = "security_passphrase_validation"
+path = "tests/security/passphrase_validation.rs"
+
+[[test]]
+name = "security_vault_tampering"
+path = "tests/security/vault_tampering.rs"
+
+[[test]]
+name = "security_share_tampering"
+path = "tests/security/share_tampering.rs"

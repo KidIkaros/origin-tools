@@ -5,20 +5,29 @@ use crate::crypto::{decrypt_vault_data, derive_vault_key, EncryptedVault};
 use crate::error::Error;
 use crate::share::Share;
 use crate::vault::Vault;
+use origin_crypto_sdk::signing::hybrid::{Ed25519Falcon1024, HybridSigningKeyBundle};
 use std::path::Path;
+
+/// Domain used when deriving the share-signing bundle from the master seed.
+/// Must match the domain used in `shard`/`recover`/`export`.
+const SHARE_SIGNING_DOMAIN: &str = "origin-secrets/share/v1";
 
 /// Verify a vault or share.
 ///
 /// - `--vault-path`: decrypts the vault using the supplied passphrase,
 ///   re-derives its fingerprint, and confirms the audit log is present.
 ///   Returns `Ok(())` when integrity holds, otherwise an error.
-/// - `--share`: performs structural validation of a share file (parse,
-///   non-empty data, well-formed hybrid signature, embedded threshold/total).
-///   Full cryptographic verification of a standalone share requires the master
-///   seed, which is only available after `recover`; report structural status.
+/// - `--share`: performs full hybrid-signature verification of a share when a
+///   vault is available (the master seed lets us derive the signing bundle and
+///   check the Ed25519 + Falcon-1024 signature over the share data). Falls back
+///   to structural validation when no vault is supplied.
 pub fn cmd_verify(args: VerifyArgs, vault_path: &Path, passphrase: &str) -> Result<(), Error> {
     if let Some(path) = &args.share {
-        return verify_share(path);
+        // Prefer full verification against the resolved default vault if present.
+        if vault_path.exists() {
+            return verify_share(path, Some(vault_path), passphrase);
+        }
+        return verify_share(path, None, passphrase);
     }
 
     if let Some(path) = &args.vault_path {
@@ -63,11 +72,17 @@ fn verify_vault(path: &Path, passphrase: &str) -> Result<(), Error> {
     Ok(())
 }
 
-/// Structural validation of a share file.
-fn verify_share(path: &Path) -> Result<(), Error> {
+/// Structural + (when a vault is available) cryptographic validation of a share.
+///
+/// When `vault` is `Some`, the master seed is recovered from the vault and used
+/// to derive the share-signing bundle; the Ed25519 + Falcon-1024 hybrid
+/// signature over the share data is then verified. When `vault` is `None`, only
+/// structural validation is performed (a standalone share cannot be
+/// cryptographically verified without the master seed).
+fn verify_share(path: &Path, vault: Option<&Path>, passphrase: &str) -> Result<(), Error> {
     let raw = std::fs::read_to_string(path).map_err(|_| Error::ShareNotFound { share_number: 0 })?;
     let share: Share =
-        serde_json::from_str(&raw).map_err(|_| Error::ShareCorrupted { share_number: 0 })?;
+        serde_json::from_str(&raw).map_err(|e| Error::ShareCorrupted { share_number: 0 })?;
 
     if share.share_data.is_empty() {
         return Err(Error::ShareCorrupted {
@@ -86,6 +101,28 @@ fn verify_share(path: &Path) -> Result<(), Error> {
         });
     }
 
+    // Full cryptographic verification when a vault is available.
+    if let Some(vault_path) = vault {
+        let bundle = derive_share_signer(vault_path, passphrase, share.share_number)?;
+        Ed25519Falcon1024::verify(
+            bundle.ed25519_pk(),
+            bundle.falcon1024_pk(),
+            &share.share_data,
+            &share.signature.to_sdk().map_err(|e| {
+                Error::SignatureVerificationFailed(format!("{e:?}"))
+            })?,
+        )
+        .map_err(|_| Error::ShareVerificationFailed {
+            share_number: share.share_number,
+            details: "hybrid signature invalid".to_string(),
+        })?;
+        println!(
+            "Share {} cryptographically verified (Ed25519 + Falcon-1024).",
+            share.share_number
+        );
+        return Ok(());
+    }
+
     println!(
         "Share {} structurally valid: threshold {}, total {}, {} bytes, fingerprint {}.",
         share.share_number,
@@ -94,8 +131,38 @@ fn verify_share(path: &Path) -> Result<(), Error> {
         share.share_data.len(),
         share.fingerprint
     );
-    println!("Cryptographic verification requires `recover` with K shares.");
+    println!("Cryptographic verification skipped (no vault supplied); use `recover` for full check.");
     Ok(())
+}
+
+/// Derive the share-signing bundle from a vault's master seed for verification.
+fn derive_share_signer(
+    vault_path: &Path,
+    passphrase: &str,
+    share_number: u8,
+) -> Result<std::sync::Arc<HybridSigningKeyBundle>, Error> {
+    let raw = std::fs::read_to_string(vault_path)
+        .map_err(|_| Error::VaultNotFound(vault_path.to_path_buf()))?;
+    let vault: Vault =
+        serde_json::from_str(&raw).map_err(|e| Error::VaultCorrupted(e.to_string()))?;
+    let key = derive_vault_key(passphrase.as_bytes(), &vault.salt, vault.tier)?;
+    let encrypted = EncryptedVault {
+        version: vault.version,
+        created_at: vault.created_at.clone(),
+        tier: vault.tier,
+        fingerprint: vault.fingerprint.clone(),
+        salt: vault.salt,
+        nonce: vault.nonce,
+        ciphertext: vault.ciphertext.clone(),
+    };
+    let vault_data = decrypt_vault_data(&encrypted, &key)?;
+    let seed: &[u8; 32] = vault_data
+        .master_seed
+        .as_slice()
+        .try_into()
+        .map_err(|_| Error::CryptoError("vault master seed wrong length".to_string()))?;
+    HybridSigningKeyBundle::from_seed_cached(seed, SHARE_SIGNING_DOMAIN)
+        .map_err(|e| Error::SignatureVerificationFailed(format!("{e:?} (share {share_number})")))
 }
 
 #[cfg(test)]

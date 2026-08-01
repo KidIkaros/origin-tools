@@ -250,7 +250,7 @@ mod integration_workflow_tests {
             std::fs::remove_file("~/.origin/secrets.vault").ok();
         }
 
-        cmd_init(args).ok();
+        cmd_init(args, Path::new("~/.origin/secrets.vault")).ok();
 
         let vault_json = std::fs::read_to_string("~/.origin/secrets.vault").unwrap();
         let vault: crate::vault::Vault = serde_json::from_str(&vault_json).unwrap();
@@ -274,7 +274,7 @@ mod integration_workflow_tests {
                 no_prompt: true,
             };
 
-            cmd_init(args.clone()).ok();
+            cmd_init(args.clone(), Path::new("~/.origin/secrets.vault")).ok();
             let vault_json = std::fs::read_to_string("~/.origin/secrets.vault").unwrap();
             let vault: crate::vault::Vault = serde_json::from_str(&vault_json).unwrap();
             assert_eq!(
@@ -299,8 +299,8 @@ mod integration_workflow_tests {
             no_prompt: true,
         };
 
-        cmd_init(args.clone()).ok();
-        let result = cmd_init(args);
+        cmd_init(args.clone(), Path::new("~/.origin/secrets.vault")).ok();
+        let result = cmd_init(args, Path::new("~/.origin/secrets.vault"));
         assert!(matches!(
             result.unwrap_err(),
             crate::error::Error::VaultAlreadyExists(_)
@@ -324,7 +324,7 @@ mod integration_workflow_tests {
                 no_prompt: true,
             };
 
-            cmd_init(args).ok();
+            cmd_init(args, Path::new("~/.origin/secrets.vault")).ok();
             let vault_json = std::fs::read_to_string("~/.origin/secrets.vault").unwrap();
             let vault: crate::vault::Vault = serde_json::from_str(&vault_json).unwrap();
 

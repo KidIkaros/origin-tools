@@ -27,7 +27,7 @@ pub fn dispatch(cli: Cli) -> Result<(), Error> {
     let passphrase = passphrase.trim_end_matches('\n');
 
     match cli.command {
-        cli::Commands::Init(args) => commands::init::cmd_init(args),
+        cli::Commands::Init(args) => commands::init::cmd_init(args, &cli.vault),
         cli::Commands::Shard(args) => commands::shard::cmd_shard(args, &cli.vault, passphrase).map(|_| ()),
         cli::Commands::ExportShare(args) => commands::export::cmd_export_share(args, &cli.vault, passphrase).map(|_| ()),
         cli::Commands::Recover(args) => commands::recover::cmd_recover(args, passphrase).map(|_| ()),

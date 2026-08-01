@@ -6,53 +6,83 @@ use crate::error::Error;
 use clap::Parser;
 use std::path::PathBuf;
 
-fn make_cli(command: Commands) -> Cli {
-    Cli {
-        vault: "/tmp/test.vault".into(),
+#[test]
+fn test_dispatch_init() {
+    let vault = std::env::temp_dir().join("origin-secrets-dispatch-init-test.vault");
+    let _ = std::fs::remove_file(&vault);
+    let cli = Cli {
+        vault: vault.clone(),
         passphrase_file: None,
         config: "/tmp/config.toml".into(),
         verbose: false,
         quiet: false,
-        command,
-    }
-}
-
-#[test]
-fn test_dispatch_init() {
-    let cli = make_cli(Commands::Init(InitArgs {
-        tier: "standard".to_string(),
-        no_prompt: true,
-    }));
+        command: Commands::Init(InitArgs {
+            tier: "standard".to_string(),
+            no_prompt: true,
+        }),
+    };
 
     let result = dispatch(cli);
     assert!(!matches!(result, Err(Error::NotImplemented(_))));
+    let _ = std::fs::remove_file(&vault);
 }
 
 #[test]
 fn test_dispatch_shard_routes_to_impl() {
     // shard is implemented; dispatch should reach cmd_shard and fail on the
     // missing default vault (not return NotImplemented).
-    let cli = make_cli(Commands::Shard(ShardArgs {
-        key: "master".to_string(),
-        threshold: 3,
-        shares: 5,
-    }));
+    let cli = Cli {
+        vault: "/tmp/origin-secrets-missing-vault-do-not-create".into(),
+        passphrase_file: None,
+        config: "/tmp/config.toml".into(),
+        verbose: false,
+        quiet: false,
+        command: Commands::Shard(ShardArgs {
+            key: "master".to_string(),
+            threshold: 3,
+            shares: 5,
+        }),
+    };
 
     let result = dispatch(cli);
     assert!(!matches!(result, Err(Error::NotImplemented(_))));
-    // Default vault path does not exist in test env -> VaultNotFound.
+    // Vault path does not exist -> VaultNotFound.
     assert!(matches!(result, Err(Error::VaultNotFound(_))));
 }
 
 #[test]
 fn test_dispatch_export_routes_to_impl() {
-    // export-share is implemented; dispatch should reach cmd_export_share and
-    // fail on the missing share file (not return NotImplemented).
-    let cli = make_cli(Commands::ExportShare(ExportArgs {
-        share: 1,
-        out: "/tmp/share.json".into(),
-        recipient: Some("alice".to_string()),
-    }));
+    // export-share is implemented; dispatch with a valid vault but a missing
+    // share number should reach cmd_export_share and return ShareNotFound
+    // (not NotImplemented).
+    let dir = std::env::temp_dir().join(format!("origin-secrets-export-test-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let vault = dir.join("secrets.vault");
+    let cli_init = Cli {
+        vault: vault.clone(),
+        passphrase_file: None,
+        config: "/tmp/config.toml".into(),
+        verbose: false,
+        quiet: false,
+        command: Commands::Init(InitArgs {
+            tier: "standard".to_string(),
+            no_prompt: true,
+        }),
+    };
+    assert!(dispatch(cli_init).is_ok());
+
+    let cli = Cli {
+        vault: vault.clone(),
+        passphrase_file: None,
+        config: "/tmp/config.toml".into(),
+        verbose: false,
+        quiet: false,
+        command: Commands::ExportShare(ExportArgs {
+            share: 1,
+            out: dir.join("share.json"),
+            recipient: Some("alice".to_string()),
+        }),
+    };
 
     let result = dispatch(cli);
     assert!(!matches!(result, Err(Error::NotImplemented(_))));
@@ -63,12 +93,19 @@ fn test_dispatch_export_routes_to_impl() {
 fn test_dispatch_recover_routes_to_impl() {
     // recover is implemented; dispatch should reach cmd_recover and fail on the
     // missing share files (not return NotImplemented).
-    let cli = make_cli(Commands::Recover(RecoverArgs {
-        shares: vec!["/tmp/s1".into(), "/tmp/s2".into()],
-        out: None,
-        vault_out: None,
-        tier: "standard".to_string(),
-    }));
+    let cli = Cli {
+        vault: "/tmp/origin-secrets-missing-vault-do-not-create".into(),
+        passphrase_file: None,
+        config: "/tmp/config.toml".into(),
+        verbose: false,
+        quiet: false,
+        command: Commands::Recover(RecoverArgs {
+            shares: vec!["/tmp/s1".into(), "/tmp/s2".into()],
+            out: None,
+            vault_out: None,
+            tier: "standard".to_string(),
+        }),
+    };
 
     let result = dispatch(cli);
     assert!(!matches!(result, Err(Error::NotImplemented(_))));
@@ -79,11 +116,18 @@ fn test_dispatch_recover_routes_to_impl() {
 fn test_dispatch_verify_routes_to_impl() {
     // verify is implemented; dispatch with a nonexistent vault path should reach
     // cmd_verify and return VaultNotFound (not NotImplemented).
-    let cli = make_cli(Commands::Verify(VerifyArgs {
-        vault_path: Some("/tmp/vault.json".into()),
-        share: None,
-        recovery_log: None,
-    }));
+    let cli = Cli {
+        vault: "/tmp/origin-secrets-missing-vault-do-not-create".into(),
+        passphrase_file: None,
+        config: "/tmp/config.toml".into(),
+        verbose: false,
+        quiet: false,
+        command: Commands::Verify(VerifyArgs {
+            vault_path: Some("/tmp/vault.json".into()),
+            share: None,
+            recovery_log: None,
+        }),
+    };
 
     let result = dispatch(cli);
     assert!(!matches!(result, Err(Error::NotImplemented(_))));
@@ -94,17 +138,24 @@ fn test_dispatch_verify_routes_to_impl() {
 fn test_dispatch_audit_routes_to_impl() {
     // audit is implemented; dispatch with a nonexistent vault path should reach
     // cmd_audit and return VaultNotFound (not NotImplemented).
-    let cli = make_cli(Commands::Audit(AuditArgs {
-        show_recovery_log: false,
-        show_all_logs: false,
-        filter_key: None,
-        filter_user: None,
-        filter_start: None,
-        filter_end: None,
-        export_soc2: None,
-        export_pcidss: None,
-        export_hipaa: None,
-    }));
+    let cli = Cli {
+        vault: "/tmp/origin-secrets-missing-vault-do-not-create".into(),
+        passphrase_file: None,
+        config: "/tmp/config.toml".into(),
+        verbose: false,
+        quiet: false,
+        command: Commands::Audit(AuditArgs {
+            show_recovery_log: false,
+            show_all_logs: false,
+            filter_key: None,
+            filter_user: None,
+            filter_start: None,
+            filter_end: None,
+            export_soc2: None,
+            export_pcidss: None,
+            export_hipaa: None,
+        }),
+    };
 
     let result = dispatch(cli);
     assert!(!matches!(result, Err(Error::NotImplemented(_))));
