@@ -21,6 +21,11 @@ pub use error::Error;
 /// Dispatch CLI command to appropriate handler
 pub fn dispatch(cli: Cli) -> Result<(), Error> {
     match cli.command {
+        // Generating shell completions never touches a vault or passphrase.
+        cli::Commands::Completions(args) => {
+            crate::commands::completions::cmd_completions(args);
+            Ok(())
+        }
         // `init` owns its passphrase policy (refuses without a source, since
         // interactive prompting is not yet implemented). It reads the global
         // -p/--passphrase-file when supplied.
@@ -55,7 +60,7 @@ pub fn dispatch(cli: Cli) -> Result<(), Error> {
                 cli::Commands::Audit(args) => {
                     commands::audit::cmd_audit(args, &cli.vault, passphrase)
                 }
-                cli::Commands::Init(_) => unreachable!(),
+                cli::Commands::Init(_) | cli::Commands::Completions(_) => unreachable!(),
             }
         }
     }
@@ -67,21 +72,18 @@ mod tests {
 
     #[test]
     fn test_dispatch_init_command() {
+        let dir = tempfile::tempdir().unwrap();
         let cli = Cli {
-            vault: "/tmp/test.vault".into(),
+            vault: dir.path().join("test.vault"),
             passphrase_file: None,
-            config: "/tmp/config.toml".into(),
-            verbose: false,
-            quiet: false,
             command: cli::Commands::Init(cli::InitArgs {
                 tier: "standard".to_string(),
-                no_prompt: true,
             }),
         };
 
         let result = dispatch(cli);
-        // Should succeed now (creates vault at default path)
-        // Note: May fail if vault already exists from previous test
-        println!("Result: {:?}", result);
+        // Without -p the dispatcher must refuse (PassphraseRequired), not create
+        // a vault with a weak default.
+        assert!(matches!(result, Err(Error::PassphraseRequired)));
     }
 }

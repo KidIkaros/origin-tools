@@ -82,6 +82,29 @@ pub enum Error {
     NotImplemented(String),
 }
 
+impl Error {
+    /// Process exit code for this error, by category:
+    ///   1 = internal/runtime failure (crypto, I/O, corruption, unexpected)
+    ///   2 = usage error (passphrase missing/weak) — fix the invocation
+    ///   3 = not-found / input error (vault/share/key missing, bad threshold)
+    pub fn exit_code(&self) -> i32 {
+        match self {
+            Error::PassphraseRequired
+            | Error::PassphraseTooWeak { .. }
+            | Error::PassphraseMismatch => 2,
+            Error::VaultNotFound(_)
+            | Error::VaultAlreadyExists(_)
+            | Error::ShareNotFound { .. }
+            | Error::KeyNotFound { .. }
+            | Error::KeyAlreadyExists { .. }
+            | Error::AuditLogNotFound
+            | Error::InsufficientShares { .. }
+            | Error::InvalidThreshold { .. } => 3,
+            _ => 1,
+        }
+    }
+}
+
 impl From<std::io::Error> for Error {
     fn from(err: std::io::Error) -> Self {
         Error::IoError(err.to_string())

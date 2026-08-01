@@ -44,7 +44,9 @@ command refuses to run (returning `PassphraseRequired`) when `-p` is absent.
 ### 1. Initialize a vault (Week 1)
 
 ```bash
-origin-secrets -V ./secrets.vault init --tier standard --no-prompt
+# Pass the passphrase via a file (required for every command)
+echo "correct horse battery staple" > ./pw.txt
+origin-secrets -V ./secrets.vault -p ./pw.txt init --tier standard
 ```
 
 Creates an encrypted vault, derives a master seed, and prints a fingerprint.

@@ -17,6 +17,7 @@ origin-identity = { path = "../origin-identity" }
 origin-pass = { path = "../origin-pass" }
 origin-shard = { path = "../origin-shard" }
 clap = { workspace = true }
+clap_complete = "4"
 serde = { workspace = true }
 serde_json = { workspace = true }
 hex = { workspace = true }

@@ -24,12 +24,8 @@ fn test_dispatch_init() {
     let cli = Cli {
         vault: vault.clone(),
         passphrase_file: None,
-        config: "/tmp/config.toml".into(),
-        verbose: false,
-        quiet: false,
         command: Commands::Init(InitArgs {
             tier: "standard".to_string(),
-            no_prompt: true,
         }),
     };
 
@@ -48,9 +44,6 @@ fn test_dispatch_requires_passphrase_without_flag() {
     let cli = Cli {
         vault: "/tmp/origin-secrets-missing-vault-do-not-create".into(),
         passphrase_file: None,
-        config: "/tmp/config.toml".into(),
-        verbose: false,
-        quiet: false,
         command: Commands::Shard(ShardArgs {
             key: "master".to_string(),
             threshold: 3,
@@ -70,9 +63,6 @@ fn test_dispatch_shard_routes_to_impl() {
     let cli = Cli {
         vault: "/tmp/origin-secrets-missing-vault-do-not-create".into(),
         passphrase_file: Some(passphrase_file()),
-        config: "/tmp/config.toml".into(),
-        verbose: false,
-        quiet: false,
         command: Commands::Shard(ShardArgs {
             key: "master".to_string(),
             threshold: 3,
@@ -104,12 +94,8 @@ fn test_dispatch_export_routes_to_impl() {
     let cli_init = Cli {
         vault: vault.clone(),
         passphrase_file: Some(passphrase_file()),
-        config: "/tmp/config.toml".into(),
-        verbose: false,
-        quiet: false,
         command: Commands::Init(InitArgs {
             tier: "standard".to_string(),
-            no_prompt: true,
         }),
     };
     assert!(dispatch(cli_init).is_ok());
@@ -117,9 +103,6 @@ fn test_dispatch_export_routes_to_impl() {
     let cli = Cli {
         vault: vault.clone(),
         passphrase_file: Some(passphrase_file()),
-        config: "/tmp/config.toml".into(),
-        verbose: false,
-        quiet: false,
         command: Commands::ExportShare(ExportArgs {
             share: 1,
             out: dir.join("share.json"),
@@ -145,9 +128,6 @@ fn test_dispatch_recover_routes_to_impl() {
     let cli = Cli {
         vault: "/tmp/origin-secrets-missing-vault-do-not-create".into(),
         passphrase_file: Some(passphrase_file()),
-        config: "/tmp/config.toml".into(),
-        verbose: false,
-        quiet: false,
         command: Commands::Recover(RecoverArgs {
             shares: vec!["/tmp/s1".into(), "/tmp/s2".into()],
             out: None,
@@ -174,9 +154,6 @@ fn test_dispatch_verify_routes_to_impl() {
     let cli = Cli {
         vault: "/tmp/origin-secrets-missing-vault-do-not-create".into(),
         passphrase_file: Some(passphrase_file()),
-        config: "/tmp/config.toml".into(),
-        verbose: false,
-        quiet: false,
         command: Commands::Verify(VerifyArgs {
             vault_path: Some("/tmp/vault.json".into()),
             share: None,
@@ -202,9 +179,6 @@ fn test_dispatch_audit_routes_to_impl() {
     let cli = Cli {
         vault: "/tmp/origin-secrets-missing-vault-do-not-create".into(),
         passphrase_file: Some(passphrase_file()),
-        config: "/tmp/config.toml".into(),
-        verbose: false,
-        quiet: false,
         command: Commands::Audit(AuditArgs {
             show_recovery_log: false,
             show_all_logs: false,
@@ -238,14 +212,12 @@ fn test_cli_parsing_init() {
         "init",
         "--tier",
         "sovereign",
-        "--no-prompt",
     ]);
 
     assert_eq!(cli.vault, PathBuf::from("/tmp/v.json"));
     match cli.command {
         Commands::Init(args) => {
             assert_eq!(args.tier, "sovereign");
-            assert!(args.no_prompt);
         }
         _ => panic!("Expected Init command"),
     }
@@ -347,7 +319,6 @@ fn test_cli_parsing_global_passphrase_flag() {
         "init",
         "--tier",
         "standard",
-        "--no-prompt",
     ]);
     assert_eq!(cli.passphrase_file, Some(PathBuf::from("/tmp/pw.txt")));
 }

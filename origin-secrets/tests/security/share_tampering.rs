@@ -22,7 +22,7 @@ fn cli(vault: &Path, args: &[&str]) -> Cli {
 }
 
 fn init_and_shard(vault: &Path) {
-    dispatch(cli(vault, &["init", "--tier", "standard", "--no-prompt"])).unwrap();
+    dispatch(cli(vault, &["init", "--tier", "standard"])).unwrap();
     dispatch(cli(
         vault,
         &[

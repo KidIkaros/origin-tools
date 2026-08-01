@@ -11,21 +11,10 @@ pub struct Cli {
     #[arg(short = 'V', long, default_value = "~/.origin/secrets.vault")]
     pub vault: PathBuf,
 
-    /// Passphrase file path
+    /// Passphrase file path. Required for every command — there is no built-in
+    /// default, so a command without -p fails with PassphraseRequired.
     #[arg(short = 'p', long)]
     pub passphrase_file: Option<PathBuf>,
-
-    /// Config file path
-    #[arg(short = 'c', long, default_value = "~/.origin/config.toml")]
-    pub config: PathBuf,
-
-    /// Verbose output
-    #[arg(short = 'v', long)]
-    pub verbose: bool,
-
-    /// Quiet mode (errors only)
-    #[arg(short = 'q', long)]
-    pub quiet: bool,
 
     #[command(subcommand)]
     pub command: Commands,
@@ -34,17 +23,38 @@ pub struct Cli {
 #[derive(Subcommand, Debug)]
 pub enum Commands {
     /// Initialize a new vault
+    #[command(
+        after_help = "Example:\n  origin-secrets -V ./secrets.vault -p ./pw.txt init --tier standard"
+    )]
     Init(InitArgs),
     /// Shard a master key
+    #[command(
+        after_help = "Example:\n  origin-secrets -V ./secrets.vault -p ./pw.txt shard --key master --threshold 3 --shares 5"
+    )]
     Shard(ShardArgs),
     /// Export a share to file
+    #[command(
+        after_help = "Example:\n  origin-secrets -V ./secrets.vault -p ./pw.txt export-share --share 1 -o share1.json --recipient alice"
+    )]
     ExportShare(ExportArgs),
     /// Recover master key from shares
+    #[command(
+        after_help = "Example:\n  origin-secrets -p ./pw.txt recover share_001.json share_002.json share_003.json -o seed.hex"
+    )]
     Recover(RecoverArgs),
     /// Verify signatures/integrity
+    #[command(
+        after_help = "Example:\n  origin-secrets -V ./secrets.vault -p ./pw.txt verify --share share_001.json"
+    )]
     Verify(VerifyArgs),
     /// View/export audit logs
+    #[command(
+        after_help = "Example:\n  origin-secrets -V ./secrets.vault -p ./pw.txt audit --export-soc2 soc2.json"
+    )]
     Audit(AuditArgs),
+    /// Generate shell completions
+    #[command(about = "Generate shell completion scripts (bash/zsh/fish)")]
+    Completions(CompletionsArgs),
 }
 
 #[derive(Parser, Clone, Debug)]
@@ -52,10 +62,6 @@ pub struct InitArgs {
     /// Argon2id memory tier
     #[arg(long, default_value = "standard")]
     pub tier: String,
-
-    /// Skip passphrase confirmation (dangerous)
-    #[arg(long)]
-    pub no_prompt: bool,
 }
 
 #[derive(Parser, Clone, Debug)]
@@ -162,4 +168,11 @@ pub struct AuditArgs {
     /// Export HIPAA evidence
     #[arg(long)]
     pub export_hipaa: Option<PathBuf>,
+}
+
+#[derive(Parser, Clone, Debug)]
+pub struct CompletionsArgs {
+    /// Shell to generate completions for
+    #[arg(value_enum)]
+    pub shell: clap_complete::Shell,
 }

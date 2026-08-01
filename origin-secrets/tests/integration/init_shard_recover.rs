@@ -31,7 +31,7 @@ fn lifecycle_init_shard_export_recover_verify() {
     let out = dir.path().join("seed.recovered");
 
     // init (standard tier)
-    let r = dispatch(cli(&vault, &["init", "--tier", "standard", "--no-prompt"]));
+    let r = dispatch(cli(&vault, &["init", "--tier", "standard"]));
     assert!(r.is_ok(), "init failed: {:?}", r);
     assert!(vault.exists());
 
@@ -102,7 +102,7 @@ fn lifecycle_audit_export_soc2() {
     let vault = dir.path().join("secrets.vault");
     let soc2 = dir.path().join("soc2.json");
 
-    dispatch(cli(&vault, &["init", "--tier", "standard", "--no-prompt"])).unwrap();
+    dispatch(cli(&vault, &["init", "--tier", "standard"])).unwrap();
     dispatch(cli(
         &vault,
         &[

@@ -21,7 +21,7 @@ fn cli(vault: &Path, args: &[&str]) -> Cli {
 }
 
 fn init(vault: &Path) {
-    dispatch(cli(vault, &["init", "--tier", "standard", "--no-prompt"])).unwrap();
+    dispatch(cli(vault, &["init", "--tier", "standard"])).unwrap();
 }
 
 #[test]

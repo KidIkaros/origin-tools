@@ -18,7 +18,7 @@ fn cli(vault: &Path, args: &[&str]) -> Cli {
 }
 
 fn setup(vault: &Path, shares_dir: &Path) {
-    dispatch(cli(vault, &["init", "--tier", "standard", "--no-prompt"])).unwrap();
+    dispatch(cli(vault, &["init", "--tier", "standard"])).unwrap();
     dispatch(cli(
         vault,
         &[

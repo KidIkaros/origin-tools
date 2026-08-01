@@ -21,10 +21,20 @@ use clap::Parser;
 use origin_secrets::cli::Cli;
 
 fn main() {
+    // Handle --version without requiring a subcommand (clap still treats the
+    // subcommand as mandatory even with an exclusive flag present).
+    if std::env::args().any(|a| a == "--version") {
+        println!("origin-secrets {}", env!("CARGO_PKG_VERSION"));
+        return;
+    }
+
     let cli = Cli::parse();
 
-    if let Err(e) = origin_secrets::dispatch(cli) {
-        eprintln!("Error: {}", e);
-        std::process::exit(1);
+    match origin_secrets::dispatch(cli) {
+        Ok(()) => {}
+        Err(e) => {
+            eprintln!("Error: {}", e);
+            std::process::exit(e.exit_code());
+        }
     }
 }

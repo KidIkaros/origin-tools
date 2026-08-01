@@ -39,6 +39,13 @@ jobs:
           key: ${{ runner.os }}-cargo-${{ hashFiles('origin-tools/Cargo.lock') }}
           restore-keys: ${{ runner.os }}-cargo-
 
+      - name: Build all binaries
+        # Integration tests (e.g. origin-proof) spawn sibling origin-* binaries.
+        # Build them first so `cargo test` never races to run a test before its
+        # sibling binary exists.
+        run: cargo build --workspace --bins
+        working-directory: origin-tools
+
       - name: Run tests
         run: cargo test --workspace
         working-directory: origin-tools

@@ -83,11 +83,7 @@ fn missing_passphrase_is_rejected() {
     // No -p at all must be refused (no silent weak default fallback).
     let dir = tempfile::tempdir().unwrap();
     let vault = dir.path().join("secrets.vault");
-    let r = dispatch(cli(
-        &vault,
-        None,
-        &["init", "--tier", "standard", "--no-prompt"],
-    ));
+    let r = dispatch(cli(&vault, None, &["init", "--tier", "standard"]));
     assert!(
         matches!(r, Err(origin_secrets::Error::PassphraseRequired)),
         "init without -p must return PassphraseRequired, got: {:?}",

@@ -257,7 +257,6 @@ mod integration_workflow_tests {
     fn test_init_creates_vault_structure() {
         let args = InitArgs {
             tier: "standard".to_string(),
-            no_prompt: true,
         };
 
         if Path::new("~/.origin/secrets.vault").exists() {
@@ -290,7 +289,6 @@ mod integration_workflow_tests {
 
             let args = InitArgs {
                 tier: tier.to_string(),
-                no_prompt: true,
             };
 
             cmd_init(
@@ -320,7 +318,6 @@ mod integration_workflow_tests {
 
         let args = InitArgs {
             tier: "standard".to_string(),
-            no_prompt: true,
         };
 
         cmd_init(
@@ -354,7 +351,6 @@ mod integration_workflow_tests {
 
             let args = InitArgs {
                 tier: "standard".to_string(),
-                no_prompt: true,
             };
 
             cmd_init(

@@ -60,9 +60,21 @@ management over the `origin-crypto-sdk`.
 - Dead threshold-validation branch in `verify_share` replaced with a meaningful check
   (`threshold == 0 || total == 0 || threshold > total`).
 
+### UX / DX (pre-prod quality pass)
+- `init` no longer accepts the misleading `--no-prompt` flag (it was a no-op after
+  the passphrase-fallback removal); the flag is gone from the CLI.
+- Removed dead global flags `-c/--config`, `-v/--verbose`, `-q/--quiet` (parsed but
+  never consumed). The surface is now exactly what the commands use.
+- `--version` now works (`origin-secrets --version` → `origin-secrets 0.4.2`).
+- New `completions <SHELL>` subcommand emits bash/zsh/fish completion scripts.
+- Error output now uses a categorized exit code: `1` internal/runtime, `2` usage
+  (passphrase missing/weak), `3` not-found/input (vault/share/key missing, bad
+  threshold); clap parse errors use `127`.
+- Per-subcommand `after_help` usage examples added.
+- `man/origin-secrets.1` regenerated to match the current flags and exit codes.
+
 ### Tested
-- 132 tests (109 unit + 23 integration/security) pass in `--release`.
-- Line coverage 93.6% (tarpaulin).
+- 130 tests (109 unit + 21 integration/security) pass in `--release`.
 - `cargo clippy -p origin-secrets --all-targets -- -D warnings` clean.
 - `cargo fmt -p origin-secrets -- --check` clean.
 
@@ -78,3 +90,10 @@ management over the `origin-crypto-sdk`.
   pipeline. A future SDK-side `#[allow]` cleanup remains desirable.
 - Crate version is `0.4.2` (tagged `origin-secrets-v0.4.2`), intentionally ahead of the
   `origin-tools` workspace `version = 0.4.1`; the crate carries its own version.
+
+### CI (workspace)
+- `.github/workflows/ci.yml` now runs `cargo build --workspace --bins` before
+  `cargo test --workspace`. Without this, integration tests that spawn sibling
+  `origin-*` binaries (e.g. `origin-proof`) could race the build and fail with
+  "failed to run <binary>"; the pre-build step makes the workspace suite
+  deterministically green.
