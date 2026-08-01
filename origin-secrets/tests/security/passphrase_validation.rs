@@ -45,7 +45,7 @@ fn wrong_passphrase_cannot_decrypt_vault() {
         Some(&wrong),
         &[
             "shard",
-            "--key",
+            "--label",
             "master",
             "--threshold",
             "2",

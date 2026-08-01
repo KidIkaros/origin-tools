@@ -23,7 +23,7 @@ fn setup(vault: &Path, shares_dir: &Path) {
         vault,
         &[
             "shard",
-            "--key",
+            "--label",
             "master",
             "--threshold",
             "3",
@@ -94,7 +94,7 @@ fn invalid_threshold_rejected_by_shard() {
         &vault,
         &[
             "shard",
-            "--key",
+            "--label",
             "master",
             "--threshold",
             "5",

@@ -30,9 +30,11 @@ pub fn cmd_shard(
     let threshold = args.threshold;
     let total = args.shares;
 
-    // Validate key id is non-empty.
+    // Validate label is non-empty.
     if args.key.trim().is_empty() {
-        return Err(Error::CryptoError("key id must not be empty".to_string()));
+        return Err(Error::CryptoError(
+            "share label must not be empty (use --label <NAME>)".to_string(),
+        ));
     }
 
     // Validate threshold semantics: 1 <= threshold <= total.
@@ -366,6 +368,21 @@ mod tests {
                 total_shares: 5
             }
         ));
+    }
+
+    #[test]
+    fn test_shard_empty_label_rejected() {
+        let dir = tempdir().unwrap();
+        let (vault_path, passphrase, _, _, _) = make_vault_in_dir(dir.path());
+        let args = ShardArgs {
+            key: "".to_string(),
+            threshold: 2,
+            shares: 3,
+            force: false,
+        };
+        let result = cmd_shard(args, &vault_path, &passphrase, false);
+        assert!(result.is_err(), "empty --label must be rejected");
+        assert!(result.unwrap_err().to_string().contains("label"));
     }
 
     #[test]

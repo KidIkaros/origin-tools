@@ -27,7 +27,7 @@ fn init_and_shard(vault: &Path) {
         vault,
         &[
             "shard",
-            "--key",
+            "--label",
             "master",
             "--threshold",
             "2",

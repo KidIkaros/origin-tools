@@ -40,7 +40,7 @@ fn lifecycle_init_shard_export_recover_verify() {
         &vault,
         &[
             "shard",
-            "--key",
+            "--label",
             "master",
             "--threshold",
             "3",
@@ -107,7 +107,7 @@ fn lifecycle_audit_export_soc2() {
         &vault,
         &[
             "shard",
-            "--key",
+            "--label",
             "master",
             "--threshold",
             "2",

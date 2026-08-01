@@ -7,7 +7,8 @@ use std::path::PathBuf;
 #[command(name = "origin-secrets")]
 #[command(about = "Threshold secrets management — K-of-N recovery, post-quantum verification", long_about = None)]
 pub struct Cli {
-    /// Vault file path (a leading `~` is expanded to your home directory)
+    /// Vault file path (a leading `~` is expanded to your home directory).
+    /// NOTE: `-V` is the vault flag; use `--version` for the version.
     #[arg(short = 'V', long, default_value = "~/.origin/secrets.vault")]
     pub vault: PathBuf,
 
@@ -35,7 +36,7 @@ pub enum Commands {
     Init(InitArgs),
     /// Shard a master key
     #[command(
-        after_help = "Example:\n  origin-secrets -V ./secrets.vault -p ./pw.txt shard --key master --threshold 3 --shares 5"
+        after_help = "Example:\n  origin-secrets -V ./secrets.vault -p ./pw.txt shard --label master --threshold 3 --shares 5"
     )]
     Shard(ShardArgs),
     /// Export a share to file
@@ -72,8 +73,11 @@ pub struct InitArgs {
 
 #[derive(Parser, Clone, Debug)]
 pub struct ShardArgs {
-    /// Key identifier to shard
-    #[arg(long)]
+    /// Label for the generated shares (recorded in each share file and the
+    /// audit log). This is NOT a vault key selector — the vault holds a single
+    /// master seed that is always sharded; `--label` is the human-readable name
+    /// attached to this sharding operation's shares. Must be non-empty.
+    #[arg(long = "label")]
     pub key: String,
 
     /// Minimum shares required (K)

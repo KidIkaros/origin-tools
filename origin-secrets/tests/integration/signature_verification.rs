@@ -27,7 +27,7 @@ fn init_and_shard(vault: &Path, threshold: u8, shares: u8) {
         vault,
         &[
             "shard",
-            "--key",
+            "--label",
             "master",
             "--threshold",
             &threshold.to_string(),

@@ -61,7 +61,7 @@ Creates an encrypted vault, derives a master seed, and prints a fingerprint.
 ### 2. Shard the master key (Week 2)
 
 ```bash
-origin-secrets -V ./secrets.vault -p ./pw.txt shard --key master --threshold 3 --shares 5
+origin-secrets -V ./secrets.vault -p ./pw.txt shard --label master --threshold 3 --shares 5
 ```
 
 Writes `shares/share_001.json … share_005.json`, each signed. A prior set of
