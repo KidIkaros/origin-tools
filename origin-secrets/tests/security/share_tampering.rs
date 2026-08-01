@@ -4,9 +4,9 @@
 //! Modifying the share data, the signature, or the recipient must cause
 //! recovery/verification to reject it.
 
+use clap::Parser;
 use origin_secrets::cli::Cli;
 use origin_secrets::dispatch;
-use clap::Parser;
 use std::path::Path;
 
 fn cli(vault: &Path, args: &[&str]) -> Cli {
@@ -20,7 +20,15 @@ fn init_and_shard(vault: &Path) {
     dispatch(cli(vault, &["init", "--tier", "standard", "--no-prompt"])).unwrap();
     dispatch(cli(
         vault,
-        &["shard", "--key", "master", "--threshold", "2", "--shares", "3"],
+        &[
+            "shard",
+            "--key",
+            "master",
+            "--threshold",
+            "2",
+            "--shares",
+            "3",
+        ],
     ))
     .unwrap();
 }

@@ -56,7 +56,8 @@ pub fn cmd_verify(args: VerifyArgs, vault_path: &Path, passphrase: &str) -> Resu
 
 /// Decrypt and integrity-check a vault file.
 fn verify_vault(path: &Path, passphrase: &str) -> Result<(), Error> {
-    let raw = std::fs::read_to_string(path).map_err(|_| Error::VaultNotFound(path.to_path_buf()))?;
+    let raw =
+        std::fs::read_to_string(path).map_err(|_| Error::VaultNotFound(path.to_path_buf()))?;
     let vault: Vault =
         serde_json::from_str(&raw).map_err(|e| Error::VaultCorrupted(e.to_string()))?;
 
@@ -92,9 +93,10 @@ fn verify_vault(path: &Path, passphrase: &str) -> Result<(), Error> {
 /// structural validation is performed (a standalone share cannot be
 /// cryptographically verified without the master seed).
 fn verify_share(path: &Path, vault: Option<&Path>, passphrase: &str) -> Result<(), Error> {
-    let raw = std::fs::read_to_string(path).map_err(|_| Error::ShareNotFound { share_number: 0 })?;
+    let raw =
+        std::fs::read_to_string(path).map_err(|_| Error::ShareNotFound { share_number: 0 })?;
     let share: Share =
-        serde_json::from_str(&raw).map_err(|e| Error::ShareCorrupted { share_number: 0 })?;
+        serde_json::from_str(&raw).map_err(|_| Error::ShareCorrupted { share_number: 0 })?;
 
     if share.share_data.is_empty() {
         return Err(Error::ShareCorrupted {
@@ -121,9 +123,10 @@ fn verify_share(path: &Path, vault: Option<&Path>, passphrase: &str) -> Result<(
             bundle.ed25519_pk(),
             bundle.falcon1024_pk(),
             &share.share_data,
-            &share.signature.to_sdk().map_err(|e| {
-                Error::SignatureVerificationFailed(format!("{e:?}"))
-            })?,
+            &share
+                .signature
+                .to_sdk()
+                .map_err(|e| Error::SignatureVerificationFailed(format!("{e:?}")))?,
         )
         .map_err(|_| Error::ShareVerificationFailed {
             share_number: share.share_number,
@@ -144,7 +147,9 @@ fn verify_share(path: &Path, vault: Option<&Path>, passphrase: &str) -> Result<(
         share.share_data.len(),
         share.fingerprint
     );
-    println!("Cryptographic verification skipped (no vault supplied); use `recover` for full check.");
+    println!(
+        "Cryptographic verification skipped (no vault supplied); use `recover` for full check."
+    );
     Ok(())
 }
 

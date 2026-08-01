@@ -1,7 +1,6 @@
 //! Unit tests for Share structures
 
 use crate::share::{HybridSignature, Share};
-use serde_json;
 
 #[test]
 fn test_share_creation() {
@@ -54,7 +53,10 @@ fn test_share_serialization_roundtrip() {
     assert_eq!(share.share_data, deserialized.share_data);
     assert_eq!(share.recipient, deserialized.recipient);
     assert_eq!(share.signature.ed25519, deserialized.signature.ed25519);
-    assert_eq!(share.signature.falcon1024, deserialized.signature.falcon1024);
+    assert_eq!(
+        share.signature.falcon1024,
+        deserialized.signature.falcon1024
+    );
 }
 
 #[test]
@@ -201,11 +203,11 @@ fn test_share_various_numbers() {
             share_number: i,
             threshold: 3,
             total_shares: 5,
-            share_data: vec![i as u8; 10],
+            share_data: vec![i; 10],
             fingerprint: format!("fp-{}", i),
             signature: HybridSignature {
-                ed25519: vec![i as u8; 5],
-                falcon1024: vec![(i + 1) as u8; 5],
+                ed25519: vec![i; 5],
+                falcon1024: vec![i + 1; 5],
             },
             created_at: "2026-07-30T21:27:45Z".to_string(),
             recipient: Some(format!("share-{}.example.com", i)),

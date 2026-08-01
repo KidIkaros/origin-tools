@@ -31,10 +31,10 @@ pub fn cmd_recover(args: RecoverArgs, new_passphrase: &str) -> Result<Vec<u8>, E
     // Load all share files.
     let mut shares: Vec<Share> = Vec::with_capacity(args.shares.len());
     for path in &args.shares {
-        let raw = std::fs::read_to_string(path)
-            .map_err(|_| Error::ShareNotFound { share_number: 0 })?;
+        let raw =
+            std::fs::read_to_string(path).map_err(|_| Error::ShareNotFound { share_number: 0 })?;
         let share: Share =
-            serde_json::from_str(&raw).map_err(|e| Error::ShareCorrupted { share_number: 0 })?;
+            serde_json::from_str(&raw).map_err(|_| Error::ShareCorrupted { share_number: 0 })?;
         shares.push(share);
     }
 
@@ -80,7 +80,7 @@ pub fn cmd_recover(args: RecoverArgs, new_passphrase: &str) -> Result<Vec<u8>, E
     for share in &shares {
         let sig: Ed25519Falcon1024 = HybridSignature::to_sdk(&share.signature)
             .map_err(|e| Error::SignatureVerificationFailed(format!("{e:?}")))?;
-        Ed25519Falcon1024::verify(&ed_pk, &falcon_pk, &share.share_data, &sig).map_err(|_| {
+        Ed25519Falcon1024::verify(ed_pk, falcon_pk, &share.share_data, &sig).map_err(|_| {
             Error::ShareVerificationFailed {
                 share_number: share.share_number,
                 details: "hybrid signature mismatch".to_string(),
@@ -153,8 +153,11 @@ fn write_recovered_vault(
         std::fs::create_dir_all(parent)
             .map_err(|e| Error::IoError(format!("create vault dir: {e}")))?;
     }
-    std::fs::write(path, serde_json::to_string_pretty(&vault).map_err(|e| Error::IoError(e.to_string()))?)
-        .map_err(|e| Error::IoError(e.to_string()))?;
+    std::fs::write(
+        path,
+        serde_json::to_string_pretty(&vault).map_err(|e| Error::IoError(e.to_string()))?,
+    )
+    .map_err(|e| Error::IoError(e.to_string()))?;
     Ok(())
 }
 
@@ -237,7 +240,10 @@ mod tests {
         let result = cmd_recover(args, "new-pass");
         assert!(matches!(
             result,
-            Err(Error::InsufficientShares { needed: 3, provided: 2 })
+            Err(Error::InsufficientShares {
+                needed: 3,
+                provided: 2
+            })
         ));
     }
 
@@ -332,7 +338,10 @@ mod tests {
         let result = cmd_recover(args, "new-pass");
         assert!(matches!(
             result,
-            Err(Error::ShareVerificationFailed { share_number: 1, .. })
+            Err(Error::ShareVerificationFailed {
+                share_number: 1,
+                ..
+            })
         ));
     }
 
@@ -347,7 +356,10 @@ mod tests {
         let result = cmd_recover(args, "new-pass");
         assert!(matches!(
             result,
-            Err(Error::InsufficientShares { needed: 1, provided: 0 })
+            Err(Error::InsufficientShares {
+                needed: 1,
+                provided: 0
+            })
         ));
     }
 }

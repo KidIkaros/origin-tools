@@ -182,8 +182,10 @@ mod tests {
         let salt = [1u8; 16];
         let nonce = [2u8; 24];
 
-        let encrypted1 = encrypt_vault_data(&data, &key, salt, nonce, MemoryTier::Standard).unwrap();
-        let encrypted2 = encrypt_vault_data(&data, &key, salt, nonce, MemoryTier::Standard).unwrap();
+        let encrypted1 =
+            encrypt_vault_data(&data, &key, salt, nonce, MemoryTier::Standard).unwrap();
+        let encrypted2 =
+            encrypt_vault_data(&data, &key, salt, nonce, MemoryTier::Standard).unwrap();
 
         assert_eq!(encrypted1.fingerprint, encrypted2.fingerprint);
     }
@@ -196,8 +198,10 @@ mod tests {
         let nonce1 = [2u8; 24];
         let nonce2 = [3u8; 24];
 
-        let encrypted1 = encrypt_vault_data(&data, &key, salt, nonce1, MemoryTier::Standard).unwrap();
-        let encrypted2 = encrypt_vault_data(&data, &key, salt, nonce2, MemoryTier::Standard).unwrap();
+        let encrypted1 =
+            encrypt_vault_data(&data, &key, salt, nonce1, MemoryTier::Standard).unwrap();
+        let encrypted2 =
+            encrypt_vault_data(&data, &key, salt, nonce2, MemoryTier::Standard).unwrap();
 
         assert_ne!(encrypted1.fingerprint, encrypted2.fingerprint);
     }
@@ -226,7 +230,8 @@ mod tests {
         let salt = [1u8; 16];
         let nonce = [2u8; 24];
 
-        let encrypted = encrypt_vault_data(&data, &key, salt, nonce, MemoryTier::Sovereign).unwrap();
+        let encrypted =
+            encrypt_vault_data(&data, &key, salt, nonce, MemoryTier::Sovereign).unwrap();
         assert_eq!(encrypted.tier, MemoryTier::Sovereign);
     }
 }
@@ -244,14 +249,13 @@ mod integration_workflow_tests {
         let args = InitArgs {
             tier: "standard".to_string(),
             no_prompt: true,
-            passphrase_file: None,
         };
 
         if Path::new("~/.origin/secrets.vault").exists() {
             std::fs::remove_file("~/.origin/secrets.vault").ok();
         }
 
-        cmd_init(args, Path::new("~/.origin/secrets.vault")).ok();
+        cmd_init(args, Path::new("~/.origin/secrets.vault"), None).ok();
 
         let vault_json = std::fs::read_to_string("~/.origin/secrets.vault").unwrap();
         let vault: crate::vault::Vault = serde_json::from_str(&vault_json).unwrap();
@@ -273,15 +277,14 @@ mod integration_workflow_tests {
             let args = InitArgs {
                 tier: tier.to_string(),
                 no_prompt: true,
-                passphrase_file: None,
             };
 
-            cmd_init(args.clone(), Path::new("~/.origin/secrets.vault")).ok();
+            cmd_init(args.clone(), Path::new("~/.origin/secrets.vault"), None).ok();
             let vault_json = std::fs::read_to_string("~/.origin/secrets.vault").unwrap();
             let vault: crate::vault::Vault = serde_json::from_str(&vault_json).unwrap();
             assert_eq!(
                 vault.tier,
-                MemoryTier::from_str(tier).unwrap(),
+                MemoryTier::parse_tier(tier).unwrap(),
                 "Tier mismatch for: {}",
                 tier
             );
@@ -299,11 +302,10 @@ mod integration_workflow_tests {
         let args = InitArgs {
             tier: "standard".to_string(),
             no_prompt: true,
-            passphrase_file: None,
         };
 
-        cmd_init(args.clone(), Path::new("~/.origin/secrets.vault")).ok();
-        let result = cmd_init(args, Path::new("~/.origin/secrets.vault"));
+        cmd_init(args.clone(), Path::new("~/.origin/secrets.vault"), None).ok();
+        let result = cmd_init(args, Path::new("~/.origin/secrets.vault"), None);
         assert!(matches!(
             result.unwrap_err(),
             crate::error::Error::VaultAlreadyExists(_)
@@ -325,10 +327,9 @@ mod integration_workflow_tests {
             let args = InitArgs {
                 tier: "standard".to_string(),
                 no_prompt: true,
-                passphrase_file: None,
             };
 
-            cmd_init(args, Path::new("~/.origin/secrets.vault")).ok();
+            cmd_init(args, Path::new("~/.origin/secrets.vault"), None).ok();
             let vault_json = std::fs::read_to_string("~/.origin/secrets.vault").unwrap();
             let vault: crate::vault::Vault = serde_json::from_str(&vault_json).unwrap();
 

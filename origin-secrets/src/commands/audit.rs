@@ -137,7 +137,8 @@ fn export_compliance(
         "entry_count": entries.len(),
         "entries": entries,
     });
-    let serialized = serde_json::to_string_pretty(&evidence).map_err(|e| Error::IoError(e.to_string()))?;
+    let serialized =
+        serde_json::to_string_pretty(&evidence).map_err(|e| Error::IoError(e.to_string()))?;
     std::fs::write(path, serialized).map_err(|e| Error::IoError(e.to_string()))?;
     println!(
         "Exported {} audit entries as {:?} evidence to {}.",

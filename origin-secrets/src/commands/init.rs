@@ -10,9 +10,20 @@ use std::path::Path;
 const MIN_PASSPHRASE_LENGTH: usize = 12;
 
 /// Initialize a new vault at `vault_path`.
-pub fn cmd_init(args: InitArgs, vault_path: &Path) -> Result<(), Error> {
+///
+/// `passphrase_file` is the GLOBAL `-p/--passphrase-file` flag (resolved by the
+/// dispatcher), kept consistent with every other subcommand. When supplied, its
+/// contents are used as the vault passphrase. When absent and `no_prompt` is set,
+/// a demo passphrase is used (test/automation only). When absent without
+/// `no_prompt`, initialization is refused rather than silently storing a
+/// known-weak key.
+pub fn cmd_init(
+    args: InitArgs,
+    vault_path: &Path,
+    passphrase_file: Option<&Path>,
+) -> Result<(), Error> {
     // Parse tier
-    let tier = MemoryTier::from_str(&args.tier)
+    let tier = MemoryTier::parse_tier(&args.tier)
         .map_err(|e| Error::CryptoError(format!("Invalid tier: {}", e)))?;
 
     // Check if vault already exists
@@ -20,12 +31,10 @@ pub fn cmd_init(args: InitArgs, vault_path: &Path) -> Result<(), Error> {
         return Err(Error::VaultAlreadyExists(vault_path.to_path_buf()));
     }
 
-    // Prompt for passphrase. Prefer an explicit passphrase file (e.g. mounted
-    // secret) when supplied via `-p`/`--passphrase-file`. Without it we refuse
-    // to silently fall back to a demo string in a real (non-test) run, since
-    // that would store a known-weak key. Tests pass `no_prompt` with a file or
-    // accept the demo string for convenience.
-    let passphrase = if let Some(pf) = &args.passphrase_file {
+    // Resolve passphrase. Prefer the global -p/--passphrase-file (e.g. a mounted
+    // secret). Without it, fall back to the demo string only under --no-prompt;
+    // otherwise refuse to store a known-weak key.
+    let passphrase = if let Some(pf) = passphrase_file {
         std::fs::read_to_string(pf)
             .map_err(|e| Error::IoError(format!("reading passphrase file {pf:?}: {e}")))?
             .trim_end_matches('\n')
@@ -112,9 +121,8 @@ mod tests {
         let args = InitArgs {
             tier: "standard".to_string(),
             no_prompt: true,
-            passphrase_file: None,
         };
-        let result = cmd_init(args, &vault_path);
+        let result = cmd_init(args, &vault_path, None);
         assert!(result.is_ok());
         assert!(vault_path.exists());
     }
@@ -126,9 +134,8 @@ mod tests {
         let args = InitArgs {
             tier: "nano".to_string(),
             no_prompt: true,
-            passphrase_file: None,
         };
-        let result = cmd_init(args, &vault_path);
+        let result = cmd_init(args, &vault_path, None);
         assert!(result.is_ok());
         assert!(vault_path.exists());
     }
@@ -140,9 +147,8 @@ mod tests {
         let args = InitArgs {
             tier: "sovereign".to_string(),
             no_prompt: true,
-            passphrase_file: None,
         };
-        let result = cmd_init(args, &vault_path);
+        let result = cmd_init(args, &vault_path, None);
         assert!(result.is_ok());
         assert!(vault_path.exists());
     }
@@ -154,9 +160,8 @@ mod tests {
         let args = InitArgs {
             tier: "invalid".to_string(),
             no_prompt: true,
-            passphrase_file: None,
         };
-        let result = cmd_init(args, &vault_path);
+        let result = cmd_init(args, &vault_path, None);
         assert!(matches!(result.unwrap_err(), Error::CryptoError(_)));
     }
 
@@ -169,9 +174,8 @@ mod tests {
         let args = InitArgs {
             tier: "standard".to_string(),
             no_prompt: true,
-            passphrase_file: None,
         };
-        let result = cmd_init(args, &vault_path);
+        let result = cmd_init(args, &vault_path, None);
         assert!(matches!(result.unwrap_err(), Error::VaultAlreadyExists(_)));
     }
 
@@ -184,14 +188,15 @@ mod tests {
 
         let args = InitArgs {
             tier: "standard".to_string(),
-            no_prompt: true,
-            passphrase_file: Some(pw_file.clone()),
+            no_prompt: false,
         };
-        let result = cmd_init(args, &vault_path);
+        // Pass the passphrase file via the GLOBAL -p mechanism (third arg), the
+        // same path the dispatcher uses. This must become the vault key.
+        let result = cmd_init(args, &vault_path, Some(pw_file.as_path()));
         assert!(result.is_ok());
 
         // The saved vault must decrypt only with the file's passphrase, proving
-        // -p/--passphrase-file is honored (not silently replaced by the demo string).
+        // the global -p/--passphrase-file is honored (not the demo string).
         let raw = std::fs::read_to_string(&vault_path).unwrap();
         let vault: crate::vault::Vault = serde_json::from_str(&raw).unwrap();
         let key = crate::crypto::derive_vault_key(
@@ -230,9 +235,8 @@ mod tests {
         let args = InitArgs {
             tier: "standard".to_string(),
             no_prompt: false,
-            passphrase_file: None,
         };
-        let result = cmd_init(args, &vault_path);
+        let result = cmd_init(args, &vault_path, None);
         assert!(matches!(result, Err(Error::PassphraseTooWeak { .. })));
     }
 }

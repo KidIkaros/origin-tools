@@ -20,7 +20,7 @@ pub enum MemoryTier {
 }
 
 impl MemoryTier {
-    pub fn from_str(s: &str) -> Result<Self, String> {
+    pub fn parse_tier(s: &str) -> Result<Self, String> {
         match s.to_lowercase().as_str() {
             "nano" => Ok(MemoryTier::Nano),
             "standard" => Ok(MemoryTier::Standard),
@@ -80,17 +80,17 @@ mod tests {
     use tempfile::NamedTempFile;
 
     #[test]
-    fn test_memory_tier_from_str() {
-        assert_eq!(MemoryTier::from_str("nano").unwrap(), MemoryTier::Nano);
+    fn test_memory_tier_parse() {
+        assert_eq!(MemoryTier::parse_tier("nano").unwrap(), MemoryTier::Nano);
         assert_eq!(
-            MemoryTier::from_str("standard").unwrap(),
+            MemoryTier::parse_tier("standard").unwrap(),
             MemoryTier::Standard
         );
         assert_eq!(
-            MemoryTier::from_str("sovereign").unwrap(),
+            MemoryTier::parse_tier("sovereign").unwrap(),
             MemoryTier::Sovereign
         );
-        assert!(MemoryTier::from_str("invalid").is_err());
+        assert!(MemoryTier::parse_tier("invalid").is_err());
     }
 
     #[test]
@@ -162,7 +162,11 @@ mod tests {
 
     #[test]
     fn test_vault_with_all_tiers() {
-        for tier in [MemoryTier::Nano, MemoryTier::Standard, MemoryTier::Sovereign] {
+        for tier in [
+            MemoryTier::Nano,
+            MemoryTier::Standard,
+            MemoryTier::Sovereign,
+        ] {
             let vault = Vault {
                 version: 1,
                 created_at: "2026-07-30T21:27:45Z".to_string(),

@@ -135,16 +135,32 @@ mod tests {
             Error::VaultCorrupted("bad data".to_string()),
             Error::VaultDecryptionFailed("wrong key".to_string()),
             Error::VaultEncryptionFailed("kdf failed".to_string()),
-            Error::KeyNotFound { key_id: "k1".to_string() },
-            Error::KeyAlreadyExists { key_id: "k1".to_string() },
+            Error::KeyNotFound {
+                key_id: "k1".to_string(),
+            },
+            Error::KeyAlreadyExists {
+                key_id: "k1".to_string(),
+            },
             Error::ShareNotFound { share_number: 1 },
-            Error::InsufficientShares { needed: 3, provided: 2 },
-            Error::ShareVerificationFailed { share_number: 1, details: "bad sig".to_string() },
+            Error::InsufficientShares {
+                needed: 3,
+                provided: 2,
+            },
+            Error::ShareVerificationFailed {
+                share_number: 1,
+                details: "bad sig".to_string(),
+            },
             Error::ShareCorrupted { share_number: 1 },
-            Error::InvalidThreshold { threshold: 5, total_shares: 3 },
+            Error::InvalidThreshold {
+                threshold: 5,
+                total_shares: 3,
+            },
             Error::SignatureVerificationFailed("invalid".to_string()),
             Error::SignatureGenerationFailed("failed".to_string()),
-            Error::ComplianceExportFailed { framework: "SOC2".to_string(), details: "io".to_string() },
+            Error::ComplianceExportFailed {
+                framework: "SOC2".to_string(),
+                details: "io".to_string(),
+            },
             Error::AuditLogNotFound,
             Error::IoError("disk full".to_string()),
             Error::CryptoError("argon2 failed".to_string()),
@@ -174,7 +190,9 @@ mod tests {
         let json_err = serde_json::from_str::<serde_json::Value>("invalid json").unwrap_err();
         let err: Error = json_err.into();
         match err {
-            Error::IoError(msg) => assert!(msg.contains("control character") || msg.contains("expected")),
+            Error::IoError(msg) => {
+                assert!(msg.contains("control character") || msg.contains("expected"))
+            }
             _ => panic!("Expected IoError from serde"),
         }
     }

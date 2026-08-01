@@ -3,9 +3,9 @@
 //! Confirms that (a) legitimate shares verify, and (b) a tampered share is
 //! rejected because its hybrid signature no longer validates.
 
+use clap::Parser;
 use origin_secrets::cli::Cli;
 use origin_secrets::dispatch;
-use clap::Parser;
 use std::path::Path;
 
 fn cli(vault: &Path, args: &[&str]) -> Cli {
@@ -39,10 +39,7 @@ fn valid_share_passes_verify() {
     init_and_shard(&vault, 2, 3);
 
     let share = dir.path().join("shares").join("share_001.json");
-    let r = dispatch(cli(
-        &vault,
-        &["verify", "--share", share.to_str().unwrap()],
-    ));
+    let r = dispatch(cli(&vault, &["verify", "--share", share.to_str().unwrap()]));
     assert!(r.is_ok(), "valid share should verify: {:?}", r);
 }
 
@@ -84,7 +81,10 @@ fn vault_integrity_tamper_detected() {
     v["ciphertext"] = serde_json::to_value(&cbytes).unwrap();
     std::fs::write(&vault, serde_json::to_string_pretty(&v).unwrap()).unwrap();
 
-    let r = dispatch(cli(&vault, &["verify", "--vault-path", vault.to_str().unwrap()]));
+    let r = dispatch(cli(
+        &vault,
+        &["verify", "--vault-path", vault.to_str().unwrap()],
+    ));
     assert!(r.is_err(), "tampered vault must fail verification");
 }
 
@@ -102,12 +102,20 @@ fn verify_share_binds_to_source_vault_not_default() {
     init_and_shard(&vault_a, 2, 3);
     init_and_shard(&vault_b, 2, 3);
 
-    let share_a = vault_a.parent().unwrap().join("shares").join("share_001.json");
+    let share_a = vault_a
+        .parent()
+        .unwrap()
+        .join("shares")
+        .join("share_001.json");
     // Verify share A using vault B as the resolved default path. The fix routes
     // verification to share A's own source vault (vaultA), so it must pass.
     let r = dispatch(cli(
         &vault_b,
         &["verify", "--share", share_a.to_str().unwrap()],
     ));
-    assert!(r.is_ok(), "share must verify against its source vault even when default points elsewhere: {:?}", r);
+    assert!(
+        r.is_ok(),
+        "share must verify against its source vault even when default points elsewhere: {:?}",
+        r
+    );
 }

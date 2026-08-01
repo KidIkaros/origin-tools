@@ -10,10 +10,7 @@ fn make_sig() -> HybridSignature {
     }
 }
 
-fn make_entry(
-    operation: Operation,
-    details: OperationDetails,
-) -> AuditEntry {
+fn make_entry(operation: Operation, details: OperationDetails) -> AuditEntry {
     AuditEntry {
         entry_id: "entry-1".to_string(),
         operation,
@@ -29,7 +26,9 @@ fn make_entry(
 fn test_audit_entry_creation() {
     let entry = make_entry(
         Operation::Init,
-        OperationDetails::Success { message: "Vault initialized".to_string() },
+        OperationDetails::Success {
+            message: "Vault initialized".to_string(),
+        },
     );
 
     assert_eq!(entry.entry_id, "entry-1");
@@ -41,8 +40,13 @@ fn test_audit_entry_creation() {
 #[test]
 fn test_audit_entry_serialization() {
     let entry = make_entry(
-        Operation::Shard { threshold: 3, total_shares: 5 },
-        OperationDetails::Success { message: "Sharded master key".to_string() },
+        Operation::Shard {
+            threshold: 3,
+            total_shares: 5,
+        },
+        OperationDetails::Success {
+            message: "Sharded master key".to_string(),
+        },
     );
 
     let serialized = serde_json::to_string(&entry).unwrap();
@@ -56,19 +60,33 @@ fn test_audit_entry_serialization() {
 
 #[test]
 fn test_audit_entry_all_operations() {
-    let operations = vec![
+    let operations = [
         Operation::Init,
-        Operation::Shard { threshold: 3, total_shares: 5 },
-        Operation::ExportShare { share_number: 1, recipient: "alice".to_string() },
-        Operation::Recover { shares_used: vec!["1".to_string(), "2".to_string(), "3".to_string()] },
-        Operation::Verify { target: VerifyTarget::Vault },
-        Operation::AuditExport { format: ComplianceFormat::SOC2 },
+        Operation::Shard {
+            threshold: 3,
+            total_shares: 5,
+        },
+        Operation::ExportShare {
+            share_number: 1,
+            recipient: "alice".to_string(),
+        },
+        Operation::Recover {
+            shares_used: vec!["1".to_string(), "2".to_string(), "3".to_string()],
+        },
+        Operation::Verify {
+            target: VerifyTarget::Vault,
+        },
+        Operation::AuditExport {
+            format: ComplianceFormat::SOC2,
+        },
     ];
 
     for (i, op) in operations.iter().enumerate() {
         let mut entry = make_entry(
             op.clone(),
-            OperationDetails::Success { message: "ok".to_string() },
+            OperationDetails::Success {
+                message: "ok".to_string(),
+            },
         );
         entry.entry_id = format!("entry-{}", i);
 
@@ -83,7 +101,9 @@ fn test_audit_entry_all_operations() {
 fn test_audit_entry_failure_details() {
     let entry = make_entry(
         Operation::Init,
-        OperationDetails::Failure { error: "KDF failed".to_string() },
+        OperationDetails::Failure {
+            error: "KDF failed".to_string(),
+        },
     );
 
     let serialized = serde_json::to_string(&entry).unwrap();
@@ -98,16 +118,24 @@ fn test_audit_entry_failure_details() {
 
 #[test]
 fn test_audit_entry_with_compliance_formats() {
-    let formats = vec![
+    let formats = [
         ComplianceFormat::SOC2,
-        ComplianceFormat::PciDss { version: "4.0".to_string() },
-        ComplianceFormat::Hipaa { section: "164.312".to_string() },
+        ComplianceFormat::PciDss {
+            version: "4.0".to_string(),
+        },
+        ComplianceFormat::Hipaa {
+            section: "164.312".to_string(),
+        },
     ];
 
     for (i, format) in formats.iter().enumerate() {
         let mut entry = make_entry(
-            Operation::AuditExport { format: format.clone() },
-            OperationDetails::Success { message: "Exported".to_string() },
+            Operation::AuditExport {
+                format: format.clone(),
+            },
+            OperationDetails::Success {
+                message: "Exported".to_string(),
+            },
         );
         entry.entry_id = format!("entry-{}", i);
 
@@ -124,8 +152,12 @@ fn test_audit_entry_roundtrip_file() {
     let path = temp_file.path();
 
     let entry = make_entry(
-        Operation::Recover { shares_used: vec!["1".to_string(), "2".to_string()] },
-        OperationDetails::Success { message: "Recovered".to_string() },
+        Operation::Recover {
+            shares_used: vec!["1".to_string(), "2".to_string()],
+        },
+        OperationDetails::Success {
+            message: "Recovered".to_string(),
+        },
     );
 
     let serialized = serde_json::to_string(&entry).unwrap();
@@ -150,7 +182,9 @@ fn test_audit_entry_timestamp_formats() {
     for ts in timestamps {
         let mut entry = make_entry(
             Operation::Init,
-            OperationDetails::Success { message: "ok".to_string() },
+            OperationDetails::Success {
+                message: "ok".to_string(),
+            },
         );
         entry.timestamp = ts.to_string();
 
@@ -169,7 +203,9 @@ fn test_audit_entry_empty_fields() {
         key_id: String::new(),
         timestamp: String::new(),
         operator: String::new(),
-        details: OperationDetails::Success { message: String::new() },
+        details: OperationDetails::Success {
+            message: String::new(),
+        },
         signature: HybridSignature {
             ed25519: vec![],
             falcon1024: vec![],
@@ -188,7 +224,9 @@ fn test_audit_entry_empty_fields() {
 fn test_audit_entry_unicode_operator() {
     let mut entry = make_entry(
         Operation::Init,
-        OperationDetails::Success { message: "ok".to_string() },
+        OperationDetails::Success {
+            message: "ok".to_string(),
+        },
     );
     entry.operator = "用户".to_string();
 
@@ -203,8 +241,12 @@ fn test_audit_entry_long_details() {
     let long_details = "x".repeat(1000);
 
     let entry = make_entry(
-        Operation::AuditExport { format: ComplianceFormat::SOC2 },
-        OperationDetails::Success { message: long_details.clone() },
+        Operation::AuditExport {
+            format: ComplianceFormat::SOC2,
+        },
+        OperationDetails::Success {
+            message: long_details.clone(),
+        },
     );
 
     let serialized = serde_json::to_string(&entry).unwrap();
@@ -220,8 +262,12 @@ fn test_audit_entry_long_details() {
 fn test_compliance_format_serialization() {
     let formats = vec![
         ComplianceFormat::SOC2,
-        ComplianceFormat::PciDss { version: "4.0".to_string() },
-        ComplianceFormat::Hipaa { section: "164.312".to_string() },
+        ComplianceFormat::PciDss {
+            version: "4.0".to_string(),
+        },
+        ComplianceFormat::Hipaa {
+            section: "164.312".to_string(),
+        },
     ];
 
     for format in formats {
@@ -251,10 +297,25 @@ fn test_verify_target_serialization() {
 #[test]
 fn test_operation_serialization_all_types() {
     let operations = vec![
-        Operation::Shard { threshold: 2, total_shares: 4 },
-        Operation::ExportShare { share_number: 3, recipient: "test@test.com".to_string() },
-        Operation::Recover { shares_used: vec!["1".to_string(), "2".to_string(), "3".to_string(), "4".to_string()] },
-        Operation::Verify { target: VerifyTarget::Share("share.json".to_string()) },
+        Operation::Shard {
+            threshold: 2,
+            total_shares: 4,
+        },
+        Operation::ExportShare {
+            share_number: 3,
+            recipient: "test@test.com".to_string(),
+        },
+        Operation::Recover {
+            shares_used: vec![
+                "1".to_string(),
+                "2".to_string(),
+                "3".to_string(),
+                "4".to_string(),
+            ],
+        },
+        Operation::Verify {
+            target: VerifyTarget::Share("share.json".to_string()),
+        },
     ];
 
     for op in operations {
@@ -268,8 +329,12 @@ fn test_operation_serialization_all_types() {
 #[test]
 fn test_operation_details_serialization() {
     let details = vec![
-        OperationDetails::Success { message: "ok".to_string() },
-        OperationDetails::Failure { error: "failed".to_string() },
+        OperationDetails::Success {
+            message: "ok".to_string(),
+        },
+        OperationDetails::Failure {
+            error: "failed".to_string(),
+        },
     ];
 
     for d in details {

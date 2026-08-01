@@ -1,19 +1,22 @@
 //! Origin Secrets: Threshold secrets management CLI
 
+pub mod audit;
+#[cfg(test)]
+mod audit_tests;
 pub mod cli;
 pub mod commands;
-pub mod error;
-pub mod vault;
-pub mod share;
-pub mod audit;
 pub mod crypto;
-pub mod share_tests;
-pub mod audit_tests;
-pub mod dispatch_tests;
+#[cfg(test)]
+mod dispatch_tests;
+pub mod error;
+pub mod share;
+#[cfg(test)]
+mod share_tests;
+pub mod vault;
 
-pub use error::Error;
 pub use cli::Cli;
-pub use crypto::{decrypt_vault_data, encrypt_vault_data, EncryptedVault, VaultData};
+pub use crypto::{decrypt_vault_data, encrypt_vault_data, EncryptedVault};
+pub use error::Error;
 
 /// Dispatch CLI command to appropriate handler
 pub fn dispatch(cli: Cli) -> Result<(), Error> {
@@ -27,10 +30,18 @@ pub fn dispatch(cli: Cli) -> Result<(), Error> {
     let passphrase = passphrase.trim_end_matches('\n');
 
     match cli.command {
-        cli::Commands::Init(args) => commands::init::cmd_init(args, &cli.vault),
-        cli::Commands::Shard(args) => commands::shard::cmd_shard(args, &cli.vault, passphrase).map(|_| ()),
-        cli::Commands::ExportShare(args) => commands::export::cmd_export_share(args, &cli.vault, passphrase).map(|_| ()),
-        cli::Commands::Recover(args) => commands::recover::cmd_recover(args, passphrase).map(|_| ()),
+        cli::Commands::Init(args) => {
+            commands::init::cmd_init(args, &cli.vault, cli.passphrase_file.as_deref())
+        }
+        cli::Commands::Shard(args) => {
+            commands::shard::cmd_shard(args, &cli.vault, passphrase).map(|_| ())
+        }
+        cli::Commands::ExportShare(args) => {
+            commands::export::cmd_export_share(args, &cli.vault, passphrase).map(|_| ())
+        }
+        cli::Commands::Recover(args) => {
+            commands::recover::cmd_recover(args, passphrase).map(|_| ())
+        }
         cli::Commands::Verify(args) => commands::verify::cmd_verify(args, &cli.vault, passphrase),
         cli::Commands::Audit(args) => commands::audit::cmd_audit(args, &cli.vault, passphrase),
     }
@@ -51,7 +62,6 @@ mod tests {
             command: cli::Commands::Init(cli::InitArgs {
                 tier: "standard".to_string(),
                 no_prompt: true,
-                passphrase_file: None,
             }),
         };
 

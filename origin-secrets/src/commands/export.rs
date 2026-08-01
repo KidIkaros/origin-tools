@@ -32,24 +32,22 @@ pub fn cmd_export_share(
         .unwrap_or_else(|| PathBuf::from("shares"));
     let share_path = shares_dir.join(format!("share_{:03}.json", args.share));
 
-    let raw = std::fs::read_to_string(&share_path)
-        .map_err(|_| Error::ShareNotFound { share_number: args.share })?;
-    let mut share: Share =
-        serde_json::from_str(&raw).map_err(|_| Error::ShareCorrupted { share_number: args.share })?;
+    let raw = std::fs::read_to_string(&share_path).map_err(|_| Error::ShareNotFound {
+        share_number: args.share,
+    })?;
+    let mut share: Share = serde_json::from_str(&raw).map_err(|_| Error::ShareCorrupted {
+        share_number: args.share,
+    })?;
 
     if let Some(recipient) = &args.recipient {
         // Re-sign the share binding it to the recipient, and log the export.
         re_sign_for_recipient(vault_path, passphrase, &mut share, recipient)?;
         println!(
             "Re-signed share {} for recipient '{}' and logged the export.",
-            args.share,
-            recipient
+            args.share, recipient
         );
     } else {
-        println!(
-            "Exported share {} (no recipient binding).",
-            args.share
-        );
+        println!("Exported share {} (no recipient binding).", args.share);
     }
 
     let serialized =
@@ -143,8 +141,11 @@ fn re_sign_for_recipient(
         nonce: re_enc.nonce,
         ciphertext: re_enc.ciphertext,
     };
-    std::fs::write(vault_path, serde_json::to_string_pretty(&updated).map_err(|e| Error::IoError(e.to_string()))?)
-        .map_err(|e| Error::IoError(e.to_string()))?;
+    std::fs::write(
+        vault_path,
+        serde_json::to_string_pretty(&updated).map_err(|e| Error::IoError(e.to_string()))?,
+    )
+    .map_err(|e| Error::IoError(e.to_string()))?;
     Ok(())
 }
 
@@ -168,7 +169,7 @@ fn epoch_to_utc(mut t: u64) -> (u64, u32, u32, u32, u32, u32) {
     t /= 60;
     let h = (t % 24) as u32;
     t /= 24;
-    let days = t as u64;
+    let days = t;
     // Days since 1970-01-01; approximate year/month/day ignoring leap years'
     // minor drift (audit timestamps need only second-level monotonic ordering).
     let mut year = 1970 + days / 365;
@@ -259,8 +260,7 @@ mod tests {
         assert_eq!(share.recipient.as_deref(), Some("alice"));
 
         // The written file should parse back with recipient + a signature.
-        let written: Share =
-            serde_json::from_str(&std::fs::read_to_string(&out).unwrap()).unwrap();
+        let written: Share = serde_json::from_str(&std::fs::read_to_string(&out).unwrap()).unwrap();
         assert_eq!(written.recipient.as_deref(), Some("alice"));
         assert_eq!(written.share_data, share.share_data);
         assert!(!written.signature.ed25519.is_empty());
@@ -278,7 +278,11 @@ mod tests {
             nonce: vault.nonce,
             ciphertext: vault.ciphertext,
         };
-        let vd = decrypt_vault_data(&enc, &derive_vault_key(passphrase.as_bytes(), &vault.salt, vault.tier).unwrap()).unwrap();
+        let vd = decrypt_vault_data(
+            &enc,
+            &derive_vault_key(passphrase.as_bytes(), &vault.salt, vault.tier).unwrap(),
+        )
+        .unwrap();
         assert!(vd
             .audit_log
             .iter()

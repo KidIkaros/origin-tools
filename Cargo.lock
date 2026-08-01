@@ -1275,7 +1275,7 @@ dependencies = [
 
 [[package]]
 name = "origin-secrets"
-version = "0.4.1"
+version = "0.4.2"
 dependencies = [
  "blake3",
  "clap",

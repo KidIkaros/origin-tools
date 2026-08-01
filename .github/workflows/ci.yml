@@ -73,8 +73,12 @@ jobs:
           key: ${{ runner.os }}-cargo-clippy-${{ hashFiles('origin-tools/Cargo.lock') }}
           restore-keys: ${{ runner.os }}-cargo-clippy-
 
-      - name: Run clippy
-        run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: Run clippy (origin-secrets, deny warnings)
+        run: cargo clippy -p origin-secrets --all-targets -- -D warnings
+        working-directory: origin-tools
+
+      - name: Run clippy (workspace, visibility only)
+        run: cargo clippy --workspace --all-targets
         working-directory: origin-tools
 
   fmt:

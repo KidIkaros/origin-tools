@@ -1,6 +1,8 @@
 //! Tests for dispatch function and CLI parsing
 
-use crate::cli::{AuditArgs, Cli, Commands, ExportArgs, InitArgs, RecoverArgs, ShardArgs, VerifyArgs};
+use crate::cli::{
+    AuditArgs, Cli, Commands, ExportArgs, InitArgs, RecoverArgs, ShardArgs, VerifyArgs,
+};
 use crate::dispatch;
 use crate::error::Error;
 use clap::Parser;
@@ -19,7 +21,6 @@ fn test_dispatch_init() {
         command: Commands::Init(InitArgs {
             tier: "standard".to_string(),
             no_prompt: true,
-            passphrase_file: None,
         }),
     };
 
@@ -56,7 +57,8 @@ fn test_dispatch_export_routes_to_impl() {
     // export-share is implemented; dispatch with a valid vault but a missing
     // share number should reach cmd_export_share and return ShareNotFound
     // (not NotImplemented).
-    let dir = std::env::temp_dir().join(format!("origin-secrets-export-test-{}", std::process::id()));
+    let dir =
+        std::env::temp_dir().join(format!("origin-secrets-export-test-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let vault = dir.join("secrets.vault");
     let cli_init = Cli {
@@ -68,7 +70,6 @@ fn test_dispatch_export_routes_to_impl() {
         command: Commands::Init(InitArgs {
             tier: "standard".to_string(),
             no_prompt: true,
-            passphrase_file: None,
         }),
     };
     assert!(dispatch(cli_init).is_ok());
@@ -263,12 +264,7 @@ fn test_cli_parsing_verify() {
 
 #[test]
 fn test_cli_parsing_audit() {
-    let cli = Cli::parse_from([
-        "origin-secrets",
-        "audit",
-        "--export-soc2",
-        "/tmp/soc2.json",
-    ]);
+    let cli = Cli::parse_from(["origin-secrets", "audit", "--export-soc2", "/tmp/soc2.json"]);
 
     match cli.command {
         Commands::Audit(args) => {

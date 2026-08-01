@@ -1,8 +1,8 @@
 //! Integration test: threshold validation (K-of-N correctness).
 
+use clap::Parser;
 use origin_secrets::cli::Cli;
 use origin_secrets::dispatch;
-use clap::Parser;
 use std::path::Path;
 
 fn cli(vault: &Path, args: &[&str]) -> Cli {
@@ -16,7 +16,15 @@ fn setup(vault: &Path, shares_dir: &Path) {
     dispatch(cli(vault, &["init", "--tier", "standard", "--no-prompt"])).unwrap();
     dispatch(cli(
         vault,
-        &["shard", "--key", "master", "--threshold", "3", "--shares", "5"],
+        &[
+            "shard",
+            "--key",
+            "master",
+            "--threshold",
+            "3",
+            "--shares",
+            "5",
+        ],
     ))
     .unwrap();
     // ensure shares_dir points at the vault's sibling `shares` dir
@@ -62,7 +70,11 @@ fn exact_threshold_succeeds() {
             out.to_str().unwrap(),
         ],
     ));
-    assert!(r.is_ok(), "recover with exactly K shares should succeed: {:?}", r);
+    assert!(
+        r.is_ok(),
+        "recover with exactly K shares should succeed: {:?}",
+        r
+    );
     assert_eq!(std::fs::read_to_string(&out).unwrap().len(), 64);
 }
 
@@ -75,7 +87,15 @@ fn invalid_threshold_rejected_by_shard() {
     // threshold (5) > shares (3) is invalid
     let r = dispatch(cli(
         &vault,
-        &["shard", "--key", "master", "--threshold", "5", "--shares", "3"],
+        &[
+            "shard",
+            "--key",
+            "master",
+            "--threshold",
+            "5",
+            "--shares",
+            "3",
+        ],
     ));
     assert!(r.is_err(), "shard with threshold>shares should fail");
 }

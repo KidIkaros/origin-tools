@@ -19,23 +19,11 @@ pub struct AuditEntry {
 #[serde(tag = "type")]
 pub enum Operation {
     Init,
-    Shard {
-        threshold: u8,
-        total_shares: u8,
-    },
-    ExportShare {
-        share_number: u8,
-        recipient: String,
-    },
-    Recover {
-        shares_used: Vec<String>,
-    },
-    Verify {
-        target: VerifyTarget,
-    },
-    AuditExport {
-        format: ComplianceFormat,
-    },
+    Shard { threshold: u8, total_shares: u8 },
+    ExportShare { share_number: u8, recipient: String },
+    Recover { shares_used: Vec<String> },
+    Verify { target: VerifyTarget },
+    AuditExport { format: ComplianceFormat },
 }
 
 /// Operation details
@@ -53,7 +41,7 @@ pub enum VerifyTarget {
     RecoveryLog(String),
 }
 
-    /// Compliance framework
+/// Compliance framework
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "type")]
 pub enum ComplianceFormat {

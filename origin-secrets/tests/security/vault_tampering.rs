@@ -3,9 +3,9 @@
 //! Any modification to the encrypted vault (ciphertext, salt, or nonce) must
 //! cause decryption/verification to fail — no silent accept.
 
+use clap::Parser;
 use origin_secrets::cli::Cli;
 use origin_secrets::dispatch;
-use clap::Parser;
 use std::path::Path;
 
 fn cli(vault: &Path, args: &[&str]) -> Cli {
@@ -32,7 +32,10 @@ fn tampered_ciphertext_rejected() {
     v["ciphertext"] = serde_json::to_value(&ct).unwrap();
     std::fs::write(&vault, serde_json::to_string_pretty(&v).unwrap()).unwrap();
 
-    let r = dispatch(cli(&vault, &["verify", "--vault-path", vault.to_str().unwrap()]));
+    let r = dispatch(cli(
+        &vault,
+        &["verify", "--vault-path", vault.to_str().unwrap()],
+    ));
     assert!(r.is_err(), "tampered ciphertext must be rejected");
 }
 
@@ -49,7 +52,10 @@ fn tampered_salt_rejected() {
     v["salt"] = serde_json::to_value(&salt).unwrap();
     std::fs::write(&vault, serde_json::to_string_pretty(&v).unwrap()).unwrap();
 
-    let r = dispatch(cli(&vault, &["verify", "--vault-path", vault.to_str().unwrap()]));
+    let r = dispatch(cli(
+        &vault,
+        &["verify", "--vault-path", vault.to_str().unwrap()],
+    ));
     assert!(r.is_err(), "tampered salt must be rejected");
 }
 
@@ -66,6 +72,9 @@ fn tampered_nonce_rejected() {
     v["nonce"] = serde_json::to_value(&nonce).unwrap();
     std::fs::write(&vault, serde_json::to_string_pretty(&v).unwrap()).unwrap();
 
-    let r = dispatch(cli(&vault, &["verify", "--vault-path", vault.to_str().unwrap()]));
+    let r = dispatch(cli(
+        &vault,
+        &["verify", "--vault-path", vault.to_str().unwrap()],
+    ));
     assert!(r.is_err(), "tampered nonce must be rejected");
 }

@@ -2,12 +2,10 @@
 
 use crate::audit::{AuditEntry, Operation, OperationDetails};
 use crate::cli::ShardArgs;
-use crate::crypto::{
-    decrypt_vault_data, derive_vault_key, encrypt_vault_data, EncryptedVault, VaultData,
-};
+use crate::crypto::{decrypt_vault_data, derive_vault_key, encrypt_vault_data, EncryptedVault};
 use crate::error::Error;
 use crate::share::{HybridSignature, Share};
-use crate::vault::{MemoryTier, Vault};
+use crate::vault::Vault;
 use origin_crypto_sdk::error_correction::ReedSolomonCodec;
 use origin_crypto_sdk::signing::hybrid::HybridSigningKeyBundle;
 use std::path::{Path, PathBuf};
@@ -68,8 +66,9 @@ pub fn cmd_shard(
         .map_err(|e| Error::CryptoError(format!("Reed-Solomon encode failed: {e}")))?;
 
     // Derive the hybrid signing bundle from the master seed (deterministic).
-    let signer = HybridSigningKeyBundle::from_seed_cached(&vault_data.master_seed, SHARE_SIGNING_DOMAIN)
-        .map_err(|e| Error::SignatureGenerationFailed(format!("{e:?}")))?;
+    let signer =
+        HybridSigningKeyBundle::from_seed_cached(&vault_data.master_seed, SHARE_SIGNING_DOMAIN)
+            .map_err(|e| Error::SignatureGenerationFailed(format!("{e:?}")))?;
 
     // Write each share file.
     let vault_dir = vault_path
@@ -134,13 +133,8 @@ pub fn cmd_shard(
     // same (key, nonce) pair must never be reused — reusing vault.nonce would
     // be deterministic nonce reuse and leak the plaintext delta.
     let reencrypt_nonce: [u8; 24] = rand::random();
-    let reencrypted = encrypt_vault_data(
-        &vault_data,
-        &key,
-        vault.salt,
-        reencrypt_nonce,
-        vault.tier,
-    )?;
+    let reencrypted =
+        encrypt_vault_data(&vault_data, &key, vault.salt, reencrypt_nonce, vault.tier)?;
     let updated_vault = Vault {
         version: reencrypted.version,
         created_at: reencrypted.created_at,
@@ -166,6 +160,8 @@ pub fn cmd_shard(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::crypto::VaultData;
+    use crate::vault::MemoryTier;
     use tempfile::tempdir;
 
     /// Create a vault file in `dir` and return its path + the passphrase used.
@@ -255,7 +251,10 @@ mod tests {
             &key,
         );
         assert!(dec_before.is_ok(), "original ciphertext no longer decrypts");
-        assert!(dec_after.is_ok(), "re-encrypted ciphertext does not decrypt");
+        assert!(
+            dec_after.is_ok(),
+            "re-encrypted ciphertext does not decrypt"
+        );
         // The re-encrypted vault should carry the new Shard audit entry.
         assert_eq!(dec_after.unwrap().audit_log.len(), 1);
     }
@@ -397,10 +396,8 @@ mod tests {
         // decode_shards expects the full N-length Option vec (data+parity),
         // with missing shards as None.
         let codec = ReedSolomonCodec::new(2, 2);
-        let mut opts: Vec<Option<Vec<u8>>> = shares
-            .iter()
-            .map(|s| Some(s.share_data.clone()))
-            .collect();
+        let mut opts: Vec<Option<Vec<u8>>> =
+            shares.iter().map(|s| Some(s.share_data.clone())).collect();
         // Drop the last two so only K=2 shards remain present.
         opts[2] = None;
         opts[3] = None;

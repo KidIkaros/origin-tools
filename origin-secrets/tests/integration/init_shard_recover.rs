@@ -3,10 +3,9 @@
 //! Drives the public `dispatch` API exactly as the CLI binary would, using
 //! temp directories so tests don't touch `~/.origin`.
 
+use clap::Parser;
 use origin_secrets::cli::Cli;
 use origin_secrets::dispatch;
-use clap::Parser;
-use std::path::Path;
 
 /// Build a `Cli` invoking `origin-secrets -V <vault> <subcommand...>`.
 fn cli(vault: &std::path::Path, args: &[&str]) -> Cli {
@@ -25,10 +24,7 @@ fn lifecycle_init_shard_export_recover_verify() {
     let out = dir.path().join("seed.recovered");
 
     // init (standard tier)
-    let r = dispatch(cli(
-        &vault,
-        &["init", "--tier", "standard", "--no-prompt"],
-    ));
+    let r = dispatch(cli(&vault, &["init", "--tier", "standard", "--no-prompt"]));
     assert!(r.is_ok(), "init failed: {:?}", r);
     assert!(vault.exists());
 
@@ -47,9 +43,7 @@ fn lifecycle_init_shard_export_recover_verify() {
     ));
     assert!(r.is_ok(), "shard failed: {:?}", r);
     for i in 1..=5u8 {
-        assert!(shares_dir
-            .join(format!("share_{:03}.json", i))
-            .exists());
+        assert!(shares_dir.join(format!("share_{:03}.json", i)).exists());
     }
 
     // export share 1 (no recipient)
@@ -88,7 +82,10 @@ fn lifecycle_init_shard_export_recover_verify() {
     assert_eq!(recovered.len(), 64); // 32 bytes hex
 
     // verify the vault (integrity + audit log)
-    let r = dispatch(cli(&vault, &["verify", "--vault-path", vault.to_str().unwrap()]));
+    let r = dispatch(cli(
+        &vault,
+        &["verify", "--vault-path", vault.to_str().unwrap()],
+    ));
     assert!(r.is_ok(), "verify failed: {:?}", r);
 }
 
@@ -98,14 +95,18 @@ fn lifecycle_audit_export_soc2() {
     let vault = dir.path().join("secrets.vault");
     let soc2 = dir.path().join("soc2.json");
 
+    dispatch(cli(&vault, &["init", "--tier", "standard", "--no-prompt"])).unwrap();
     dispatch(cli(
         &vault,
-        &["init", "--tier", "standard", "--no-prompt"],
-    ))
-    .unwrap();
-    dispatch(cli(
-        &vault,
-        &["shard", "--key", "master", "--threshold", "2", "--shares", "3"],
+        &[
+            "shard",
+            "--key",
+            "master",
+            "--threshold",
+            "2",
+            "--shares",
+            "3",
+        ],
     ))
     .unwrap();
 
@@ -114,6 +115,7 @@ fn lifecycle_audit_export_soc2() {
         &["audit", "--export-soc2", soc2.to_str().unwrap()],
     ));
     assert!(r.is_ok(), "audit soc2 failed: {:?}", r);
-    let evidence: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&soc2).unwrap()).unwrap();
+    let evidence: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&soc2).unwrap()).unwrap();
     assert!(evidence.get("entries").is_some());
 }
