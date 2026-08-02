@@ -34,6 +34,10 @@ addition of `--force` opt-ins and the now-meaningful `--recovery-log` /
   CI checks crate/man/binary version consistency.
 - Added TTY-aware semantic output styling with `NO_COLOR` support for product
   status output without affecting JSON or redirected output.
+- Added product black-box workflow coverage and expanded error metadata tests;
+  measured coverage is now approximately 90% (89.36% lines / 89.96% regions).
+- Made global vault, passphrase, prompt, and JSON flags valid before or after the
+  subcommand, matching documented CLI usage.
 
 ### DX / UX foundation
 - Vaults, shares, recovered seeds, and compliance exports now use a shared

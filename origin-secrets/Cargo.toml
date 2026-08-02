@@ -50,6 +50,10 @@ name = "integration_compliance_export"
 path = "tests/integration/compliance_export.rs"
 
 [[test]]
+name = "integration_product_workflow"
+path = "tests/integration/product_workflow.rs"
+
+[[test]]
 name = "security_passphrase_validation"
 path = "tests/security/passphrase_validation.rs"
 

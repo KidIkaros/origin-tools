@@ -304,13 +304,16 @@ origin-secrets     audit --show-failures --json   # vault-independent, structure
 
 ```bash
 cargo test -p origin-secrets --release
+cargo llvm-cov -p origin-secrets --release --summary-only
 ```
 
-- 155 lib unit tests (inline `#[cfg(test)]`)
-- 11 integration + security test binaries under `tests/integration/` and
+- 179 library/unit tests (inline `#[cfg(test)]`)
+- 8 integration + security test binaries under `tests/integration/` and
   `tests/security/`
-- Coverage target: ≥ 90 % (cargo-llvm-cov); current lib coverage ≈ 88 % lines
-  / 89 % regions (P3 modules: revoke 89 %, share_io 89 %, recover 91 %, verify 91 %)
+- Current measured coverage: 89.36 % lines / 89.96 % regions with
+  `cargo-llvm-cov` (approximately 90%; generated 2026-08-02)
+- Product workflow coverage includes `status`, `diagnose`, `handoff`, recovery
+  preflight, JSON output, and clean first-run lifecycle behavior.
 
 ## Security notes
 

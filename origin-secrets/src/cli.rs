@@ -9,24 +9,29 @@ use std::path::PathBuf;
 pub struct Cli {
     /// Vault file path (a leading `~` is expanded to your home directory).
     /// NOTE: `-V` is the vault flag; use `--version` for the version.
-    #[arg(short = 'V', long, default_value = "~/.origin/secrets.vault")]
+    #[arg(
+        short = 'V',
+        long,
+        global = true,
+        default_value = "~/.origin/secrets.vault"
+    )]
     pub vault: PathBuf,
 
     /// Passphrase file path. In a TTY, omitting this flag securely prompts for
     /// the passphrase; non-interactive callers must provide a file or `-` for stdin.
-    #[arg(short = 'p', long)]
+    #[arg(short = 'p', long, global = true)]
     pub passphrase_file: Option<PathBuf>,
 
     /// Prompt interactively for the passphrase (reads from TTY, not stdin).
     /// This is implicit in a TTY when --passphrase-file is omitted.
     /// Mutually exclusive with --passphrase-file.
-    #[arg(long, conflicts_with = "passphrase_file")]
+    #[arg(long, global = true, conflicts_with = "passphrase_file")]
     pub prompt: bool,
 
     /// Machine-readable JSON output (for CI/automation; success prints
     /// structured per-command JSON with "ok":true; failure prints
     /// {"ok":false,"code":...,"severity":...,"message":...}).
-    #[arg(long)]
+    #[arg(long, global = true)]
     pub json: bool,
 
     #[command(subcommand)]

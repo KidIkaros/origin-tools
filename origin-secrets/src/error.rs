@@ -377,6 +377,65 @@ mod tests {
     }
 
     #[test]
+    fn test_error_metadata_is_available_for_all_variants() {
+        let errors = vec![
+            Error::VaultNotFound("vault".into()),
+            Error::VaultAlreadyExists("vault".into()),
+            Error::VaultCorrupted("bad".into()),
+            Error::VaultDecryptionFailed("bad".into()),
+            Error::VaultEncryptionFailed("bad".into()),
+            Error::KeyNotFound { key_id: "k".into() },
+            Error::KeyAlreadyExists { key_id: "k".into() },
+            Error::ShareNotFound {
+                share_number: 1,
+                path: "/".into(),
+            },
+            Error::ShareRevoked { share_number: 1 },
+            Error::ShareExpired {
+                share_number: 1,
+                expires_at: "2020".into(),
+            },
+            Error::InsufficientShares {
+                needed: 2,
+                provided: 1,
+            },
+            Error::ShareVerificationFailed {
+                share_number: 1,
+                details: "bad".into(),
+            },
+            Error::ShareCorrupted {
+                share_number: 1,
+                path: "/".into(),
+            },
+            Error::FileAlreadyExists("out".into()),
+            Error::StdoutSecretRefused,
+            Error::InvalidThreshold {
+                threshold: 3,
+                total_shares: 2,
+            },
+            Error::SignatureVerificationFailed("bad".into()),
+            Error::SignatureGenerationFailed("bad".into()),
+            Error::ComplianceExportFailed {
+                framework: "SOC2".into(),
+                details: "bad".into(),
+            },
+            Error::AuditLogNotFound,
+            Error::IoError("bad".into()),
+            Error::CryptoError("bad".into()),
+            Error::PassphraseTooWeak { min_length: 12 },
+            Error::PassphraseRequired,
+            Error::PassphraseMismatch,
+            Error::NotImplemented("feature".into()),
+        ];
+        for error in errors {
+            assert!(!error.code().is_empty());
+            let _ = error.severity();
+            assert!(!error.remediation().is_empty());
+            assert_eq!(error.json_envelope()["ok"], false);
+        }
+    }
+
+    #[test]
     fn test_from_io_error() {
         let io_err = std::io::Error::new(std::io::ErrorKind::NotFound, "file not found");
         let err: Error = io_err.into();
