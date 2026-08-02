@@ -2,6 +2,31 @@
 
 use crate::error::Error;
 use serde::Serialize;
+use std::io::IsTerminal;
+
+/// Semantic terminal style used by human-facing product output.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Style {
+    Plain,
+    Success,
+    Warning,
+    Critical,
+}
+
+/// Apply a semantic style only when stdout is a TTY and `NO_COLOR` is absent.
+/// JSON and redirected output remain byte-stable and decoration-free.
+pub fn style(label: &str, kind: Style) -> String {
+    if !std::io::stdout().is_terminal() || std::env::var_os("NO_COLOR").is_some() {
+        return label.to_string();
+    }
+    let code = match kind {
+        Style::Plain => "0",
+        Style::Success => "32",
+        Style::Warning => "33",
+        Style::Critical => "31",
+    };
+    format!("\x1b[{code}m{label}\x1b[0m")
+}
 
 /// Serialize one typed response without allowing formatting concerns to leak
 /// into command business logic.
@@ -25,6 +50,11 @@ mod tests {
     struct TestResponse {
         ok: bool,
         count: usize,
+    }
+
+    #[test]
+    fn style_is_plain_when_stdout_is_not_a_tty() {
+        assert_eq!(style("Status", Style::Success), "Status");
     }
 
     #[test]

@@ -30,6 +30,10 @@ addition of `--force` opt-ins and the now-meaningful `--recovery-log` /
 - Clean-machine dogfood completed the documented status → diagnose → init → shard
   → export → handoff → preflight → recover → verify flow; duplicate export
   progress output was removed as a usability fix.
+- Release packaging now includes the `origin-secrets` binary and product docs;
+  CI checks crate/man/binary version consistency.
+- Added TTY-aware semantic output styling with `NO_COLOR` support for product
+  status output without affecting JSON or redirected output.
 
 ### DX / UX foundation
 - Vaults, shares, recovered seeds, and compliance exports now use a shared

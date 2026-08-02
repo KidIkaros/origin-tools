@@ -127,11 +127,21 @@ fn render(response: StatusResponse, json: bool) -> Result<(), Error> {
     } else {
         println!("Vault: {}", response.vault);
         if !response.initialized {
-            println!("Status: not initialized");
-            println!("Next: {}", response.next_action);
+            println!(
+                "{}: not initialized",
+                crate::commands::output::style("Status", crate::commands::output::Style::Warning)
+            );
+            println!(
+                "{}: {}",
+                crate::commands::output::style("Next", crate::commands::output::Style::Plain),
+                response.next_action
+            );
             return Ok(());
         }
-        println!("Status: ready");
+        println!(
+            "{}: ready",
+            crate::commands::output::style("Status", crate::commands::output::Style::Success)
+        );
         println!("Tier: {}", response.tier.as_deref().unwrap_or("unknown"));
         println!(
             "Fingerprint: {}",
@@ -148,7 +158,11 @@ fn render(response: StatusResponse, json: bool) -> Result<(), Error> {
             response.share_files,
             response.invalid_share_files
         );
-        println!("Next: {}", response.next_action);
+        println!(
+            "{}: {}",
+            crate::commands::output::style("Next", crate::commands::output::Style::Plain),
+            response.next_action
+        );
     }
     Ok(())
 }

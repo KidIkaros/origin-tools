@@ -93,9 +93,10 @@ jobs:
           STAGE="origin-tools-${TAG}-${SUFFIX}"
           mkdir -p "${STAGE}"
 
-          # Unified binary + all standalone tools
+          # Unified binary + all standalone tools, including the product CLI.
           BINS="origin origin-identity origin-pass origin-seal origin-seed \
-                origin-shard origin-proof origin-stealth origin-entropy origin-schnorr"
+                origin-shard origin-proof origin-stealth origin-entropy origin-schnorr \
+                origin-secrets"
           for b in ${BINS}; do
             cp "origin-tools/target/${{ matrix.target }}/release/${b}" "${STAGE}/"
           done
@@ -103,6 +104,16 @@ jobs:
           # Docs users expect alongside the binaries
           cp origin-tools/README.md "${STAGE}/"
           cp origin-tools/LICENSE "${STAGE}/"
+          mkdir -p "${STAGE}/origin-secrets"
+          cp origin-tools/origin-secrets/README.md "${STAGE}/origin-secrets/"
+          cp origin-tools/origin-secrets/SECURITY.md "${STAGE}/origin-secrets/"
+          cp origin-tools/origin-secrets/man/origin-secrets.1 "${STAGE}/origin-secrets/"
+
+          # Verify the product binary is present and record the source version
+          # without executing a cross-compiled artifact on the host runner.
+          test -x "${STAGE}/origin-secrets"
+          VERSION="$(sed -n 's/^version = "\(.*\)"/\1/p' origin-tools/origin-secrets/Cargo.toml | head -n 1)"
+          printf 'origin-secrets %s\n' "${VERSION}" > "${STAGE}/origin-secrets-version.txt"
 
           # Archive + checksum
           tar -czf "${STAGE}.tar.gz" "${STAGE}"

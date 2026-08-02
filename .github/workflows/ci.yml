@@ -96,6 +96,14 @@ jobs:
     steps:
       - name: Checkout origin-tools
         uses: actions/checkout@v4
+        with:
+          path: origin-tools
+
+      - name: Checkout origin-crypto-sdk
+        uses: actions/checkout@v4
+        with:
+          repository: KidIkaros/OriginSDK
+          path: origin-crypto-sdk
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -104,3 +112,15 @@ jobs:
 
       - name: Check formatting
         run: cargo fmt --all -- --check
+        working-directory: origin-tools
+
+      - name: Check origin-secrets release metadata
+        shell: bash
+        run: |
+          set -euo pipefail
+          package_version="$(sed -n 's/^version = "\(.*\)"/\1/p' origin-secrets/Cargo.toml | head -n 1)"
+          man_version="$(sed -n 's/.*Origin Secrets v\([0-9.]*\).*/\1/p' origin-secrets/man/origin-secrets.1 | head -n 1)"
+          binary_version="$(cargo run -q -p origin-secrets -- --version)"
+          test "${package_version}" = "${man_version}"
+          test "${binary_version}" = "origin-secrets ${package_version}"
+        working-directory: origin-tools
