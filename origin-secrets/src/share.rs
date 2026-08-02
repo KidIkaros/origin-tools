@@ -5,12 +5,13 @@ use origin_crypto_sdk::pqc::falcon1024::FalconSignature;
 use origin_crypto_sdk::signing::hybrid::Ed25519Falcon1024;
 use origin_crypto_sdk::CryptoError;
 use serde::{Deserialize, Serialize};
+use zeroize::{Zeroize, ZeroizeOnDrop};
 
 /// Hybrid signature (Ed25519 + Falcon-1024)
 ///
 /// Stored as raw bytes for JSON persistence; convert to/from the SDK's
 /// [`Ed25519Falcon1024`] via [`HybridSignature::to_sdk`] / [`from_sdk`].
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Zeroize, ZeroizeOnDrop)]
 pub struct HybridSignature {
     pub ed25519: Vec<u8>,
     pub falcon1024: Vec<u8>,
@@ -42,7 +43,7 @@ impl HybridSignature {
 }
 
 /// Share file format
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Zeroize, ZeroizeOnDrop)]
 pub struct Share {
     pub version: u8,
     pub key_id: String,
@@ -68,7 +69,7 @@ pub struct Share {
 
 /// Public keys needed to verify a share's hybrid signature, embedded in the
 /// share file so verification does not require the vault (P3.4).
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Zeroize, ZeroizeOnDrop)]
 pub struct ShareVerifier {
     pub ed25519: Vec<u8>,
     pub falcon1024: Vec<u8>,
@@ -97,7 +98,7 @@ impl ShareVerifier {
 /// seed, so local shares are opaque at rest. Readers decrypt when the vault is
 /// available and fall back to plaintext for backward compatibility / exported
 /// shares.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Zeroize, ZeroizeOnDrop)]
 pub struct EncryptedShare {
     pub version: u8,
     pub nonce: [u8; 24],

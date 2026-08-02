@@ -5,11 +5,22 @@
 
 use crate::audit::{AuditEntry, Operation, OperationDetails};
 use crate::cli::RevokeShareArgs;
-use crate::crypto::{decrypt_vault_data, derive_vault_key, encrypt_vault_data, EncryptedVault};
+use crate::constant_time::{u8_eq, u8_in_hashset};
 use crate::error::Error;
 use crate::share::HybridSignature;
-use crate::vault::Vault;
+use crate::vault_handle::VaultHandle;
+use serde::Serialize;
 use std::path::Path;
+
+#[derive(Debug, Serialize)]
+struct RevokeResponse {
+    ok: bool,
+    command: &'static str,
+    vault: String,
+    revoked_share: u8,
+    revoked_total: usize,
+    audit_entries: usize,
+}
 
 const OPERATOR: &str = "origin-secrets-cli";
 
@@ -22,41 +33,29 @@ pub fn cmd_revoke_share(
     passphrase: &str,
     json: bool,
 ) -> Result<(), Error> {
-    if args.share_number == 0 {
+    // Constant-time check for share_number == 0 to prevent timing side-channels
+    if u8_eq(args.share_number, 0) {
         return Err(Error::CryptoError(
             "share number must be in 1..=255".to_string(),
         ));
     }
 
-    let raw = std::fs::read_to_string(vault_path)
-        .map_err(|_| Error::VaultNotFound(vault_path.to_path_buf()))?;
-    let vault: Vault =
-        serde_json::from_str(&raw).map_err(|e| Error::VaultCorrupted(e.to_string()))?;
-    let tier = vault.tier;
-    let key = derive_vault_key(passphrase.as_bytes(), &vault.salt, tier)?;
-    let encrypted = EncryptedVault {
-        version: vault.version,
-        created_at: vault.created_at.clone(),
-        tier: vault.tier,
-        fingerprint: vault.fingerprint.clone(),
-        salt: vault.salt,
-        nonce: vault.nonce,
-        ciphertext: vault.ciphertext.clone(),
-    };
-    let mut vault_data = decrypt_vault_data(&encrypted, &key)?;
+    let mut handle = VaultHandle::open(vault_path, passphrase)?;
 
-    if vault_data.revoked_shares.contains(&args.share_number) {
+    // Constant-time check for revoked share to prevent timing side-channels
+    if u8_in_hashset(args.share_number, &handle.data().revoked_shares) {
         return Err(Error::CryptoError(format!(
             "share #{} is already revoked",
             args.share_number
         )));
     }
-    vault_data.revoked_shares.insert(args.share_number);
+    handle.data_mut().revoked_shares.insert(args.share_number);
 
     // Append the revocation record before re-encrypting.
     let timestamp = crate::observability::epoch_to_ymd_hms_now();
+    let seed = handle.data().master_seed;
     let signer = origin_crypto_sdk::signing::hybrid::HybridSigningKeyBundle::from_seed_cached(
-        &vault_data.master_seed,
+        &seed,
         "origin-secrets/audit/v1",
     )
     .map_err(|e| Error::SignatureGenerationFailed(format!("{e:?}")))?;
@@ -75,41 +74,22 @@ pub fn cmd_revoke_share(
         },
         signature: HybridSignature::from_sdk(&audit_sig),
     };
-    vault_data.audit_log.push(revoke_entry);
-
-    // Re-encrypt at the SAME salt/tier (passphrase unchanged), but with a FRESH
-    // nonce. Reusing vault.nonce under the same derived key would repeat the
-    // (key, nonce) pair and leak the audit-log delta — the exact H1 bug class.
-    // shard/export/rotate all do this; revoke must too.
-    let reencrypt_nonce: [u8; 24] = crate::crypto::random_array()?;
-    let reencrypted = encrypt_vault_data(&vault_data, &key, vault.salt, reencrypt_nonce, tier)?;
-    let updated_vault = Vault {
-        version: reencrypted.version,
-        created_at: reencrypted.created_at,
-        tier: reencrypted.tier,
-        fingerprint: reencrypted.fingerprint.clone(),
-        salt: reencrypted.salt,
-        nonce: reencrypted.nonce,
-        ciphertext: reencrypted.ciphertext,
-    };
-    std::fs::write(
-        vault_path,
-        serde_json::to_string_pretty(&updated_vault).map_err(|e| Error::IoError(e.to_string()))?,
-    )
-    .map_err(|e| Error::IoError(e.to_string()))?;
+    handle.data_mut().audit_log.push(revoke_entry);
+    // VaultHandle.save() preserves the key/salt and generates a fresh nonce.
+    handle.save()?;
+    let revoked_total = handle.data().revoked_shares.len();
+    let audit_entries = handle.data().audit_log.len();
 
     if json {
-        println!(
-            "{}",
-            serde_json::json!({
-                "ok": true,
-                "command": "revoke-share",
-                "vault": vault_path.display().to_string(),
-                "revoked_share": args.share_number,
-                "revoked_total": vault_data.revoked_shares.len(),
-                "audit_entries": vault_data.audit_log.len(),
-            })
-        );
+        let response = RevokeResponse {
+            ok: true,
+            command: "revoke-share",
+            vault: vault_path.display().to_string(),
+            revoked_share: args.share_number,
+            revoked_total,
+            audit_entries,
+        };
+        crate::commands::output::print_json(&response, "revoke-share")?;
     } else {
         println!(
             "Revoked share #{} in vault: {}",
@@ -118,8 +98,7 @@ pub fn cmd_revoke_share(
         );
         println!(
             "Total revoked shares: {}. Audit history preserved ({} entries).",
-            vault_data.revoked_shares.len(),
-            vault_data.audit_log.len()
+            revoked_total, audit_entries
         );
     }
 
@@ -155,7 +134,7 @@ mod tests {
             fingerprint: enc.fingerprint.clone(),
             salt: enc.salt,
             nonce: enc.nonce,
-            ciphertext: enc.ciphertext,
+            ciphertext: enc.ciphertext.clone(),
         };
         std::fs::write(&path, serde_json::to_string_pretty(&vault).unwrap()).unwrap();
         path
@@ -230,7 +209,7 @@ mod tests {
             fingerprint: v.fingerprint.clone(),
             salt: v.salt,
             nonce: v.nonce,
-            ciphertext: v.ciphertext,
+            ciphertext: v.ciphertext.clone(),
         };
         let vd = decrypt_vault_data(&enc, &key).unwrap();
         assert!(vd.revoked_shares.contains(&2));

@@ -20,7 +20,6 @@
 use clap::Parser;
 use origin_secrets::cli::{Cli, Commands};
 use origin_secrets::observability;
-use serde_json::json;
 
 /// Human-readable command name for the failure journal.
 fn command_name(cmd: &Commands) -> &'static str {
@@ -34,6 +33,9 @@ fn command_name(cmd: &Commands) -> &'static str {
         Commands::RotatePassphrase(_) => "rotate-passphrase",
         Commands::ListKeys(_) => "list-keys",
         Commands::ListShares(_) => "list-shares",
+        Commands::Status(_) => "status",
+        Commands::Handoff(_) => "handoff",
+        Commands::Diagnose(_) => "diagnose",
         Commands::RevokeShare(_) => "revoke-share",
         Commands::Completions(_) => "completions",
     }
@@ -59,15 +61,7 @@ fn main() {
     let e = result.unwrap_err();
     observability::record_failure(&e, cmd_name);
     if json {
-        println!(
-            "{}",
-            json!({
-                "ok": false,
-                "code": e.code(),
-                "severity": e.severity(),
-                "message": e.to_string(),
-            })
-        );
+        println!("{}", e.json_envelope());
     } else {
         eprintln!("Error: {}", e);
     }

@@ -2,10 +2,46 @@
 
 use crate::audit::{AuditEntry, ComplianceFormat, Operation};
 use crate::cli::AuditArgs;
-use crate::crypto::{decrypt_vault_data, derive_vault_key, EncryptedVault};
 use crate::error::Error;
-use crate::vault::Vault;
+use crate::vault_handle::VaultHandle;
+use serde::Serialize;
 use std::path::Path;
+
+#[derive(Debug, Serialize)]
+struct AuditFailuresResponse {
+    ok: bool,
+    command: &'static str,
+    failures: Vec<crate::observability::FailureRecord>,
+}
+
+#[derive(Debug, Serialize)]
+struct AuditSummaryResponse {
+    ok: bool,
+    command: &'static str,
+    entry_count: usize,
+}
+
+#[derive(Debug, Serialize)]
+struct AuditEntriesResponse {
+    ok: bool,
+    command: &'static str,
+    mode: &'static str,
+    entry_count: usize,
+    entries: Vec<AuditEntry>,
+}
+
+#[derive(Debug, Serialize)]
+struct AuditExportResponse {
+    ok: bool,
+    command: &'static str,
+    export: ComplianceFormat,
+    entry_count: usize,
+    path: String,
+}
+
+fn print_json<T: Serialize>(value: &T) -> Result<(), Error> {
+    crate::commands::output::print_json(value, "audit")
+}
 
 /// Inspect and export the vault audit log.
 ///
@@ -25,14 +61,11 @@ pub fn cmd_audit(
     if args.show_failures {
         let failures = crate::observability::read_failures();
         if json {
-            println!(
-                "{}",
-                serde_json::json!({
-                    "ok": true,
-                    "command": "audit",
-                    "failures": failures,
-                })
-            );
+            print_json(&AuditFailuresResponse {
+                ok: true,
+                command: "audit",
+                failures,
+            })?;
         } else {
             if failures.is_empty() {
                 println!("No recorded failures.");
@@ -108,7 +141,7 @@ pub fn cmd_audit(
             .filter(|e| matches!(e.operation, Operation::Recover { .. }))
             .cloned()
             .collect();
-        print_entries(&recovery, json, "recovery_log");
+        print_entries(&recovery, json, "recovery_log")?;
         return Ok(());
     }
 
@@ -116,20 +149,17 @@ pub fn cmd_audit(
         if any_filter_set(&args) {
             eprintln!("Warning: audit filters are ignored with --show-recovery-log/--show-all-logs display modes.");
         }
-        print_entries(&filtered, json, "all_logs");
+        print_entries(&filtered, json, "all_logs")?;
         return Ok(());
     }
 
     // Default: summary.
     if json {
-        println!(
-            "{}",
-            serde_json::json!({
-                "ok": true,
-                "command": "audit",
-                "entry_count": filtered.len(),
-            })
-        );
+        print_json(&AuditSummaryResponse {
+            ok: true,
+            command: "audit",
+            entry_count: filtered.len(),
+        })?;
     } else {
         println!("Audit log: {} entries.", filtered.len());
         for e in &filtered {
@@ -144,23 +174,8 @@ pub fn cmd_audit(
 
 /// Decrypt the vault and return its audit log.
 fn load_audit_log(vault_path: &Path, passphrase: &str) -> Result<Vec<AuditEntry>, Error> {
-    let raw = std::fs::read_to_string(vault_path)
-        .map_err(|_| Error::VaultNotFound(vault_path.to_path_buf()))?;
-    let vault: Vault =
-        serde_json::from_str(&raw).map_err(|e| Error::VaultCorrupted(e.to_string()))?;
-
-    let key = derive_vault_key(passphrase.as_bytes(), &vault.salt, vault.tier)?;
-    let encrypted = EncryptedVault {
-        version: vault.version,
-        created_at: vault.created_at.clone(),
-        tier: vault.tier,
-        fingerprint: vault.fingerprint.clone(),
-        salt: vault.salt,
-        nonce: vault.nonce,
-        ciphertext: vault.ciphertext.clone(),
-    };
-    let vault_data = decrypt_vault_data(&encrypted, &key)?;
-    Ok(vault_data.audit_log)
+    let handle = VaultHandle::open(vault_path, passphrase)?;
+    Ok(handle.data().audit_log.clone())
 }
 
 /// Apply the optional filters.
@@ -194,18 +209,15 @@ fn filter_entries(entries: Vec<AuditEntry>, args: &AuditArgs) -> Vec<AuditEntry>
 }
 
 /// Print entries — human-readable list or pretty JSON depending on `json`.
-fn print_entries(entries: &[AuditEntry], json: bool, mode: &str) {
+fn print_entries(entries: &[AuditEntry], json: bool, mode: &'static str) -> Result<(), Error> {
     if json {
-        println!(
-            "{}",
-            serde_json::json!({
-                "ok": true,
-                "command": "audit",
-                "mode": mode,
-                "entry_count": entries.len(),
-                "entries": entries,
-            })
-        );
+        print_json(&AuditEntriesResponse {
+            ok: true,
+            command: "audit",
+            mode,
+            entry_count: entries.len(),
+            entries: entries.to_vec(),
+        })?;
     } else {
         println!("Audit log: {} entries.", entries.len());
         for e in entries {
@@ -215,6 +227,7 @@ fn print_entries(entries: &[AuditEntry], json: bool, mode: &str) {
             );
         }
     }
+    Ok(())
 }
 
 /// Write filtered entries as a compliance evidence file.
@@ -236,18 +249,15 @@ fn export_compliance(
     });
     let serialized =
         serde_json::to_string_pretty(&evidence).map_err(|e| Error::IoError(e.to_string()))?;
-    std::fs::write(path, serialized).map_err(|e| Error::IoError(e.to_string()))?;
+    crate::vault_handle::atomic_write(path, serialized.as_bytes())?;
     if json {
-        println!(
-            "{}",
-            serde_json::json!({
-                "ok": true,
-                "command": "audit",
-                "export": format,
-                "entry_count": entries.len(),
-                "path": path.display().to_string(),
-            })
-        );
+        print_json(&AuditExportResponse {
+            ok: true,
+            command: "audit",
+            export: format,
+            entry_count: entries.len(),
+            path: path.display().to_string(),
+        })?;
     } else {
         println!(
             "Exported {} audit entries as {:?} evidence to {}.",
@@ -272,6 +282,7 @@ mod tests {
     use super::*;
     use crate::cli::ShardArgs;
     use crate::commands::shard::cmd_shard;
+    use crate::crypto::derive_vault_key;
     use std::path::PathBuf;
     use tempfile::tempdir;
 
@@ -294,7 +305,7 @@ mod tests {
             fingerprint: enc.fingerprint.clone(),
             salt: enc.salt,
             nonce: enc.nonce,
-            ciphertext: enc.ciphertext,
+            ciphertext: enc.ciphertext.clone(),
         };
         let path = dir.join("secrets.vault");
         std::fs::write(&path, serde_json::to_string_pretty(&vault).unwrap()).unwrap();

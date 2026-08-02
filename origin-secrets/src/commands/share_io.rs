@@ -2,12 +2,11 @@
 //! encrypted-at-rest shares (P3.3), expiry rejection (P3.2), and revocation
 //! rejection (P3.1) when a vault is available.
 
-use crate::crypto::{
-    decrypt_share, decrypt_vault_data, derive_vault_key, encrypt_vault_data, EncryptedVault,
-};
+use crate::constant_time::u8_in_hashset;
+use crate::crypto::decrypt_share;
 use crate::error::Error;
 use crate::share::{EncryptedShare, Share, ShareVerifier};
-use crate::vault::Vault;
+use crate::vault_handle::VaultHandle;
 use origin_crypto_sdk::signing::hybrid::Ed25519Falcon1024;
 use std::path::Path;
 
@@ -26,26 +25,22 @@ pub fn read_share_file(
         share_number: 0,
         path: path.to_path_buf(),
     })?;
+    let handle = vault
+        .map(|vp| VaultHandle::open(vp, passphrase))
+        .transpose()?;
 
     // Try the encrypted envelope first; fall back to plaintext for legacy /
     // exported shares.
     let share: Share = match serde_json::from_str::<EncryptedShare>(&raw) {
         Ok(enc) => {
-            let seed = match vault {
-                Some(vp) => Some(load_seed(vp, passphrase)?),
-                None => None,
-            };
-            match seed {
-                Some(seed) => decrypt_share(&enc, &seed, enc_share_number(&enc, path))?,
-                None => {
-                    // Encrypted but no vault: cannot decrypt. Surface a clear
-                    // error rather than silently failing the decode below.
-                    return Err(Error::ShareCorrupted {
-                        share_number: 0,
-                        path: path.to_path_buf(),
-                    });
-                }
-            }
+            let seed = handle
+                .as_ref()
+                .map(|h| h.data().master_seed)
+                .ok_or_else(|| Error::ShareCorrupted {
+                    share_number: 0,
+                    path: path.to_path_buf(),
+                })?;
+            decrypt_share(&enc, &seed, enc_share_number(&enc, path))?
         }
         Err(_) => serde_json::from_str::<Share>(&raw).map_err(|_| Error::ShareCorrupted {
             share_number: 0,
@@ -70,13 +65,11 @@ pub fn read_share_file(
         // A malformed expiry is non-fatal for read; verify will still run.
     }
 
-    // P3.1: revocation enforcement when a vault is available.
-    if let Some(vp) = vault {
-        let vd = decrypt_vault_data(
-            &load_encrypted(vp)?,
-            &derive_vault_key(passphrase.as_bytes(), &seed_salt(vp)?, vault_tier(vp)?)?,
-        )?;
-        if vd.revoked_shares.contains(&share.share_number) {
+    // P3.1: revocation enforcement when a vault is available. The same opened
+    // handle used for encrypted-share decryption supplies the revocation set,
+    // avoiding a second parse and decrypt of the vault.
+    if let Some(handle) = &handle {
+        if u8_in_hashset(share.share_number, &handle.data().revoked_shares) {
             return Err(Error::ShareRevoked {
                 share_number: share.share_number,
             });
@@ -134,36 +127,6 @@ fn enc_share_number(_enc: &EncryptedShare, path: &Path) -> u8 {
     digits.parse::<u8>().unwrap_or(0)
 }
 
-fn load_encrypted(vp: &Path) -> Result<EncryptedVault, Error> {
-    let raw = std::fs::read_to_string(vp).map_err(|_| Error::VaultNotFound(vp.to_path_buf()))?;
-    let vault: Vault =
-        serde_json::from_str(&raw).map_err(|e| Error::VaultCorrupted(e.to_string()))?;
-    Ok(EncryptedVault {
-        version: vault.version,
-        created_at: vault.created_at.clone(),
-        tier: vault.tier,
-        fingerprint: vault.fingerprint.clone(),
-        salt: vault.salt,
-        nonce: vault.nonce,
-        ciphertext: vault.ciphertext.clone(),
-    })
-}
-
-fn load_seed(vp: &Path, passphrase: &str) -> Result<[u8; 32], Error> {
-    let enc = load_encrypted(vp)?;
-    let key = derive_vault_key(passphrase.as_bytes(), &enc.salt, enc.tier)?;
-    let vd = decrypt_vault_data(&enc, &key)?;
-    Ok(vd.master_seed)
-}
-
-fn seed_salt(vp: &Path) -> Result<[u8; 16], Error> {
-    Ok(load_encrypted(vp)?.salt)
-}
-
-fn vault_tier(vp: &Path) -> Result<crate::vault::MemoryTier, Error> {
-    Ok(load_encrypted(vp)?.tier)
-}
-
 /// Minimal ISO-8601 -> epoch-seconds parse (YYYY-MM-DDTHH:MM:SSZ). Avoids a
 /// chrono dependency for this single use.
 fn chrono_parse(s: &str) -> Result<i64, Error> {
@@ -203,18 +166,14 @@ fn chrono_parse(s: &str) -> Result<i64, Error> {
     Ok(secs)
 }
 
-#[allow(dead_code)]
-fn _unused_encrypt_vault_data() {
-    let _ = encrypt_vault_data;
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::cli::InitArgs;
     use crate::commands::init::cmd_init;
-    use crate::crypto::encrypt_share;
+    use crate::crypto::{decrypt_vault_data, derive_vault_key, encrypt_share, encrypt_vault_data};
     use crate::share::HybridSignature;
+    use crate::vault::Vault;
     use tempfile::tempdir;
 
     fn init_vault(dir: &std::path::Path, pw: &str) -> (std::path::PathBuf, [u8; 32]) {
@@ -227,6 +186,7 @@ mod tests {
             },
             &vault_path,
             Some(pw_file.as_path()),
+            false,
             false,
         )
         .unwrap();
@@ -245,7 +205,7 @@ mod tests {
             fingerprint: enc.fingerprint.clone(),
             salt: enc.salt,
             nonce: enc.nonce,
-            ciphertext: enc.ciphertext,
+            ciphertext: enc.ciphertext.clone(),
         };
         std::fs::write(&vault_path, serde_json::to_string_pretty(&vault).unwrap()).unwrap();
         (vault_path, [42u8; 32])
@@ -338,7 +298,7 @@ mod tests {
         let mut vd = decrypt_vault_data(&enc, &key).unwrap();
         vd.revoked_shares.insert(2);
         let re_enc = encrypt_vault_data(&vd, &key, v.salt, v.nonce, v.tier).unwrap();
-        v.ciphertext = re_enc.ciphertext;
+        v.ciphertext = re_enc.ciphertext.clone();
         std::fs::write(&vault, serde_json::to_string_pretty(&v).unwrap()).unwrap();
 
         let share = make_share(&seed, 2);

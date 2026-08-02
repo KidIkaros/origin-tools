@@ -1,14 +1,62 @@
 //! Verify command — integrity checks for vaults and shares.
 use crate::cli::VerifyArgs;
-use crate::crypto::{decrypt_vault_data, derive_vault_key, EncryptedVault};
 use crate::error::Error;
-use crate::vault::Vault;
+use crate::vault_handle::VaultHandle;
 use origin_crypto_sdk::signing::hybrid::{Ed25519Falcon1024, HybridSigningKeyBundle};
+use serde::Serialize;
 use std::path::Path;
 
 /// Domain used when deriving the share-signing bundle from the master seed.
 /// Must match the domain used in `shard`/`recover`/`export`.
 const SHARE_SIGNING_DOMAIN: &str = "origin-secrets/share/v1";
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "snake_case")]
+struct VerifyVaultResponse {
+    ok: bool,
+    command: &'static str,
+    target: &'static str,
+    vault: String,
+    audit_entries: usize,
+    seed_length: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    note: Option<&'static str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    recovery_entries_present: Option<bool>,
+}
+
+#[derive(Debug, Serialize)]
+struct VerifyRecoveryLogResponse {
+    ok: bool,
+    command: &'static str,
+    target: &'static str,
+    vault: String,
+    recovery_entries_present: bool,
+}
+
+#[derive(Debug, Serialize)]
+struct VerifyShareResponse<'a> {
+    ok: bool,
+    command: &'static str,
+    target: &'static str,
+    share: u8,
+    verified: bool,
+    method: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    threshold: Option<u8>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    total_shares: Option<u8>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    data_bytes: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    fingerprint: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    warning: Option<&'static str>,
+}
+
+fn print_json<T: Serialize>(value: &T) -> Result<(), Error> {
+    crate::commands::output::print_json(value, "verify")
+}
 
 /// Verify a vault or share.
 ///
@@ -61,18 +109,19 @@ pub fn cmd_verify(
         // actionable message (never imply the user did something wrong when a
         // vault simply wasn't supplied).
         if json {
-            println!(
-                "{}",
-                serde_json::json!({
-                    "ok": true,
-                    "command": "verify",
-                    "target": "share",
-                    "share": 0,
-                    "verified": false,
-                    "method": "structural",
-                    "warning": "no vault available for cryptographic verification; supply -V <vault> (or --vault-path) or place the share beside its source vault, or use `recover` for a full check",
-                })
-            );
+            print_json(&VerifyShareResponse {
+                ok: true,
+                command: "verify",
+                target: "share",
+                share: 0,
+                verified: false,
+                method: "structural",
+                threshold: None,
+                total_shares: None,
+                data_bytes: None,
+                fingerprint: None,
+                warning: Some("no vault available for cryptographic verification; supply -V <vault> (or --vault-path) or place the share beside its source vault, or use `recover` for a full check"),
+            })?;
         } else {
             println!(
                 "Cryptographic verification skipped: no vault available. Supply -V <vault> (or --vault-path), keep the share beside its source vault, or use `recover` for a full check."
@@ -100,22 +149,8 @@ fn verify_vault(
     json: bool,
     recovery_log: bool,
 ) -> Result<(), Error> {
-    let raw =
-        std::fs::read_to_string(path).map_err(|_| Error::VaultNotFound(path.to_path_buf()))?;
-    let vault: Vault =
-        serde_json::from_str(&raw).map_err(|e| Error::VaultCorrupted(e.to_string()))?;
-
-    let key = derive_vault_key(passphrase.as_bytes(), &vault.salt, vault.tier)?;
-    let encrypted = EncryptedVault {
-        version: vault.version,
-        created_at: vault.created_at.clone(),
-        tier: vault.tier,
-        fingerprint: vault.fingerprint.clone(),
-        salt: vault.salt,
-        nonce: vault.nonce,
-        ciphertext: vault.ciphertext.clone(),
-    };
-    let vault_data = decrypt_vault_data(&encrypted, &key)?;
+    let handle = VaultHandle::open(path, passphrase)?;
+    let vault_data = handle.data();
 
     // --recovery-log: confirm the vault carries at least one Recover audit
     // entry (i.e. it was rebuilt from shares at some point). This makes the
@@ -129,16 +164,13 @@ fn verify_vault(
             return Err(Error::AuditLogNotFound);
         }
         if json {
-            println!(
-                "{}",
-                serde_json::json!({
-                    "ok": true,
-                    "command": "verify",
-                    "target": "recovery-log",
-                    "vault": path.display().to_string(),
-                    "recovery_entries_present": true,
-                })
-            );
+            print_json(&VerifyRecoveryLogResponse {
+                ok: true,
+                command: "verify",
+                target: "recovery-log",
+                vault: path.display().to_string(),
+                recovery_entries_present: true,
+            })?;
         } else {
             println!("Recovery log present in vault {}.", path.display());
         }
@@ -150,18 +182,16 @@ fn verify_vault(
     let audit_entries = vault_data.audit_log.len();
     if audit_entries == 0 && !vault_data.master_seed.is_empty() {
         if json {
-            println!(
-                "{}",
-                serde_json::json!({
-                    "ok": true,
-                    "command": "verify",
-                    "target": "vault",
-                    "vault": path.display().to_string(),
-                    "audit_entries": 0,
-                    "seed_length": vault_data.master_seed.len(),
-                    "note": "fresh vault, no audit entries yet",
-                })
-            );
+            print_json(&VerifyVaultResponse {
+                ok: true,
+                command: "verify",
+                target: "vault",
+                vault: path.display().to_string(),
+                audit_entries: 0,
+                seed_length: vault_data.master_seed.len(),
+                note: Some("fresh vault, no audit entries yet"),
+                recovery_entries_present: None,
+            })?;
         } else {
             println!(
                 "Vault OK (fresh): seed length {} bytes, no audit entries yet.",
@@ -172,17 +202,16 @@ fn verify_vault(
     }
 
     if json {
-        println!(
-            "{}",
-            serde_json::json!({
-                "ok": true,
-                "command": "verify",
-                "target": "vault",
-                "vault": path.display().to_string(),
-                "audit_entries": audit_entries,
-                "seed_length": vault_data.master_seed.len(),
-            })
-        );
+        print_json(&VerifyVaultResponse {
+            ok: true,
+            command: "verify",
+            target: "vault",
+            vault: path.display().to_string(),
+            audit_entries,
+            seed_length: vault_data.master_seed.len(),
+            note: None,
+            recovery_entries_present: None,
+        })?;
     } else {
         println!(
             "Vault OK: {} audit entries, seed length {} bytes.",
@@ -253,17 +282,19 @@ fn verify_share(
             details: "hybrid signature invalid".to_string(),
         })?;
         if json {
-            println!(
-                "{}",
-                serde_json::json!({
-                    "ok": true,
-                    "command": "verify",
-                    "target": "share",
-                    "share": share.share_number,
-                    "verified": true,
-                    "method": "hybrid",
-                })
-            );
+            print_json(&VerifyShareResponse {
+                ok: true,
+                command: "verify",
+                target: "share",
+                share: share.share_number,
+                verified: true,
+                method: "hybrid",
+                threshold: None,
+                total_shares: None,
+                data_bytes: None,
+                fingerprint: None,
+                warning: None,
+            })?;
         } else {
             println!(
                 "Share {} cryptographically verified (Ed25519 + Falcon-1024).",
@@ -274,21 +305,19 @@ fn verify_share(
     }
 
     if json {
-        println!(
-            "{}",
-            serde_json::json!({
-                "ok": true,
-                "command": "verify",
-                "target": "share",
-                "share": share.share_number,
-                "verified": false,
-                "method": "structural",
-                "threshold": share.threshold,
-                "total_shares": share.total_shares,
-                "data_bytes": share.share_data.len(),
-                "fingerprint": share.fingerprint,
-            })
-        );
+        print_json(&VerifyShareResponse {
+            ok: true,
+            command: "verify",
+            target: "share",
+            share: share.share_number,
+            verified: false,
+            method: "structural",
+            threshold: Some(share.threshold),
+            total_shares: Some(share.total_shares),
+            data_bytes: Some(share.share_data.len()),
+            fingerprint: Some(&share.fingerprint),
+            warning: None,
+        })?;
     } else {
         println!(
             "Share {} structurally valid: threshold {}, total {}, {} bytes, fingerprint {}.",
@@ -324,21 +353,8 @@ fn derive_share_signer(
     passphrase: &str,
     share_number: u8,
 ) -> Result<std::sync::Arc<HybridSigningKeyBundle>, Error> {
-    let raw = std::fs::read_to_string(vault_path)
-        .map_err(|_| Error::VaultNotFound(vault_path.to_path_buf()))?;
-    let vault: Vault =
-        serde_json::from_str(&raw).map_err(|e| Error::VaultCorrupted(e.to_string()))?;
-    let key = derive_vault_key(passphrase.as_bytes(), &vault.salt, vault.tier)?;
-    let encrypted = EncryptedVault {
-        version: vault.version,
-        created_at: vault.created_at.clone(),
-        tier: vault.tier,
-        fingerprint: vault.fingerprint.clone(),
-        salt: vault.salt,
-        nonce: vault.nonce,
-        ciphertext: vault.ciphertext.clone(),
-    };
-    let vault_data = decrypt_vault_data(&encrypted, &key)?;
+    let handle = VaultHandle::open(vault_path, passphrase)?;
+    let vault_data = handle.data();
     let seed: &[u8; 32] = vault_data
         .master_seed
         .as_slice()
@@ -353,6 +369,7 @@ mod tests {
     use super::*;
     use crate::cli::ShardArgs;
     use crate::commands::shard::cmd_shard;
+    use crate::crypto::derive_vault_key;
     use crate::share::{HybridSignature, Share};
     use std::path::PathBuf;
     use tempfile::tempdir;
@@ -389,7 +406,7 @@ mod tests {
             fingerprint: enc.fingerprint.clone(),
             salt: enc.salt,
             nonce: enc.nonce,
-            ciphertext: enc.ciphertext,
+            ciphertext: enc.ciphertext.clone(),
         };
         let path = dir.join("secrets.vault");
         std::fs::write(&path, serde_json::to_string_pretty(&vault).unwrap()).unwrap();

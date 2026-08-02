@@ -12,10 +12,16 @@ pub struct Cli {
     #[arg(short = 'V', long, default_value = "~/.origin/secrets.vault")]
     pub vault: PathBuf,
 
-    /// Passphrase file path. Required for every command — there is no built-in
-    /// default, so a command without -p fails with PassphraseRequired.
+    /// Passphrase file path. In a TTY, omitting this flag securely prompts for
+    /// the passphrase; non-interactive callers must provide a file or `-` for stdin.
     #[arg(short = 'p', long)]
     pub passphrase_file: Option<PathBuf>,
+
+    /// Prompt interactively for the passphrase (reads from TTY, not stdin).
+    /// This is implicit in a TTY when --passphrase-file is omitted.
+    /// Mutually exclusive with --passphrase-file.
+    #[arg(long, conflicts_with = "passphrase_file")]
+    pub prompt: bool,
 
     /// Machine-readable JSON output (for CI/automation; success prints
     /// structured per-command JSON with "ok":true; failure prints
@@ -77,6 +83,21 @@ pub enum Commands {
         after_help = "Example:\n  origin-secrets -V ./secrets.vault -p ./pw.txt list-shares"
     )]
     ListShares(ListSharesArgs),
+    /// Show vault, share, and recovery readiness without exposing secrets
+    #[command(
+        after_help = "Examples:\n  origin-secrets status\n  origin-secrets -V ./secrets.vault -p ./pw.txt status --json"
+    )]
+    Status(StatusArgs),
+    /// Create a portable, non-secret custodian handoff manifest
+    #[command(
+        after_help = "Example:\n  origin-secrets handoff --share share1.json --out handoff.json --recipient alice"
+    )]
+    Handoff(HandoffArgs),
+    /// Create a secret-free support diagnostic bundle
+    #[command(
+        after_help = "Examples:\n  origin-secrets diagnose\n  origin-secrets diagnose --out support-diagnostic.json"
+    )]
+    Diagnose(DiagnoseArgs),
     /// Revoke a share number so it is rejected by recover/verify (P3.1)
     #[command(
         after_help = "Example:\n  origin-secrets -V ./secrets.vault -p ./pw.txt revoke-share 2"
@@ -175,6 +196,10 @@ pub struct RecoverArgs {
     /// is refused (FileAlreadyExists) to avoid destroying a vault.
     #[arg(long)]
     pub force: bool,
+
+    /// Inspect share readiness without reconstructing the master seed.
+    #[arg(long)]
+    pub preflight: bool,
 }
 
 #[derive(Parser, Clone, Debug)]
@@ -258,6 +283,39 @@ pub struct ListKeysArgs {}
 
 #[derive(Parser, Clone, Debug)]
 pub struct ListSharesArgs {}
+
+#[derive(Parser, Clone, Debug)]
+pub struct StatusArgs {}
+
+#[derive(Parser, Clone, Debug)]
+pub struct HandoffArgs {
+    /// Share file to describe; share material is never copied into the manifest.
+    #[arg(long)]
+    pub share: PathBuf,
+
+    /// Output path for the handoff manifest.
+    #[arg(short = 'o', long)]
+    pub out: PathBuf,
+
+    /// Recipient identifier to record in the handoff manifest.
+    #[arg(long)]
+    pub recipient: Option<String>,
+
+    /// Overwrite an existing manifest.
+    #[arg(long)]
+    pub force: bool,
+}
+
+#[derive(Parser, Clone, Debug)]
+pub struct DiagnoseArgs {
+    /// Optional output path for a secret-free diagnostic JSON bundle.
+    #[arg(short = 'o', long)]
+    pub out: Option<PathBuf>,
+
+    /// Overwrite an existing diagnostic bundle.
+    #[arg(long)]
+    pub force: bool,
+}
 
 #[derive(Parser, Clone, Debug)]
 pub struct RevokeShareArgs {

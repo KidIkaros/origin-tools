@@ -89,7 +89,7 @@ pub enum Error {
     #[error("Passphrase too weak (minimum {min_length} characters)")]
     PassphraseTooWeak { min_length: usize },
 
-    #[error("A passphrase is required: supply -p/--passphrase-file (interactive prompting is not yet supported)")]
+    #[error("A passphrase is required: run from a TTY for an interactive prompt, or supply -p/--passphrase-file (use - for stdin)")]
     PassphraseRequired,
 
     #[error("Passphrase mismatch")]
@@ -205,6 +205,52 @@ impl Error {
             | Error::NotImplemented(_) => Severity::Error,
         }
     }
+
+    /// Build the stable machine-readable error envelope used by `--json`.
+    /// Keeping this beside the error taxonomy prevents each CLI entry point from
+    /// independently drifting its schema or accidentally omitting remediation.
+    pub fn json_envelope(&self) -> serde_json::Value {
+        serde_json::json!({
+            "ok": false,
+            "code": self.code(),
+            "severity": self.severity(),
+            "message": self.to_string(),
+            "remediation": self.remediation(),
+        })
+    }
+
+    /// Human-readable remediation guidance for this error.
+    /// Returns a concise, actionable suggestion for the operator.
+    pub fn remediation(&self) -> &'static str {
+        match self {
+            Error::VaultNotFound(_) => "Ensure the vault path is correct and the file exists. Use `origin-secrets init` to create a new vault.",
+            Error::VaultAlreadyExists(_) => "A vault already exists at this path. Use a different path or remove the existing vault first.",
+            Error::VaultCorrupted(_) => "The vault file is corrupted or tampered with. Restore from a backup or re-initialize.",
+            Error::VaultDecryptionFailed(_) => "Check that the passphrase is correct. If using a passphrase file, ensure it contains the exact passphrase without extra whitespace.",
+            Error::VaultEncryptionFailed(_) => "Internal encryption failure. Check system entropy and try again.",
+            Error::KeyNotFound { .. } => "The requested key label does not exist in the vault. Use `origin-secrets list-keys` to see available keys.",
+            Error::KeyAlreadyExists { .. } => "A key with this label already exists. Use a different label or remove the existing key first.",
+            Error::ShareNotFound { .. } => "The share file was not found. Verify the share number and path. Use `origin-secrets list-shares` to see available shares.",
+            Error::ShareRevoked { .. } => "This share has been revoked and cannot be used. Contact the vault operator for a valid share.",
+            Error::ShareExpired { .. } => "This share has expired. Request a new share from the vault operator.",
+            Error::InsufficientShares { .. } => "Collect more shares to meet the threshold. Use `origin-secrets list-shares` to find available shares.",
+            Error::ShareVerificationFailed { .. } => "Share signature verification failed. The share may be corrupted or tampered with.",
+            Error::ShareCorrupted { .. } => "The share file is corrupted. Obtain a fresh copy from the vault operator.",
+            Error::FileAlreadyExists(_) => "Output file already exists. Remove it or use `--force` to overwrite.",
+            Error::StdoutSecretRefused => "Use `-o/--out <FILE>` to write the secret to a file, or `--json` for machine capture.",
+            Error::InvalidThreshold { .. } => "Ensure threshold is between 1 and total shares. Use valid K-of-N parameters.",
+            Error::SignatureVerificationFailed(_) => "Signature verification failed. The data may be tampered with or the key is incorrect.",
+            Error::SignatureGenerationFailed(_) => "Internal signing failure. Check system entropy and try again.",
+            Error::ComplianceExportFailed { .. } => "Compliance export failed. Check the framework parameters and try again.",
+            Error::AuditLogNotFound => "No audit log found in the vault. The vault may be empty or corrupted.",
+            Error::IoError(_) => "Check file permissions, disk space, and path validity.",
+            Error::CryptoError(_) => "Internal cryptographic failure. This may indicate a system issue or tampering.",
+            Error::PassphraseTooWeak { .. } => "Use a passphrase of at least 12 characters with mixed case, numbers, and symbols.",
+            Error::PassphraseRequired => "Run from a TTY for a secure prompt, or provide `-p/--passphrase-file <PATH>` (`-p -` reads stdin) for non-interactive use.",
+            Error::PassphraseMismatch => "The provided passphrase does not match the vault. Verify the passphrase and try again.",
+            Error::NotImplemented(_) => "This feature is not yet implemented. Check for updates or file a feature request.",
+        }
+    }
 }
 
 impl From<serde_json::Error> for Error {
@@ -253,6 +299,27 @@ mod tests {
             err.to_string(),
             "Passphrase too weak (minimum 12 characters)"
         );
+    }
+
+    #[test]
+    fn test_json_envelope_has_stable_error_fields() {
+        let envelope = Error::PassphraseRequired.json_envelope();
+        assert_eq!(envelope["ok"], false);
+        assert_eq!(envelope["code"], "PASSPHRASE_REQUIRED");
+        assert_eq!(envelope["severity"], "warn");
+        assert!(envelope["message"].as_str().unwrap().contains("passphrase"));
+        assert!(envelope["remediation"]
+            .as_str()
+            .unwrap()
+            .contains("secure prompt"));
+    }
+
+    #[test]
+    fn test_passphrase_required_guides_interactive_and_automation_use() {
+        let err = Error::PassphraseRequired;
+        assert!(err.to_string().contains("TTY"));
+        assert!(err.to_string().contains("stdin"));
+        assert!(err.remediation().contains("secure prompt"));
     }
 
     #[test]

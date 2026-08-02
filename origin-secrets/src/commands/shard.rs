@@ -2,13 +2,23 @@
 
 use crate::audit::{AuditEntry, Operation, OperationDetails};
 use crate::cli::ShardArgs;
-use crate::crypto::{decrypt_vault_data, derive_vault_key, encrypt_vault_data, EncryptedVault};
 use crate::error::Error;
 use crate::share::{HybridSignature, Share, ShareVerifier};
-use crate::vault::Vault;
+use crate::vault_handle::VaultHandle;
 use origin_crypto_sdk::error_correction::ReedSolomonCodec;
 use origin_crypto_sdk::signing::hybrid::HybridSigningKeyBundle;
+use serde::Serialize;
 use std::path::{Path, PathBuf};
+
+#[derive(Debug, Serialize)]
+struct ShardResponse {
+    ok: bool,
+    command: &'static str,
+    key: String,
+    threshold: u8,
+    total_shares: u8,
+    share_files: Vec<String>,
+}
 
 /// Domain separation label for share signatures.
 const SHARE_SIGNING_DOMAIN: &str = "origin-secrets/share/v1";
@@ -45,23 +55,9 @@ pub fn cmd_shard(
         });
     }
 
-    // Load and decrypt the vault.
-    let vault_json = std::fs::read_to_string(vault_path)
-        .map_err(|_| Error::VaultNotFound(vault_path.to_path_buf()))?;
-    let vault: Vault =
-        serde_json::from_str(&vault_json).map_err(|e| Error::VaultCorrupted(e.to_string()))?;
-
-    let key = derive_vault_key(passphrase.as_bytes(), &vault.salt, vault.tier)?;
-    let encrypted_vault = EncryptedVault {
-        version: vault.version,
-        created_at: vault.created_at.clone(),
-        tier: vault.tier,
-        fingerprint: vault.fingerprint.clone(),
-        salt: vault.salt,
-        nonce: vault.nonce,
-        ciphertext: vault.ciphertext.clone(),
-    };
-    let mut vault_data = decrypt_vault_data(&encrypted_vault, &key)?;
+    // Load and decrypt the vault using VaultHandle.
+    let mut handle = VaultHandle::open(vault_path, passphrase)?;
+    let vault_data = handle.data_mut();
 
     // Split the 32-byte master seed with K-of-N erasure coding.
     // data_shards = threshold (K), parity_shards = total - threshold (N-K).
@@ -148,7 +144,7 @@ pub fn cmd_shard(
         let out_path = shares_dir.join(format!("share_{:03}.json", share_number));
         let serialized = serde_json::to_string_pretty(&enc)
             .map_err(|e| Error::IoError(format!("serialize share: {e}")))?;
-        std::fs::write(&out_path, serialized).map_err(|e| Error::IoError(e.to_string()))?;
+        crate::vault_handle::atomic_write(&out_path, serialized.as_bytes())?;
 
         written.push(share);
     }
@@ -170,25 +166,8 @@ pub fn cmd_shard(
     };
     vault_data.audit_log.push(audit_entry);
 
-    // Re-encrypt the vault with a FRESH nonce. The key is unchanged (same
-    // passphrase + salt), but XChaCha20-Poly1305 is a stream cipher and the
-    // same (key, nonce) pair must never be reused — reusing vault.nonce would
-    // be deterministic nonce reuse and leak the plaintext delta.
-    let reencrypt_nonce: [u8; 24] = crate::crypto::random_array()?;
-    let reencrypted =
-        encrypt_vault_data(&vault_data, &key, vault.salt, reencrypt_nonce, vault.tier)?;
-    let updated_vault = Vault {
-        version: reencrypted.version,
-        created_at: reencrypted.created_at,
-        tier: reencrypted.tier,
-        fingerprint: reencrypted.fingerprint.clone(),
-        salt: reencrypted.salt,
-        nonce: reencrypted.nonce,
-        ciphertext: reencrypted.ciphertext,
-    };
-    let updated_json = serde_json::to_string_pretty(&updated_vault)
-        .map_err(|e| Error::IoError(format!("serialize vault: {e}")))?;
-    std::fs::write(vault_path, updated_json).map_err(|e| Error::IoError(e.to_string()))?;
+    // Save the vault with a fresh nonce via VaultHandle.
+    handle.save()?;
 
     if json {
         let share_files: Vec<String> = written
@@ -200,17 +179,15 @@ pub fn cmd_shard(
                     .to_string()
             })
             .collect();
-        println!(
-            "{}",
-            serde_json::json!({
-                "ok": true,
-                "command": "shard",
-                "key": args.key,
-                "threshold": threshold,
-                "total_shares": total,
-                "share_files": share_files,
-            })
-        );
+        let response = ShardResponse {
+            ok: true,
+            command: "shard",
+            key: args.key.clone(),
+            threshold,
+            total_shares: total,
+            share_files,
+        };
+        crate::commands::output::print_json(&response, "shard")?;
     } else {
         println!(
             "Sharded master key '{}' into {} shares (threshold {}).",
@@ -225,8 +202,10 @@ pub fn cmd_shard(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::crypto::VaultData;
-    use crate::vault::MemoryTier;
+    use crate::crypto::{
+        decrypt_vault_data, derive_vault_key, encrypt_vault_data, EncryptedVault, VaultData,
+    };
+    use crate::vault::{MemoryTier, Vault};
     use tempfile::tempdir;
 
     /// Create a vault file in `dir` and return its path + the passphrase used.
@@ -242,12 +221,12 @@ mod tests {
         let encrypted = encrypt_vault_data(&vault_data, &key, salt, nonce, tier).unwrap();
         let vault = Vault {
             version: encrypted.version,
-            created_at: encrypted.created_at,
+            created_at: encrypted.created_at.clone(),
             tier: encrypted.tier,
             fingerprint: encrypted.fingerprint.clone(),
             salt: encrypted.salt,
             nonce: encrypted.nonce,
-            ciphertext: encrypted.ciphertext,
+            ciphertext: encrypted.ciphertext.clone(),
         };
         let vault_path = dir.join("secrets.vault");
         std::fs::write(&vault_path, serde_json::to_string_pretty(&vault).unwrap()).unwrap();

@@ -5,11 +5,22 @@
 
 use crate::audit::{AuditEntry, Operation, OperationDetails};
 use crate::cli::RotatePassphraseArgs;
-use crate::crypto::{decrypt_vault_data, derive_vault_key, encrypt_vault_data};
 use crate::error::Error;
 use crate::share::HybridSignature;
-use crate::vault::{MemoryTier, Vault};
+use crate::vault::MemoryTier;
+use crate::vault_handle::VaultHandle;
+use serde::Serialize;
 use std::path::Path;
+
+#[derive(Debug, Serialize)]
+struct RotateResponse {
+    ok: bool,
+    command: &'static str,
+    vault: String,
+    from_tier: &'static str,
+    to_tier: &'static str,
+    audit_entries: usize,
+}
 
 const OPERATOR: &str = "origin-secrets-cli";
 
@@ -27,50 +38,31 @@ pub fn cmd_rotate_passphrase(
 ) -> Result<(), Error> {
     // New passphrase: same resolver policy as every other command, but read
     // from --new-passphrase-file (so the old passphrase stays on -p).
-    let new_passphrase = crate::resolve_passphrase(args.new_passphrase_file.as_deref())?;
+    let new_passphrase = crate::resolve_passphrase(args.new_passphrase_file.as_deref(), false)?;
     if new_passphrase.len() < 12 {
         return Err(Error::PassphraseTooWeak { min_length: 12 });
     }
 
     // Read + decrypt with the CURRENT passphrase.
-    let raw = std::fs::read_to_string(vault_path)
-        .map_err(|_| Error::VaultNotFound(vault_path.to_path_buf()))?;
-    let old_vault: Vault =
-        serde_json::from_str(&raw).map_err(|e| Error::VaultCorrupted(e.to_string()))?;
-    let old_tier = old_vault.tier;
-    let old_key = derive_vault_key(current_passphrase.as_bytes(), &old_vault.salt, old_tier)?;
-    let encrypted = crate::crypto::EncryptedVault {
-        version: old_vault.version,
-        created_at: old_vault.created_at.clone(),
-        tier: old_vault.tier,
-        fingerprint: old_vault.fingerprint.clone(),
-        salt: old_vault.salt,
-        nonce: old_vault.nonce,
-        ciphertext: old_vault.ciphertext.clone(),
-    };
-    let mut vault_data = decrypt_vault_data(&encrypted, &old_key)?;
+    let mut handle = VaultHandle::open(vault_path, current_passphrase)?;
+    let old_tier = handle.tier;
 
     // Resolve the target tier. Default: keep current tier (pure passphrase
     let target_tier = MemoryTier::parse_tier(&args.tier).map_err(Error::CryptoError)?;
-
-    // Fresh salt + nonce for forward secrecy; the seed is NOT rotated.
-    let salt: [u8; 16] = crate::crypto::random_array()?;
-    let nonce: [u8; 24] = crate::crypto::random_array()?;
-    let new_key = derive_vault_key(new_passphrase.as_bytes(), &salt, target_tier)?;
 
     // Append the rotation record BEFORE re-encrypting so it lands in history.
     let timestamp = crate::observability::epoch_to_ymd_hms_now();
     // Sign the audit entry with the vault's own hybrid key (derived from the
     // master seed), consistent with how shard/export sign their entries.
     let signer = origin_crypto_sdk::signing::hybrid::HybridSigningKeyBundle::from_seed_cached(
-        &vault_data.master_seed,
+        &handle.data().master_seed,
         "origin-secrets/audit/v1",
     )
     .map_err(|e| Error::SignatureGenerationFailed(format!("{e:?}")))?;
     let audit_sig: origin_crypto_sdk::signing::hybrid::Ed25519Falcon1024 =
         signer.sign_hybrid(b"audit:rotate");
     let rotate_entry = AuditEntry {
-        entry_id: format!("rotate-{}-{}", timestamp, hex::encode(&salt[..2])),
+        entry_id: format!("rotate-{timestamp}"),
         operation: Operation::RotatePassphrase {
             from_tier: old_tier.label().to_string(),
             to_tier: target_tier.label().to_string(),
@@ -87,48 +79,24 @@ pub fn cmd_rotate_passphrase(
         },
         signature: HybridSignature::from_sdk(&audit_sig),
     };
-    vault_data.audit_log.push(rotate_entry);
-
-    let reencrypted = encrypt_vault_data(&vault_data, &new_key, salt, nonce, target_tier)?;
-    let updated_vault = Vault {
-        version: reencrypted.version,
-        created_at: reencrypted.created_at,
-        tier: reencrypted.tier,
-        fingerprint: reencrypted.fingerprint.clone(),
-        salt: reencrypted.salt,
-        nonce: reencrypted.nonce,
-        ciphertext: reencrypted.ciphertext,
-    };
-
-    if let Some(parent) = vault_path.parent() {
-        std::fs::create_dir_all(parent)
-            .map_err(|e| Error::IoError(format!("create vault dir: {e}")))?;
-    }
-    std::fs::write(
-        vault_path,
-        serde_json::to_string_pretty(&updated_vault).map_err(|e| Error::IoError(e.to_string()))?,
-    )
-    .map_err(|e| Error::IoError(e.to_string()))?;
+    handle.data_mut().audit_log.push(rotate_entry);
+    handle.rotate(&new_passphrase, target_tier)?;
+    let audit_entries = handle.data().audit_log.len();
 
     if json {
-        println!(
-            "{}",
-            serde_json::json!({
-                "ok": true,
-                "command": "rotate-passphrase",
-                "vault": vault_path.display().to_string(),
-                "from_tier": old_tier.label(),
-                "to_tier": target_tier.label(),
-                "audit_entries": vault_data.audit_log.len(),
-            })
-        );
+        let response = RotateResponse {
+            ok: true,
+            command: "rotate-passphrase",
+            vault: vault_path.display().to_string(),
+            from_tier: old_tier.label(),
+            to_tier: target_tier.label(),
+            audit_entries,
+        };
+        crate::commands::output::print_json(&response, "rotate-passphrase")?;
     } else {
         println!("Passphrase rotated for vault: {}", vault_path.display());
         println!("Tier: {} -> {}", old_tier.label(), target_tier.label());
-        println!(
-            "Audit history preserved ({} entries).",
-            vault_data.audit_log.len()
-        );
+        println!("Audit history preserved ({} entries).", audit_entries);
     }
 
     Ok(())
@@ -141,6 +109,8 @@ mod tests {
     use crate::cli::ShardArgs;
     use crate::commands::init::cmd_init;
     use crate::commands::shard::cmd_shard;
+    use crate::crypto::{decrypt_vault_data, derive_vault_key};
+    use crate::vault::Vault;
     use std::path::PathBuf;
     use tempfile::tempdir;
 
@@ -159,6 +129,7 @@ mod tests {
             },
             &vault_path,
             Some(pw_file.as_path()),
+            false,
             false,
         )
         .unwrap();

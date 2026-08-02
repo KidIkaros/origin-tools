@@ -40,11 +40,37 @@ single point of failure inherent in a single encrypted vault.
 
 - Transport between custodians is not provided — shares are written to disk and
   must be moved over a secure channel by the operator.
-- A passphrase is **mandatory** for every command (supplied via
-  `-p/--passphrase-file`). There is no demo default — running without `-p`
-  returns `PassphraseRequired`.
+- A passphrase is **mandatory** for every command. Interactive TTY sessions
+  receive a no-echo prompt when `-p/--passphrase-file` is omitted; CI and other
+  non-interactive callers must use `-p/--passphrase-file` or `-p -` for stdin.
+  There is no demo default — running without a source in a non-interactive
+  session returns `PassphraseRequired`.
 - Hardware security modules / secure enclaves are not used for key material.
+- `status` intentionally reports only metadata and readiness; it never prints
+  the master seed, share contents, passphrases, or decrypted audit details.
+- `handoff` manifests contain metadata and verification status only. They do not
+  contain share data, signatures, or passphrases, and cannot prove physical
+  delivery or recipient identity by themselves.
+- `recover --preflight` inspects share readiness without reconstructing or
+  printing the master seed.
+- `diagnose` is vault-independent and does not decrypt vaults or read share
+  contents. Diagnostic bundles redact `$HOME` paths and contain metadata only.
+- Interactive `init` confirms the passphrase without echoing it. File and stdin
+  modes remain non-interactive so automation does not block or consume a second
+  secret unexpectedly.
 - A web dashboard (custodian UX, quorum approvals) is planned for v2.0.
+
+## Distribution and upgrade safety
+
+Only install binaries from a trusted build or a release artifact whose version
+and SHA-256 digest have been independently checked. Keep a verified backup of
+the vault before upgrading. `diagnose` output is safe to share with support,
+but vaults, shares, passphrase files, recovered seeds, and handoff source files
+are not support artifacts and must never be uploaded by default.
+
+Vault, share, handoff, and diagnostic formats are versioned independently. A
+future incompatible change must use an explicit migration path and preserve the
+fail-closed behavior for unknown or malformed formats.
 
 ## Cryptographic dependencies
 

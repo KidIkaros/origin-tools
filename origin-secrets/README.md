@@ -27,23 +27,63 @@ hybrid signature, so tampering is detected rather than silently accepted.
 Out of scope (v1.0): transport security between custodians, hardware key
 storage, and a web dashboard (planned v2.0).
 
-## Build
+## Install and build
+
+### Build from source
+
+The current supported installation path is a reproducible source build from the
+workspace:
 
 ```bash
 cargo build --release -p origin-secrets
-# binary: target/release/origin-secrets
+install -m 0755 target/release/origin-secrets ~/.local/bin/origin-secrets
+origin-secrets --version
 ```
+
+For a release or support bundle, record the exact version and a SHA-256 digest
+of the binary. Do not replace a deployed binary without first checking the
+version and digest against the release source:
+
+```bash
+sha256sum target/release/origin-secrets
+origin-secrets --version
+```
+
+Shell completions and the man page are generated/shipped separately:
+
+```bash
+origin-secrets completions bash > ~/.local/share/bash-completion/completions/origin-secrets
+man ./man/origin-secrets.1
+```
+
+Package-manager and signed prebuilt releases are product follow-ups; until
+those exist, avoid documenting an unsupported download URL or install method.
+
+## Compatibility and upgrades
+
+Vaults, encrypted shares, custodian handoff manifests, and diagnostic bundles
+carry independent format/version fields. Before upgrading a production install:
+
+1. Run `origin-secrets diagnose --out pre-upgrade-diagnostic.json`.
+2. Back up the vault and verify its fingerprint.
+3. Run `origin-secrets status` and record share readiness.
+4. Upgrade the binary and run `origin-secrets verify` plus `origin-secrets status`.
+5. Keep the prior binary available until the vault and share workflows pass.
+
+Legacy plaintext exported shares remain readable for compatibility. A future
+format-incompatible release must provide an explicit migration command and
+must never silently rewrite vaults or shares.
 
 ## Usage
 
 All commands accept a global `-V/--vault <PATH>` (default
 `~/.origin/secrets.vault` — the leading `~` is expanded to your home
-directory) and a **required** `-p/--passphrase-file <PATH>`.
-A passphrase source is mandatory — there is no built-in default, so every
-command refuses to run (returning `PassphraseRequired`) when `-p` is absent.
-Pass the passphrase via a **file** (`-p ./pw.txt`) or, for scripting without
-writing the secret to disk, via **stdin** (`-p -`, e.g.
-`echo "$PW" | origin-secrets -p - verify`).
+directory) and a passphrase source. In an interactive TTY, omitting
+`-p/--passphrase-file` securely prompts for the passphrase. Non-interactive
+callers must provide a **file** (`-p ./pw.txt`) or, for scripting without
+writing the secret to disk, **stdin** (`-p -`, e.g.
+`echo "$PW" | origin-secrets -p - verify`). Use `--prompt` to require the TTY
+prompt explicitly. There is never a built-in default passphrase.
 
 Add `--json` to any command for a structured success payload on stdout
 (e.g. `{"ok":true,"command":"init","vault":...,"tier":"standard",
@@ -60,6 +100,10 @@ origin-secrets -V ./secrets.vault -p ./pw.txt init --tier standard
 ```
 
 Creates an encrypted vault, derives a master seed, and prints a fingerprint.
+When run interactively, `init` confirms the passphrase, explains the backup
+responsibility, and prints the next `shard` command. File and stdin passphrase
+sources remain suitable for non-interactive automation and do not prompt for
+confirmation.
 
 ### 2. Shard the master key (Week 2)
 
@@ -87,7 +131,37 @@ origin-secrets -V ./secrets.vault -p ./pw.txt export-share --share 1 --out share
 Produces an encrypted, recipient-bound share file. Writing to an existing
 `--out` path is refused unless `--force` is given.
 
-### 4. Recover the master key (Week 3)
+### 4. Prepare a custodian handoff
+
+Create a portable manifest for an exported or moved share. The manifest contains
+only share metadata and verification status; it never contains share data or
+signatures. It can be created offline for a plaintext/exported share, or with
+`-V` and `-p` for an encrypted local share:
+
+```bash
+origin-secrets handoff --share share1.json --out alice.handoff.json --recipient alice
+origin-secrets -V ./secrets.vault -p ./pw.txt handoff \
+  --share shares/share_001.json --out alice.handoff.json --recipient alice
+```
+
+The manifest records the fingerprint, threshold, recipient, expiry, and whether
+embedded offline hybrid verification passed. It is a receipt/coordination
+artifact, not a replacement for securely transferring the share file.
+
+### 5. Recovery preflight and recovery (Week 3)
+
+Before reconstructing anything, inspect readiness without emitting or rebuilding
+secret material:
+
+```bash
+origin-secrets -V ./secrets.vault -p ./pw.txt recover \
+  shares/share_001.json shares/share_002.json shares/share_003.json \
+  --preflight
+```
+
+The preflight reports usable and invalid shares, threshold, total shares,
+offline verification count, and the next action. Run the same command without
+`--preflight` to perform recovery after the inputs are ready.
 
 ```bash
 origin-secrets -V ./secrets.vault -p ./pw.txt recover \
@@ -189,7 +263,33 @@ artifact and are encrypted at rest too.
 **without** the vault. This is the recommended check for a custodian holding a
 share file.
 
-### 8. Failure journal (vault-independent)
+### 8. Check product readiness
+
+`status` is safe to run before initialization and gives an operator the next
+recommended action. Once a vault exists, it decrypts the vault and reports its
+tier, fingerprint, audit count, share readiness, and unavailable share files
+without exposing the master seed or share contents:
+
+```bash
+origin-secrets status
+origin-secrets -V ./secrets.vault -p ./pw.txt status
+origin-secrets -V ./secrets.vault -p ./pw.txt status --json
+```
+
+### 10. Create a support diagnostic bundle
+
+Use `diagnose` when reporting an installation or filesystem problem. It never
+decrypts the vault or reads share contents. Paths are redacted to `$HOME`, and
+the output contains only versions, platform, file presence/size, share counts,
+and failure counts:
+
+```bash
+origin-secrets diagnose
+origin-secrets diagnose --out support-diagnostic.json
+origin-secrets diagnose --out support-diagnostic.json --force
+```
+
+### 11. Failure journal (vault-independent)
 
 Failures are recorded to `~/.origin/failures.log` (one JSON line per event)
 independent of any vault, so you can audit *denied* operations even when the
@@ -217,10 +317,11 @@ cargo test -p origin-secrets --release
 - **No critical bugs** in v1.0 scope.
 - Tampering with the vault (ciphertext / salt / nonce) or any share
   (data / signature / recipient) is detected at `verify` / `recover`.
-- A passphrase is **mandatory** for every command (supplied via
-  `-p/--passphrase-file`). There is no built-in default; running a command
-  without `-p` fails with `PassphraseRequired` rather than silently using a
-  weak key.
+- A passphrase is **mandatory** for every command. Interactive TTY sessions
+  prompt securely when `-p/--passphrase-file` is omitted; non-interactive
+  callers must use `-p/--passphrase-file` or `-p -` for stdin. There is no
+  built-in default; non-interactive use without a source fails with
+  `PassphraseRequired` rather than silently using a weak key.
 
 See [SECURITY.md](./SECURITY.md) for the full threat model and disclosure
 process, and [DESIGN_DOC.md](./../DESIGN_DOC.md) for architecture.

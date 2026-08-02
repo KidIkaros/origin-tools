@@ -5,7 +5,32 @@ use crate::error::Error;
 use crate::share::{HybridSignature, Share};
 use origin_crypto_sdk::error_correction::ReedSolomonCodec;
 use origin_crypto_sdk::signing::hybrid::{Ed25519Falcon1024, HybridSigningKeyBundle};
+use serde::Serialize;
 use std::path::Path;
+
+#[derive(Debug, Serialize)]
+struct RecoverResponse {
+    ok: bool,
+    command: &'static str,
+    shares_used: usize,
+    seed_hex: Option<String>,
+    vault_out: Option<String>,
+    seed_out: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct RecoveryPreflightResponse {
+    ok: bool,
+    command: &'static str,
+    shares_requested: usize,
+    usable_shares: usize,
+    invalid_shares: usize,
+    offline_verified_shares: usize,
+    threshold: Option<u8>,
+    total_shares: Option<u8>,
+    ready: bool,
+    next_action: &'static str,
+}
 
 /// Domain separation label — must match `shard`.
 const SHARE_SIGNING_DOMAIN: &str = "origin-secrets/share/v1";
@@ -40,6 +65,10 @@ pub fn cmd_recover(args: RecoverArgs, new_passphrase: &str, json: bool) -> Resul
             .map(|vault_dir| vault_dir.join("secrets.vault"))
             .filter(|p| p.exists())
     });
+
+    if args.preflight {
+        return run_preflight(&args, share_vault.as_deref(), new_passphrase, json);
+    }
 
     // Load all share files. Uses the shared reader so encrypted-at-rest shares
     // (P3.3) decrypt, and expired (P3.2) / revoked (P3.1) shares are rejected
@@ -157,8 +186,8 @@ pub fn cmd_recover(args: RecoverArgs, new_passphrase: &str, json: bool) -> Resul
             if !args.force && path.exists() {
                 return Err(Error::FileAlreadyExists(path.clone()));
             }
-            std::fs::write(path, hex::encode(&recovered))
-                .map_err(|e| Error::IoError(e.to_string()))?;
+            let serialized = hex::encode(&recovered);
+            crate::vault_handle::atomic_write(path, serialized.as_bytes())?;
             if json {
                 seed_out_path = Some(path.display().to_string());
             } else {
@@ -187,20 +216,93 @@ pub fn cmd_recover(args: RecoverArgs, new_passphrase: &str, json: bool) -> Resul
         } else {
             Some(hex::encode(&recovered))
         };
-        println!(
-            "{}",
-            serde_json::json!({
-                "ok": true,
-                "command": "recover",
-                "shares_used": args.shares.len(),
-                "seed_hex": seed_hex,
-                "vault_out": vault_out_path,
-                "seed_out": seed_out_path,
-            })
-        );
+        let response = RecoverResponse {
+            ok: true,
+            command: "recover",
+            shares_used: args.shares.len(),
+            seed_hex,
+            vault_out: vault_out_path,
+            seed_out: seed_out_path,
+        };
+        crate::commands::output::print_json(&response, "recover")?;
     }
 
     Ok(recovered)
+}
+
+fn run_preflight(
+    args: &RecoverArgs,
+    share_vault: Option<&Path>,
+    passphrase: &str,
+    json: bool,
+) -> Result<Vec<u8>, Error> {
+    let mut usable_shares = 0usize;
+    let mut invalid_shares = 0usize;
+    let mut offline_verified_shares = 0usize;
+    let mut threshold = None;
+    let mut total_shares = None;
+
+    for path in &args.shares {
+        match crate::commands::share_io::read_share_file(path, share_vault, passphrase) {
+            Ok(share) => {
+                threshold = threshold.or(Some(share.threshold));
+                total_shares = total_shares.or(Some(share.total_shares));
+                usable_shares += 1;
+                if crate::commands::share_io::verify_share_offline(&share).is_ok() {
+                    offline_verified_shares += 1;
+                }
+            }
+            Err(_) => invalid_shares += 1,
+        }
+    }
+
+    let ready = threshold
+        .map(|required| usable_shares >= required as usize)
+        .unwrap_or(false)
+        && invalid_shares == 0;
+    let next_action = if ready {
+        "Ready: run recover without --preflight to reconstruct the seed or rebuild a vault."
+    } else if threshold.is_none() {
+        "Provide at least one readable share and the owning vault when shares are encrypted."
+    } else {
+        "Collect more valid shares and replace expired, revoked, missing, or corrupted inputs."
+    };
+    let response = RecoveryPreflightResponse {
+        ok: true,
+        command: "recover-preflight",
+        shares_requested: args.shares.len(),
+        usable_shares,
+        invalid_shares,
+        offline_verified_shares,
+        threshold,
+        total_shares,
+        ready,
+        next_action,
+    };
+    if json {
+        crate::commands::output::print_json(&response, "recover-preflight")?;
+    } else {
+        println!(
+            "Recovery preflight: {}",
+            if ready { "ready" } else { "not ready" }
+        );
+        println!(
+            "Shares: {}/{} usable ({} invalid)",
+            usable_shares,
+            args.shares.len(),
+            invalid_shares
+        );
+        println!(
+            "Threshold: {}/{}",
+            usable_shares,
+            threshold
+                .map(|n| n.to_string())
+                .unwrap_or_else(|| "?".to_string())
+        );
+        println!("Offline verified: {}", offline_verified_shares);
+        println!("Next: {next_action}");
+    }
+    Ok(Vec::new())
 }
 
 /// Parse a tier string into [`MemoryTier`].
@@ -271,17 +373,15 @@ fn write_recovered_vault(
         fingerprint: enc.fingerprint.clone(),
         salt: enc.salt,
         nonce: enc.nonce,
-        ciphertext: enc.ciphertext,
+        ciphertext: enc.ciphertext.clone(),
     };
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)
             .map_err(|e| Error::IoError(format!("create vault dir: {e}")))?;
     }
-    std::fs::write(
-        path,
-        serde_json::to_string_pretty(&vault).map_err(|e| Error::IoError(e.to_string()))?,
-    )
-    .map_err(|e| Error::IoError(e.to_string()))?;
+    let serialized =
+        serde_json::to_string_pretty(&vault).map_err(|e| Error::IoError(e.to_string()))?;
+    crate::vault_handle::atomic_write(path, serialized.as_bytes())?;
     Ok(())
 }
 
@@ -344,7 +444,7 @@ mod tests {
             fingerprint: enc.fingerprint.clone(),
             salt: enc.salt,
             nonce: enc.nonce,
-            ciphertext: enc.ciphertext,
+            ciphertext: enc.ciphertext.clone(),
         };
         let path = dir.join("secrets.vault");
         std::fs::write(&path, serde_json::to_string_pretty(&vault).unwrap()).unwrap();
@@ -381,6 +481,7 @@ mod tests {
             vault_out: None,
             tier: "standard".to_string(),
             force: false,
+            preflight: false,
             source_vault: None,
         };
         let recovered = cmd_recover(args, &passphrase, false).unwrap();
@@ -398,6 +499,7 @@ mod tests {
             vault_out: None,
             tier: "standard".to_string(),
             force: false,
+            preflight: false,
             source_vault: None,
         };
         let result = cmd_recover(args, &passphrase, false);
@@ -422,6 +524,7 @@ mod tests {
             vault_out: None,
             tier: "standard".to_string(),
             force: false,
+            preflight: false,
             source_vault: None,
         };
         let recovered = cmd_recover(args, &passphrase, false).unwrap();
@@ -441,6 +544,7 @@ mod tests {
             vault_out: Some(vault_out.clone()),
             tier: "sovereign".to_string(),
             force: false,
+            preflight: false,
             source_vault: Some(vault_path.clone()),
         };
         let recovered = cmd_recover(args, &passphrase, false).unwrap();
@@ -459,7 +563,7 @@ mod tests {
             fingerprint: vault.fingerprint.clone(),
             salt: vault.salt,
             nonce: vault.nonce,
-            ciphertext: vault.ciphertext,
+            ciphertext: vault.ciphertext.clone(),
         };
         let vd = decrypt_vault_data(&enc, &key).unwrap();
         assert_eq!(vd.master_seed, [99u8; 32]);
@@ -476,6 +580,7 @@ mod tests {
             vault_out: Some(dir.path().join("x.vault")),
             tier: "bogus".to_string(),
             force: false,
+            preflight: false,
             source_vault: None,
         };
         // Only fails because of the bad tier (seed recovery itself would succeed).
@@ -503,6 +608,7 @@ mod tests {
             vault_out: None,
             tier: "standard".to_string(),
             force: false,
+            preflight: false,
             source_vault: None,
         };
         let result = cmd_recover(args, &passphrase, false);
@@ -523,6 +629,7 @@ mod tests {
             vault_out: None,
             tier: "standard".to_string(),
             force: false,
+            preflight: false,
             source_vault: None,
         };
         let result = cmd_recover(args, "new-pass", false);
@@ -558,6 +665,7 @@ mod tests {
             vault_out: Some(recovered_vault.clone()),
             tier: "standard".to_string(),
             force: false,
+            preflight: false,
             source_vault: Some(vault_path.clone()),
         };
         let recovered = cmd_recover(args, &passphrase, false).unwrap();
@@ -602,6 +710,7 @@ mod tests {
             vault_out: Some(recovered_vault.clone()),
             tier: "standard".to_string(),
             force: false,
+            preflight: false,
             source_vault: None,
         };
         cmd_recover(args, &passphrase, false).unwrap();

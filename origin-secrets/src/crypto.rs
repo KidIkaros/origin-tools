@@ -349,7 +349,7 @@ mod integration_workflow_tests {
         };
         let vault_path = isolated_vault("struct");
 
-        cmd_init(args, &vault_path, Some(pw_file().as_path()), false).ok();
+        cmd_init(args, &vault_path, Some(pw_file().as_path()), false, false).ok();
 
         let vault_json = std::fs::read_to_string(&vault_path).unwrap();
         let vault: crate::vault::Vault = serde_json::from_str(&vault_json).unwrap();
@@ -370,7 +370,14 @@ mod integration_workflow_tests {
                 tier: tier.to_string(),
             };
 
-            cmd_init(args.clone(), &vault_path, Some(pw_file().as_path()), false).ok();
+            cmd_init(
+                args.clone(),
+                &vault_path,
+                Some(pw_file().as_path()),
+                false,
+                false,
+            )
+            .ok();
             let vault_json = std::fs::read_to_string(&vault_path).unwrap();
             let vault: crate::vault::Vault = serde_json::from_str(&vault_json).unwrap();
             assert_eq!(
@@ -392,8 +399,15 @@ mod integration_workflow_tests {
             tier: "standard".to_string(),
         };
 
-        cmd_init(args.clone(), &vault_path, Some(pw_file().as_path()), false).ok();
-        let result = cmd_init(args, &vault_path, Some(pw_file().as_path()), false);
+        cmd_init(
+            args.clone(),
+            &vault_path,
+            Some(pw_file().as_path()),
+            false,
+            false,
+        )
+        .ok();
+        let result = cmd_init(args, &vault_path, Some(pw_file().as_path()), false, false);
         assert!(matches!(
             result.unwrap_err(),
             crate::error::Error::VaultAlreadyExists(_)
@@ -414,7 +428,7 @@ mod integration_workflow_tests {
                 tier: "standard".to_string(),
             };
 
-            cmd_init(args, &vault_path, Some(pw_file().as_path()), false).ok();
+            cmd_init(args, &vault_path, Some(pw_file().as_path()), false, false).ok();
             let vault_json = std::fs::read_to_string(&vault_path).unwrap();
             let vault: crate::vault::Vault = serde_json::from_str(&vault_json).unwrap();
 

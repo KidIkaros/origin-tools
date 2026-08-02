@@ -110,7 +110,7 @@ fn test_audit_entry_failure_details() {
     let deserialized: AuditEntry = serde_json::from_str(&serialized).unwrap();
 
     assert_eq!(entry.details, deserialized.details);
-    match deserialized.details {
+    match &deserialized.details {
         OperationDetails::Failure { error } => assert_eq!(error, "KDF failed"),
         _ => panic!("Expected failure details"),
     }
@@ -252,8 +252,10 @@ fn test_audit_entry_long_details() {
     let serialized = serde_json::to_string(&entry).unwrap();
     let deserialized: AuditEntry = serde_json::from_str(&serialized).unwrap();
 
-    match deserialized.details {
-        OperationDetails::Success { message } => assert_eq!(message, long_details),
+    match &deserialized.details {
+        OperationDetails::Success { message } => {
+            assert_eq!(message.as_str(), long_details.as_str())
+        }
         _ => panic!("Expected success details"),
     }
 }

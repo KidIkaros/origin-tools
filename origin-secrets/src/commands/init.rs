@@ -2,23 +2,48 @@ use crate::cli::InitArgs;
 use crate::crypto::{encrypt_vault_data, VaultData};
 use crate::error::Error;
 use crate::vault::{MemoryTier, Vault};
-use std::fs;
+use serde::Serialize;
+use std::io::IsTerminal;
 use std::path::Path;
+
+#[derive(Debug, Serialize)]
+struct InitResponse {
+    ok: bool,
+    command: &'static str,
+    vault: String,
+    tier: String,
+    fingerprint: String,
+}
 
 /// Minimum passphrase length
 const MIN_PASSPHRASE_LENGTH: usize = 12;
+
+fn validate_passphrase_confirmation(passphrase: &str, confirmation: &str) -> Result<(), Error> {
+    if passphrase == confirmation {
+        Ok(())
+    } else {
+        Err(Error::PassphraseMismatch)
+    }
+}
+
+fn confirm_interactive_passphrase(passphrase: &str) -> Result<(), Error> {
+    let confirmation = rpassword::prompt_password("Confirm passphrase: ")
+        .map_err(|e| Error::IoError(format!("reading passphrase confirmation: {e}")))?;
+    validate_passphrase_confirmation(passphrase, &confirmation)
+}
 
 /// Initialize a new vault at `vault_path`.
 ///
 /// `passphrase_file` is the GLOBAL `-p/--passphrase-file` flag (resolved by the
 /// dispatcher), kept consistent with every other subcommand. Its contents are
-/// used as the vault passphrase. A passphrase source is mandatory — when absent,
-/// initialization is refused (`PassphraseRequired`) rather than silently storing
-/// a known-weak key.
+/// used as the vault passphrase. A passphrase source is mandatory; interactive
+/// TTY sessions prompt when it is absent, while non-interactive initialization
+/// is refused rather than silently storing a known-weak key.
 pub fn cmd_init(
     args: InitArgs,
     vault_path: &Path,
     passphrase_file: Option<&Path>,
+    prompt: bool,
     json: bool,
 ) -> Result<(), Error> {
     // Parse tier
@@ -30,11 +55,12 @@ pub fn cmd_init(
         return Err(Error::VaultAlreadyExists(vault_path.to_path_buf()));
     }
 
-    // Resolve passphrase. Prefer the global -p/--passphrase-file (e.g. a mounted
-    // secret, or `-` to read from stdin for scripting without a temp file on
-    // disk). Interactive prompting is not yet implemented; without a passphrase
-    // source we refuse rather than store a known-weak key.
-    let passphrase = crate::resolve_passphrase(passphrase_file)?;
+    // Resolve passphrase. Supports -p/--passphrase-file, --prompt, or stdin (-).
+    let passphrase = crate::resolve_passphrase(passphrase_file, prompt)?;
+    let interactive = passphrase_file.is_none() && (prompt || std::io::stdin().is_terminal());
+    if interactive {
+        confirm_interactive_passphrase(&passphrase)?;
+    }
 
     // Validate passphrase length
     if passphrase.len() < MIN_PASSPHRASE_LENGTH {
@@ -68,42 +94,40 @@ pub fn cmd_init(
     // Convert to Vault struct for serialization
     let vault = Vault {
         version: encrypted.version,
-        created_at: encrypted.created_at,
+        created_at: encrypted.created_at.clone(),
         tier: encrypted.tier,
         fingerprint: encrypted.fingerprint.clone(),
         salt: encrypted.salt,
         nonce: encrypted.nonce,
-        ciphertext: encrypted.ciphertext,
+        ciphertext: encrypted.ciphertext.clone(),
     };
 
     // Write vault to file
     let vault_json = serde_json::to_string_pretty(&vault)
         .map_err(|e| Error::CryptoError(format!("Failed to serialize vault: {}", e)))?;
 
-    // Ensure directory exists
-    if let Some(parent) = vault_path.parent() {
-        fs::create_dir_all(parent)
-            .map_err(|e| Error::IoError(format!("Failed to create directory: {}", e)))?;
-    }
-
-    fs::write(vault_path, vault_json)
-        .map_err(|e| Error::IoError(format!("Failed to write vault: {}", e)))?;
+    // Write the vault atomically so readers never observe partial ciphertext.
+    crate::vault_handle::atomic_write(vault_path, vault_json.as_bytes())?;
 
     if json {
-        println!(
-            "{}",
-            serde_json::json!({
-                "ok": true,
-                "command": "init",
-                "vault": vault_path.display().to_string(),
-                "tier": tier.to_string(),
-                "fingerprint": encrypted.fingerprint,
-            })
-        );
+        let response = InitResponse {
+            ok: true,
+            command: "init",
+            vault: vault_path.display().to_string(),
+            tier: tier.to_string(),
+            fingerprint: encrypted.fingerprint.clone(),
+        };
+        crate::commands::output::print_json(&response, "init")?;
     } else {
         println!("Vault initialized: {:?}", vault_path);
         println!("Tier: {}", tier);
         println!("Fingerprint: {}", &encrypted.fingerprint);
+        println!("Backup: protect this vault file and remember its passphrase.");
+        println!("Next: create a verified share set with:");
+        println!(
+            "  origin-secrets -V {} shard --label master --threshold 3 --shares 5",
+            vault_path.display()
+        );
     }
 
     Ok(())
@@ -115,6 +139,19 @@ mod tests {
     use tempfile::tempdir;
 
     #[test]
+    fn passphrase_confirmation_accepts_matching_values() {
+        assert!(validate_passphrase_confirmation("correct horse", "correct horse").is_ok());
+    }
+
+    #[test]
+    fn passphrase_confirmation_rejects_mismatched_values() {
+        assert!(matches!(
+            validate_passphrase_confirmation("correct horse", "wrong horse"),
+            Err(Error::PassphraseMismatch)
+        ));
+    }
+
+    #[test]
     fn test_init_with_standard_tier() {
         let dir = tempdir().unwrap();
         let vault_path = dir.path().join("secrets.vault");
@@ -123,7 +160,7 @@ mod tests {
         let args = InitArgs {
             tier: "standard".to_string(),
         };
-        let result = cmd_init(args, &vault_path, Some(pw_file.as_path()), false);
+        let result = cmd_init(args, &vault_path, Some(pw_file.as_path()), false, false);
         assert!(result.is_ok());
         assert!(vault_path.exists());
     }
@@ -137,7 +174,7 @@ mod tests {
         let args = InitArgs {
             tier: "nano".to_string(),
         };
-        let result = cmd_init(args, &vault_path, Some(pw_file.as_path()), false);
+        let result = cmd_init(args, &vault_path, Some(pw_file.as_path()), false, false);
         assert!(result.is_ok());
         assert!(vault_path.exists());
     }
@@ -151,7 +188,7 @@ mod tests {
         let args = InitArgs {
             tier: "sovereign".to_string(),
         };
-        let result = cmd_init(args, &vault_path, Some(pw_file.as_path()), false);
+        let result = cmd_init(args, &vault_path, Some(pw_file.as_path()), false, false);
         assert!(result.is_ok());
         assert!(vault_path.exists());
     }
@@ -167,7 +204,7 @@ mod tests {
         };
         // With a passphrase supplied, tier validation runs and rejects the
         // unknown tier as a CryptoError (wrapping the parse error).
-        let result = cmd_init(args, &vault_path, Some(pw_file.as_path()), false);
+        let result = cmd_init(args, &vault_path, Some(pw_file.as_path()), false, false);
         assert!(matches!(result.unwrap_err(), Error::CryptoError(_)));
     }
 
@@ -180,7 +217,7 @@ mod tests {
         let args = InitArgs {
             tier: "standard".to_string(),
         };
-        let result = cmd_init(args, &vault_path, None, false);
+        let result = cmd_init(args, &vault_path, None, false, false);
         assert!(matches!(result.unwrap_err(), Error::VaultAlreadyExists(_)));
     }
 
@@ -196,7 +233,7 @@ mod tests {
         };
         // Pass the passphrase file via the GLOBAL -p mechanism (third arg), the
         // same path the dispatcher uses. This must become the vault key.
-        let result = cmd_init(args, &vault_path, Some(pw_file.as_path()), false);
+        let result = cmd_init(args, &vault_path, Some(pw_file.as_path()), false, false);
         assert!(result.is_ok());
 
         // The saved vault must decrypt only with the file's passphrase, proving
@@ -239,7 +276,7 @@ mod tests {
         let args = InitArgs {
             tier: "standard".to_string(),
         };
-        let result = cmd_init(args, &vault_path, None, false);
+        let result = cmd_init(args, &vault_path, None, false, false);
         assert!(matches!(result, Result::Err(Error::PassphraseRequired)));
     }
 }

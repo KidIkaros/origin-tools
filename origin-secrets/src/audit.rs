@@ -1,9 +1,10 @@
 //! Audit log data structures and operations
 
 use serde::{Deserialize, Serialize};
+use zeroize::{Zeroize, ZeroizeOnDrop};
 
 /// Audit entry
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Zeroize, ZeroizeOnDrop)]
 pub struct AuditEntry {
     pub entry_id: String,
     pub operation: Operation,
@@ -15,7 +16,7 @@ pub struct AuditEntry {
 }
 
 /// Operation type
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Zeroize, ZeroizeOnDrop)]
 #[serde(tag = "type")]
 pub enum Operation {
     Init,
@@ -29,14 +30,14 @@ pub enum Operation {
 }
 
 /// Operation details
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Zeroize, ZeroizeOnDrop)]
 pub enum OperationDetails {
     Success { message: String },
     Failure { error: String },
 }
 
 /// Verify target
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Zeroize, ZeroizeOnDrop)]
 pub enum VerifyTarget {
     Vault,
     Share(String),
@@ -44,7 +45,7 @@ pub enum VerifyTarget {
 }
 
 /// Compliance framework
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Zeroize, ZeroizeOnDrop)]
 #[serde(tag = "type")]
 pub enum ComplianceFormat {
     SOC2,

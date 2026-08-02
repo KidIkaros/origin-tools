@@ -5,11 +5,20 @@
 
 use crate::audit::Operation;
 use crate::cli::ListKeysArgs;
-use crate::crypto::{decrypt_vault_data, derive_vault_key, EncryptedVault};
 use crate::error::Error;
-use crate::vault::Vault;
+use crate::vault_handle::VaultHandle;
+use serde::Serialize;
 use std::collections::BTreeSet;
 use std::path::Path;
+
+#[derive(Debug, Serialize)]
+struct ListKeysResponse {
+    ok: bool,
+    command: &'static str,
+    vault: String,
+    count: usize,
+    keys: Vec<String>,
+}
 
 /// List the distinct key labels present in the vault's audit history.
 pub fn cmd_list_keys(
@@ -18,21 +27,8 @@ pub fn cmd_list_keys(
     passphrase: &str,
     json: bool,
 ) -> Result<Vec<String>, Error> {
-    let raw = std::fs::read_to_string(vault_path)
-        .map_err(|_| Error::VaultNotFound(vault_path.to_path_buf()))?;
-    let vault: Vault =
-        serde_json::from_str(&raw).map_err(|e| Error::VaultCorrupted(e.to_string()))?;
-    let key = derive_vault_key(passphrase.as_bytes(), &vault.salt, vault.tier)?;
-    let encrypted = EncryptedVault {
-        version: vault.version,
-        created_at: vault.created_at.clone(),
-        tier: vault.tier,
-        fingerprint: vault.fingerprint.clone(),
-        salt: vault.salt,
-        nonce: vault.nonce,
-        ciphertext: vault.ciphertext.clone(),
-    };
-    let vault_data = decrypt_vault_data(&encrypted, &key)?;
+    let handle = VaultHandle::open(vault_path, passphrase)?;
+    let vault_data = handle.data();
 
     // Collect labels from (a) the keys map and (b) every Shard audit entry's
     // key_id. Deduplicate, preserve insertion order via a BTreeSet.
@@ -49,16 +45,14 @@ pub fn cmd_list_keys(
     let keys: Vec<String> = labels.into_iter().collect();
 
     if json {
-        println!(
-            "{}",
-            serde_json::json!({
-                "ok": true,
-                "command": "list-keys",
-                "vault": vault_path.display().to_string(),
-                "count": keys.len(),
-                "keys": keys,
-            })
-        );
+        let response = ListKeysResponse {
+            ok: true,
+            command: "list-keys",
+            vault: vault_path.display().to_string(),
+            count: keys.len(),
+            keys: keys.clone(),
+        };
+        crate::commands::output::print_json(&response, "list-keys")?;
     } else {
         if keys.is_empty() {
             println!("No sharded keys recorded in this vault yet.");
@@ -92,6 +86,7 @@ mod tests {
             },
             &vault_path,
             Some(pw_file.as_path()),
+            false,
             false,
         )
         .unwrap();

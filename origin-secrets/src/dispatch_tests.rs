@@ -9,8 +9,8 @@ use clap::Parser;
 use std::path::PathBuf;
 
 /// A passphrase file on disk so dispatch resolves a real passphrase for the
-/// non-init commands (dispatch now hard-errors with PassphraseRequired when
-/// -p/--passphrase-file is absent, rather than falling back to a weak default).
+/// non-init commands. Non-interactive tests supply the file explicitly so they
+/// never depend on terminal state.
 fn passphrase_file() -> PathBuf {
     let p = std::env::temp_dir().join("origin-secrets-dispatch-pw.txt");
     std::fs::write(&p, "test-passphrase-for-dispatch\n").unwrap();
@@ -24,6 +24,7 @@ fn test_dispatch_init() {
     let cli = Cli {
         vault: vault.clone(),
         passphrase_file: None,
+        prompt: false,
         json: false,
         command: Commands::Init(InitArgs {
             tier: "standard".to_string(),
@@ -45,6 +46,7 @@ fn test_dispatch_requires_passphrase_without_flag() {
     let cli = Cli {
         vault: "/tmp/origin-secrets-missing-vault-do-not-create".into(),
         passphrase_file: None,
+        prompt: false,
         json: false,
         command: Commands::Shard(ShardArgs {
             key: "master".to_string(),
@@ -67,6 +69,7 @@ fn test_dispatch_shard_routes_to_impl() {
     let cli = Cli {
         vault: "/tmp/origin-secrets-missing-vault-do-not-create".into(),
         passphrase_file: Some(passphrase_file()),
+        prompt: false,
         json: false,
         command: Commands::Shard(ShardArgs {
             key: "master".to_string(),
@@ -103,6 +106,7 @@ fn test_dispatch_export_routes_to_impl() {
     let cli_init = Cli {
         vault: vault.clone(),
         passphrase_file: Some(passphrase_file()),
+        prompt: false,
         json: false,
         command: Commands::Init(InitArgs {
             tier: "standard".to_string(),
@@ -113,6 +117,7 @@ fn test_dispatch_export_routes_to_impl() {
     let cli = Cli {
         vault: vault.clone(),
         passphrase_file: Some(passphrase_file()),
+        prompt: false,
         json: false,
         command: Commands::ExportShare(ExportArgs {
             share: 1,
@@ -140,6 +145,7 @@ fn test_dispatch_recover_routes_to_impl() {
     let cli = Cli {
         vault: "/tmp/origin-secrets-missing-vault-do-not-create".into(),
         passphrase_file: Some(passphrase_file()),
+        prompt: false,
         json: false,
         command: Commands::Recover(RecoverArgs {
             shares: vec!["/tmp/s1".into(), "/tmp/s2".into()],
@@ -147,6 +153,7 @@ fn test_dispatch_recover_routes_to_impl() {
             vault_out: None,
             tier: "standard".to_string(),
             force: false,
+            preflight: false,
             source_vault: None,
         }),
     };
@@ -169,6 +176,7 @@ fn test_dispatch_verify_routes_to_impl() {
     let cli = Cli {
         vault: "/tmp/origin-secrets-missing-vault-do-not-create".into(),
         passphrase_file: Some(passphrase_file()),
+        prompt: false,
         json: false,
         command: Commands::Verify(VerifyArgs {
             vault_path: Some("/tmp/vault.json".into()),
@@ -195,6 +203,7 @@ fn test_dispatch_audit_routes_to_impl() {
     let cli = Cli {
         vault: "/tmp/origin-secrets-missing-vault-do-not-create".into(),
         passphrase_file: Some(passphrase_file()),
+        prompt: false,
         json: false,
         command: Commands::Audit(AuditArgs {
             show_recovery_log: false,

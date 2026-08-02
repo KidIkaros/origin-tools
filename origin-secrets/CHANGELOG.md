@@ -4,12 +4,51 @@ All notable changes to `origin-secrets` are documented here. The format is based
 [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), and this crate's releases are
 versioned independently of the `origin-tools` workspace (workspace `version = 0.4.1`).
 
-## [Unreleased] — pre-push audit remediation (46 findings)
+## [Unreleased] — pre-push audit remediation and DX/UX foundation
 
 Remediation of the pre-push source/docs/UX audit (4 critical, 15 high, 10 medium,
-7 low, 10 doc). All changes are behavioral hardening and documentation; no public
-command signatures changed except the addition of `--force` opt-ins and the
-now-meaningful `--recovery-log` / `--show-failures` flags.
+7 low, 10 doc), plus the first systemic DX/UX slice. All changes are behavioral
+hardening and documentation; no public command signatures changed except the
+addition of `--force` opt-ins and the now-meaningful `--recovery-log` /
+`--show-failures` flags.
+
+### Product loop
+- Added `status`, a passphrase-free pre-initialization readiness check and a
+  decrypted non-secret vault/share readiness summary for existing vaults.
+- `status` reports the next recommended action and surfaces unavailable share
+  files instead of hiding product readiness problems.
+- Interactive `init` now confirms the passphrase and gives backup guidance plus
+  a concrete next `shard` command; file/stdin automation remains unchanged.
+- Added `handoff` to create portable, non-secret custodian manifests with share
+  metadata, recipient/expiry context, and offline verification status.
+- Added `recover --preflight` to inspect usable, invalid, threshold, and offline
+  verification state before reconstructing any secret material.
+- Added vault-independent `diagnose` output and optional secret-free support
+  bundles for installation, filesystem, and failure-journal troubleshooting.
+- Synchronized the man-page version with the crate and documented source-build,
+  checksum, completion, man-page, and upgrade-verification workflows.
+- Clean-machine dogfood completed the documented status → diagnose → init → shard
+  → export → handoff → preflight → recover → verify flow; duplicate export
+  progress output was removed as a usability fix.
+
+### DX / UX foundation
+- Vaults, shares, recovered seeds, and compliance exports now use a shared
+  atomic-write path so readers never observe partially written artifacts.
+- Interactive TTY sessions securely prompt for a passphrase when no source is
+  supplied; non-interactive callers continue to require an explicit file or
+  stdin source.
+- Passphrase errors and usage documentation now describe the TTY, file, and
+  stdin workflows consistently.
+- JSON error-envelope construction is centralized on `Error`, preserving the
+  existing machine-readable fields while creating a single rendering seam.
+- `verify` now uses typed success-response structs for vault, recovery-log, and
+  share results while preserving existing JSON field names and secret behavior.
+- `audit` now uses typed success-response structs for failure journals, summaries,
+  log listings, and compliance export acknowledgements.
+- All remaining lifecycle commands (`shard`, `export-share`, `recover`,
+  `rotate-passphrase`, and `revoke-share`) now use typed success responses.
+- Added a shared command JSON serializer to keep machine-readable output behavior
+  consistent across the CLI, with direct serialization tests.
 
 ### Security (critical)
 - `recover --json` no longer leaks the master seed hex in the success payload

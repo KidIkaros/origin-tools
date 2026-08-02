@@ -1,12 +1,21 @@
 //! Export-share command — package a share for handoff to a recipient.
 
 use crate::cli::ExportArgs;
-use crate::crypto::{decrypt_vault_data, derive_vault_key, EncryptedVault};
 use crate::error::Error;
 use crate::share::{HybridSignature, Share};
-use crate::vault::Vault;
+use crate::vault_handle::VaultHandle;
 use origin_crypto_sdk::signing::hybrid::{Ed25519Falcon1024, HybridSigningKeyBundle};
+use serde::Serialize;
 use std::path::{Path, PathBuf};
+
+#[derive(Debug, Serialize)]
+struct ExportShareResponse {
+    ok: bool,
+    command: &'static str,
+    share: u8,
+    out: String,
+    recipient: Option<String>,
+}
 
 /// Domain separation label — must match `shard` / `recover`.
 const SHARE_SIGNING_DOMAIN: &str = "origin-secrets/share/v1";
@@ -54,14 +63,6 @@ pub fn cmd_export_share(
     if let Some(recipient) = &args.recipient {
         // Re-sign the share binding it to the recipient, and log the export.
         re_sign_for_recipient(vault_path, passphrase, &mut share, recipient)?;
-        if !json {
-            println!(
-                "Re-signed share {} for recipient '{}' and logged the export.",
-                args.share, recipient
-            );
-        }
-    } else if !json {
-        println!("Exported share {} (no recipient binding).", args.share);
     }
 
     let serialized =
@@ -70,19 +71,17 @@ pub fn cmd_export_share(
     if !args.force && args.out.exists() {
         return Err(Error::FileAlreadyExists(args.out.clone()));
     }
-    std::fs::write(&args.out, serialized).map_err(|e| Error::IoError(e.to_string()))?;
+    crate::vault_handle::atomic_write(&args.out, serialized.as_bytes())?;
 
     if json {
-        println!(
-            "{}",
-            serde_json::json!({
-                "ok": true,
-                "command": "export-share",
-                "share": args.share,
-                "out": args.out.display().to_string(),
-                "recipient": share.recipient,
-            })
-        );
+        let response = ExportShareResponse {
+            ok: true,
+            command: "export-share",
+            share: args.share,
+            out: args.out.display().to_string(),
+            recipient: share.recipient.clone(),
+        };
+        crate::commands::output::print_json(&response, "export-share")?;
     } else {
         println!(
             "Exported share {} to {} (recipient: {}).",
@@ -103,29 +102,9 @@ fn re_sign_for_recipient(
     recipient: &str,
 ) -> Result<(), Error> {
     // Load + decrypt the vault to recover the master seed.
-    let raw = std::fs::read_to_string(vault_path)
-        .map_err(|_| Error::VaultNotFound(vault_path.to_path_buf()))?;
-    let vault: Vault =
-        serde_json::from_str(&raw).map_err(|e| Error::VaultCorrupted(e.to_string()))?;
-    let key = derive_vault_key(passphrase.as_bytes(), &vault.salt, vault.tier)?;
-    let encrypted = EncryptedVault {
-        version: vault.version,
-        created_at: vault.created_at.clone(),
-        tier: vault.tier,
-        fingerprint: vault.fingerprint.clone(),
-        salt: vault.salt,
-        nonce: vault.nonce,
-        ciphertext: vault.ciphertext.clone(),
-    };
-    let mut vault_data = decrypt_vault_data(&encrypted, &key)?;
-
-    // Derive the same signing bundle used at shard time.
-    let seed: &[u8; 32] = vault_data
-        .master_seed
-        .as_slice()
-        .try_into()
-        .map_err(|_| Error::CryptoError("vault master seed wrong length".to_string()))?;
-    let bundle = HybridSigningKeyBundle::from_seed_cached(seed, SHARE_SIGNING_DOMAIN)
+    let mut handle = VaultHandle::open(vault_path, passphrase)?;
+    let seed = handle.data().master_seed;
+    let bundle = HybridSigningKeyBundle::from_seed_cached(&seed, SHARE_SIGNING_DOMAIN)
         .map_err(|e| Error::SignatureGenerationFailed(format!("{e:?}")))?;
 
     // Bind share_data + recipient into the signature.
@@ -150,33 +129,9 @@ fn re_sign_for_recipient(
         },
         signature: HybridSignature::from_sdk(&sdk_sig),
     };
-    vault_data.audit_log.push(entry);
-
-    // Re-encrypt and write the vault back. Use a FRESH nonce: the key is
-    // unchanged (same passphrase + salt), but XChaCha20-Poly1305 must never
-    // reuse a (key, nonce) pair — reusing vault.nonce would leak the delta.
-    let reencrypt_nonce: [u8; 24] = crate::crypto::random_array()?;
-    let re_enc = crate::crypto::encrypt_vault_data(
-        &vault_data,
-        &key,
-        vault.salt,
-        reencrypt_nonce,
-        vault.tier,
-    )?;
-    let updated = Vault {
-        version: re_enc.version,
-        created_at: re_enc.created_at.clone(),
-        tier: re_enc.tier,
-        fingerprint: re_enc.fingerprint.clone(),
-        salt: re_enc.salt,
-        nonce: re_enc.nonce,
-        ciphertext: re_enc.ciphertext,
-    };
-    std::fs::write(
-        vault_path,
-        serde_json::to_string_pretty(&updated).map_err(|e| Error::IoError(e.to_string()))?,
-    )
-    .map_err(|e| Error::IoError(e.to_string()))?;
+    handle.data_mut().audit_log.push(entry);
+    // VaultHandle.save() re-encrypts with a fresh nonce and the original key.
+    handle.save()?;
     Ok(())
 }
 
@@ -202,6 +157,8 @@ mod tests {
     use super::*;
     use crate::cli::ShardArgs;
     use crate::commands::shard::cmd_shard;
+    use crate::crypto::{decrypt_vault_data, derive_vault_key, EncryptedVault};
+    use crate::vault::Vault;
     use std::path::PathBuf;
     use tempfile::tempdir;
 
@@ -224,7 +181,7 @@ mod tests {
             fingerprint: enc.fingerprint.clone(),
             salt: enc.salt,
             nonce: enc.nonce,
-            ciphertext: enc.ciphertext,
+            ciphertext: enc.ciphertext.clone(),
         };
         let path = dir.join("secrets.vault");
         std::fs::write(&path, serde_json::to_string_pretty(&vault).unwrap()).unwrap();
@@ -272,7 +229,7 @@ mod tests {
             fingerprint: vault.fingerprint.clone(),
             salt: vault.salt,
             nonce: vault.nonce,
-            ciphertext: vault.ciphertext,
+            ciphertext: vault.ciphertext.clone(),
         };
         let vd = decrypt_vault_data(
             &enc,

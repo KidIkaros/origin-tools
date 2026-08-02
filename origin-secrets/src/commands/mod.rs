@@ -1,12 +1,16 @@
 pub mod audit;
 pub mod completions;
+pub mod diagnose;
 pub mod export;
+pub mod handoff;
 pub mod init;
 pub mod keys;
+pub mod output;
 pub mod recover;
 pub mod revoke;
 pub mod rotate;
 pub mod shard;
 pub mod share_io;
 pub mod shares;
+pub mod status;
 pub mod verify;

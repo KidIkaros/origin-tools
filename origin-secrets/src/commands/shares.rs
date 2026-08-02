@@ -5,8 +5,19 @@
 use crate::cli::ListSharesArgs;
 use crate::error::Error;
 use crate::share::Share;
+use serde::Serialize;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
+
+#[derive(Debug, Serialize)]
+struct ListSharesResponse {
+    ok: bool,
+    command: &'static str,
+    vault: String,
+    shares_dir: String,
+    count: usize,
+    shares: Vec<ShareInfo>,
+}
 
 /// One row of `list-shares` output.
 #[derive(Debug, Clone, serde::Serialize)]
@@ -66,9 +77,9 @@ pub fn cmd_list_shares(
                 share_number: share.share_number,
                 threshold: share.threshold,
                 total_shares: share.total_shares,
-                label: share.key_id,
-                recipient: share.recipient,
-                expires_at: share.expires_at,
+                label: share.key_id.clone(),
+                recipient: share.recipient.clone(),
+                expires_at: share.expires_at.clone(),
                 revoked: false,
             });
         }
@@ -78,17 +89,15 @@ pub fn cmd_list_shares(
     infos.sort_by_key(|i| i.share_number);
 
     if json {
-        println!(
-            "{}",
-            serde_json::json!({
-                "ok": true,
-                "command": "list-shares",
-                "vault": vault_path.display().to_string(),
-                "shares_dir": shares_dir.display().to_string(),
-                "count": infos.len(),
-                "shares": infos,
-            })
-        );
+        let response = ListSharesResponse {
+            ok: true,
+            command: "list-shares",
+            vault: vault_path.display().to_string(),
+            shares_dir: shares_dir.display().to_string(),
+            count: infos.len(),
+            shares: infos.clone(),
+        };
+        crate::commands::output::print_json(&response, "list-shares")?;
     } else {
         if infos.is_empty() {
             println!("No share files found in {}", shares_dir.display());
@@ -142,6 +151,7 @@ mod tests {
             },
             &vault_path,
             Some(pw_file.as_path()),
+            false,
             false,
         )
         .unwrap();
