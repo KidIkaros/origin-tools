@@ -66,3 +66,52 @@ silently accepted).
 - [x] QC pass completed — 2 HIGH + 3 MEDIUM defects found and closed
 - [x] Documentation written (README, SECURITY, MAN)
 - [ ] Tag + push — PENDING USER SIGN-OFF
+
+---
+
+## Post-P3 addendum (2026-08, after P2 day-2 ops + P3 share hardening)
+
+**The verdict above is STALE.** It was written before P2 (rotate-passphrase,
+list-keys, list-shares) and P3 (revoke-share, expiry, encrypted-at-rest,
+offline verify) landed. The crate now ships **11 commands** and **157+ lib unit
+tests + 11 integration/security binaries** — not "six commands / 133 tests".
+Re-audited at source level during P4 gap review:
+
+### CRITICAL — 1 found, 1 CLOSED (this addendum)
+| ID | Gap | Resolution | Status |
+|---|---|---|---|
+| C1 | **(key, nonce) reuse regressed in `revoke-share` (H1 bug class).** P3.1 added `cmd_revoke_share`, which re-encrypted the vault with `vault.nonce` under the *same* derived key (passphrase unchanged). This is exactly the H1 defect the original audit closed for `shard`/`export-share`, but it was reintroduced in the new command. Reusing (key, nonce) leaks the audit-log delta (the revoke record) and breaks AEAD nonce-uniqueness. | `revoke.rs` now generates a **fresh nonce** (`random_array()`) on re-encrypt, matching `shard`/`export`/`rotate`. Added regression test `test_revoke_does_not_reuse_nonce` (nonce must change; both ciphertexts still decrypt). | CLOSED |
+
+### Verified STILL-CLOSED (re-checked at source)
+- **H1** in shard/export/rotate: confirmed fresh-nonce re-encrypt at
+  `shard.rs:177`, `export.rs:158`, `rotate.rs:57-58`. Only revoke was affected.
+- **H2** source-vault binding: `verify.rs:39` derives the grandparent
+  `secrets.vault`; regression test `verify_share_binds_to_source_vault_not_default` holds.
+- **M1** passphrase gate: `lib.rs` dispatch returns `PassphraseRequired` for any
+  command without `-p`; no demo-default fallback remains anywhere.
+- **M2** crypto verify in `verify`: `verify_share` runs full hybrid-sig check
+  when a vault is present (P3.4 adds offline verify via embedded verifier).
+- **M3** `init` honors `-V`: `cmd_init(args, &cli.vault)` with resolved path.
+
+### Stale items in the original audit (superseded)
+- **L1** "lib.rs retains NotImplemented arms for the 6 implemented commands
+  (lib.rs 84.6%)": now all 11 commands are dispatched; no dead `NotImplemented`
+  arms for implemented commands (only the error variant + tests reference it).
+- **L2** "verify.rs standalone fallback under-covered (verify.rs 80%)": P3.4
+  added `verify_share_offline` (embedded verifier) + tests; coverage now 88%.
+- **L3** already CLOSED in post-QC; consistent with current source.
+- Test counts (133 / 109 unit / 24 integration) and coverage (93.6% tarpaulin):
+  replaced by 157+ lib / 11 binaries at ~89% llvm-cov lines.
+
+### Remaining (not defects — dispositions)
+- `share_io.rs` `read_share_file` keeps a plaintext-share fallback for legacy
+  exported shares (backward-compat, documented). Exported custodian shares
+  remain a deliberate operator artifact, encrypted at rest like all shares.
+- No silent-weak-default anywhere (grep-verified across all command paths).
+
+### Updated sign-off gate
+- [x] P1–P3 features implemented and tested
+- [x] H1 nonce-reuse regression (C1) found + closed in revoke
+- [x] All re-encrypt paths use fresh nonces (shard/export/rotate/revoke)
+- [ ] Re-run full `cargo test -p origin-secrets` + `cargo llvm-cov` post-fix (this addendum) — see commit
+- [ ] Tag + push — PENDING USER SIGN-OFF

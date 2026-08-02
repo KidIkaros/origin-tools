@@ -77,8 +77,12 @@ pub fn cmd_revoke_share(
     };
     vault_data.audit_log.push(revoke_entry);
 
-    // Re-encrypt at the SAME salt/nonce/tier (passphrase unchanged).
-    let reencrypted = encrypt_vault_data(&vault_data, &key, vault.salt, vault.nonce, tier)?;
+    // Re-encrypt at the SAME salt/tier (passphrase unchanged), but with a FRESH
+    // nonce. Reusing vault.nonce under the same derived key would repeat the
+    // (key, nonce) pair and leak the audit-log delta — the exact H1 bug class.
+    // shard/export/rotate all do this; revoke must too.
+    let reencrypt_nonce: [u8; 24] = crate::crypto::random_array()?;
+    let reencrypted = encrypt_vault_data(&vault_data, &key, vault.salt, reencrypt_nonce, tier)?;
     let updated_vault = Vault {
         version: reencrypted.version,
         created_at: reencrypted.created_at,
@@ -155,6 +159,56 @@ mod tests {
         };
         std::fs::write(&path, serde_json::to_string_pretty(&vault).unwrap()).unwrap();
         path
+    }
+
+    #[test]
+    fn test_revoke_does_not_reuse_nonce() {
+        // Regression for the H1 nonce-reuse bug class: revoke re-encrypts the
+        // vault under the SAME key (passphrase unchanged) and must use a FRESH
+        // nonce, not the original one, or it leaks the audit-log delta.
+        let dir = tempdir().unwrap();
+        let pw = "revoke-pass-12";
+        let vault_path = build_vault(dir.path(), pw, [7u8; 32]);
+
+        let before: Vault = {
+            let raw = std::fs::read_to_string(&vault_path).unwrap();
+            serde_json::from_str(&raw).unwrap()
+        };
+        let nonce_before = before.nonce;
+
+        cmd_revoke_share(RevokeShareArgs { share_number: 2 }, &vault_path, pw, false).unwrap();
+
+        let after: Vault = {
+            let raw = std::fs::read_to_string(&vault_path).unwrap();
+            serde_json::from_str(&raw).unwrap()
+        };
+        // Nonce MUST change on re-encrypt (same key).
+        assert_ne!(
+            after.nonce, nonce_before,
+            "revoke-share reused the vault nonce — H1 regression"
+        );
+        // Both the old and new ciphertexts must still decrypt under the same key.
+        let key = derive_vault_key(pw.as_bytes(), &before.salt, before.tier).unwrap();
+        let enc_before = EncryptedVault {
+            version: before.version,
+            created_at: before.created_at.clone(),
+            tier: before.tier,
+            fingerprint: before.fingerprint.clone(),
+            salt: before.salt,
+            nonce: before.nonce,
+            ciphertext: before.ciphertext.clone(),
+        };
+        let enc_after = EncryptedVault {
+            version: after.version,
+            created_at: after.created_at.clone(),
+            tier: after.tier,
+            fingerprint: after.fingerprint.clone(),
+            salt: after.salt,
+            nonce: after.nonce,
+            ciphertext: after.ciphertext.clone(),
+        };
+        assert!(decrypt_vault_data(&enc_before, &key).is_ok());
+        assert!(decrypt_vault_data(&enc_after, &key).is_ok());
     }
 
     #[test]
