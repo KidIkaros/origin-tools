@@ -34,6 +34,15 @@ pub enum Error {
     #[error("Share not found: {share_number} ({path})")]
     ShareNotFound { share_number: u8, path: PathBuf },
 
+    #[error("Share #{share_number} has been revoked")]
+    ShareRevoked { share_number: u8 },
+
+    #[error("Share #{share_number} expired at {expires_at}")]
+    ShareExpired {
+        share_number: u8,
+        expires_at: String,
+    },
+
     #[error("Insufficient shares: need {needed}, got {provided}")]
     InsufficientShares { needed: u8, provided: u8 },
 
@@ -115,6 +124,8 @@ impl Error {
             Error::VaultNotFound(_)
             | Error::VaultAlreadyExists(_)
             | Error::ShareNotFound { .. }
+            | Error::ShareRevoked { .. }
+            | Error::ShareExpired { .. }
             | Error::KeyNotFound { .. }
             | Error::KeyAlreadyExists { .. }
             | Error::AuditLogNotFound
@@ -138,6 +149,8 @@ impl Error {
             Error::KeyNotFound { .. } => "KEY_NOT_FOUND",
             Error::KeyAlreadyExists { .. } => "KEY_ALREADY_EXISTS",
             Error::ShareNotFound { .. } => "SHARE_NOT_FOUND",
+            Error::ShareRevoked { .. } => "SHARE_REVOKED",
+            Error::ShareExpired { .. } => "SHARE_EXPIRED",
             Error::InsufficientShares { .. } => "INSUFFICIENT_SHARES",
             Error::ShareVerificationFailed { .. } => "SHARE_VERIFICATION_FAILED",
             Error::ShareCorrupted { .. } => "SHARE_CORRUPTED",
@@ -179,6 +192,8 @@ impl Error {
             Error::VaultCorrupted(_)
             | Error::ShareCorrupted { .. }
             | Error::ShareVerificationFailed { .. }
+            | Error::ShareRevoked { .. }
+            | Error::ShareExpired { .. }
             | Error::SignatureVerificationFailed(_) => Severity::Critical,
             // Crypto / IO / decrypt failures are serious but often input-driven.
             Error::VaultDecryptionFailed(_)

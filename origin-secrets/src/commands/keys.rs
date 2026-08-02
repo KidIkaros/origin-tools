@@ -116,6 +116,7 @@ mod tests {
             threshold: 2,
             shares: 3,
             force: false,
+            expires: None,
         };
         cmd_shard(sargs, &vault_path, "list-passphrase-12", false).unwrap();
 
@@ -134,6 +135,7 @@ mod tests {
                 threshold: 2,
                 shares: 3,
                 force: true,
+                expires: None,
             };
             cmd_shard(sargs, &vault_path, "list-passphrase-12", false).unwrap();
         }

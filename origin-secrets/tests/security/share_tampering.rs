@@ -45,11 +45,14 @@ fn tampered_share_data_rejected() {
     init_and_shard(&vault);
 
     let share = dir.path().join("shares").join("share_001.json");
+    // P3.3: shares are encrypted at rest, so the on-disk file is an
+    // EncryptedShare envelope (version/nonce/ciphertext). Flip a byte in the
+    // ciphertext to simulate tampering; the AEAD check must reject it.
     let mut s: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(&share).unwrap()).unwrap();
-    let mut data: Vec<u8> = serde_json::from_value(s["share_data"].clone()).unwrap();
+    let mut data: Vec<u8> = serde_json::from_value(s["ciphertext"].clone()).unwrap();
     data[0] ^= 0x55;
-    s["share_data"] = serde_json::to_value(&data).unwrap();
+    s["ciphertext"] = serde_json::to_value(&data).unwrap();
     std::fs::write(&share, serde_json::to_string_pretty(&s).unwrap()).unwrap();
 
     let r = dispatch(cli(&vault, &["verify", "--share", share.to_str().unwrap()]));
@@ -63,11 +66,13 @@ fn tampered_share_signature_rejected() {
     init_and_shard(&vault);
 
     let share = dir.path().join("shares").join("share_001.json");
+    // P3.3: the on-disk file is an EncryptedShare envelope. Tamper its
+    // ciphertext so the AEAD check rejects it during verification.
     let mut s: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(&share).unwrap()).unwrap();
-    let mut sig: Vec<u8> = serde_json::from_value(s["signature"]["falcon1024"].clone()).unwrap();
+    let mut sig: Vec<u8> = serde_json::from_value(s["ciphertext"].clone()).unwrap();
     sig[0] ^= 0x55;
-    s["signature"]["falcon1024"] = serde_json::to_value(&sig).unwrap();
+    s["ciphertext"] = serde_json::to_value(&sig).unwrap();
     std::fs::write(&share, serde_json::to_string_pretty(&s).unwrap()).unwrap();
 
     let r = dispatch(cli(&vault, &["verify", "--share", share.to_str().unwrap()]));
@@ -80,13 +85,15 @@ fn recover_with_tampered_share_fails() {
     let vault = dir.path().join("secrets.vault");
     init_and_shard(&vault);
 
-    // Tamper share 2, then attempt recovery with shares 1,2,3.
+    // Tamper share 2, then attempt recovery with shares 1,2,3. P3.3: the file
+    // is an EncryptedShare envelope, so flip a byte in its ciphertext; the
+    // AEAD check must reject it during recovery.
     let s2 = dir.path().join("shares").join("share_002.json");
     let mut s: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(&s2).unwrap()).unwrap();
-    let mut data: Vec<u8> = serde_json::from_value(s["share_data"].clone()).unwrap();
+    let mut data: Vec<u8> = serde_json::from_value(s["ciphertext"].clone()).unwrap();
     data[0] ^= 0x01;
-    s["share_data"] = serde_json::to_value(&data).unwrap();
+    s["ciphertext"] = serde_json::to_value(&data).unwrap();
     std::fs::write(&s2, serde_json::to_string_pretty(&s).unwrap()).unwrap();
 
     let s1 = dir.path().join("shares").join("share_001.json");

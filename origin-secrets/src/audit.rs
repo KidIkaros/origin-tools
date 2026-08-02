@@ -23,6 +23,7 @@ pub enum Operation {
     ExportShare { share_number: u8, recipient: String },
     Recover { shares_used: Vec<String> },
     RotatePassphrase { from_tier: String, to_tier: String },
+    Revoke { share_number: u8 },
     Verify { target: VerifyTarget },
     AuditExport { format: ComplianceFormat },
 }

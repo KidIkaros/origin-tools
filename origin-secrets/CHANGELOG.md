@@ -59,6 +59,25 @@ now-meaningful `--recovery-log` / `--show-failures` flags.
 - `cargo clippy -p origin-secrets --all-targets -- -D warnings` clean.
 - `cargo fmt -p origin-secrets -- --check` clean.
 
+### Share hardening (P3) — 2026-08
+- **P3.1 Revocation** — new `revoke-share <NUM>` command marks a share number
+  revoked in the vault (a `Revoke` audit entry is appended, history preserved).
+  `recover` and `verify --share` reject revoked shares via `read_share_file`.
+- **P3.2 Expiry / TTL** — `shard --expires <ISO-8601>` stamps a share with an
+  expiry; `read_share_file` rejects expired shares (no vault required to check).
+- **P3.3 Encrypted shares at rest** — `shard` writes an `EncryptedShare` envelope
+  (XChaCha20-Poly1305, key derived from the master seed via `origin-crypto-sdk`).
+  `recover` / `verify` / `list-shares` transparently decrypt; legacy plaintext
+  shares still read for backward compatibility.
+- **P3.4 Offline verification** — each share embeds its verifier public keys
+  (Ed25519 + Falcon-1024), so `verify --share` performs a full hybrid-sig check
+  with **no vault present**.
+
+### Tested (P3)
+- 155 lib unit tests + 11 integration/security test binaries pass.
+- lib coverage ≈ 89 % regions / 88 % lines (P3 modules: revoke 89 %, share_io
+  89 %, recover 91 %, verify 91 %).
+
 ## [0.4.2] — 2026-08-01
 
 First stable release of the Origin Secrets CLI: post-quantum threshold secret

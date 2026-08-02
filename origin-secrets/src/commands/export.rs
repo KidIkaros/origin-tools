@@ -40,14 +40,16 @@ pub fn cmd_export_share(
         .unwrap_or_else(|| PathBuf::from("shares"));
     let share_path = shares_dir.join(format!("share_{:03}.json", args.share));
 
-    let raw = std::fs::read_to_string(&share_path).map_err(|_| Error::ShareNotFound {
-        share_number: args.share,
-        path: share_path.clone(),
-    })?;
-    let mut share: Share = serde_json::from_str(&raw).map_err(|_| Error::ShareCorrupted {
-        share_number: args.share,
-        path: share_path.clone(),
-    })?;
+    if !share_path.exists() {
+        return Err(Error::ShareNotFound {
+            share_number: args.share,
+            path: share_path.clone(),
+        });
+    }
+
+    // P3.3: shares are encrypted at rest; use the shared reader to decrypt.
+    let mut share: Share =
+        crate::commands::share_io::read_share_file(&share_path, Some(vault_path), passphrase)?;
 
     if let Some(recipient) = &args.recipient {
         // Re-sign the share binding it to the recipient, and log the export.
@@ -238,6 +240,7 @@ mod tests {
             threshold: 2,
             shares: 3,
             force: false,
+            expires: None,
         };
         cmd_shard(args, &vault_path, &passphrase, false).unwrap();
 
@@ -291,6 +294,7 @@ mod tests {
             threshold: 2,
             shares: 3,
             force: false,
+            expires: None,
         };
         cmd_shard(args, &vault_path, &passphrase, false).unwrap();
 
@@ -335,6 +339,7 @@ mod tests {
             threshold: 2,
             shares: 3,
             force: false,
+            expires: None,
         };
         cmd_shard(args, &vault_path, &passphrase, false).unwrap();
 

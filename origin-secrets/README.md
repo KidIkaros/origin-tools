@@ -71,6 +71,13 @@ Writes `shares/share_001.json … share_005.json`, each signed. A prior set of
 shares in the vault's `shares/` directory is **refused** (stale-share guard) —
 use `--force` only if you intend to overwrite.
 
+Optionally set an expiry (P3.2) with `--expires <ISO-8601>`; once past, the
+share is rejected by `verify` and `recover`:
+
+```bash
+origin-secrets -V ./secrets.vault -p ./pw.txt shard --label master --threshold 3 --shares 5 --expires 2026-12-31T23:59:59Z
+```
+
 ### 3. Export a share to a custodian (Week 3)
 
 ```bash
@@ -107,7 +114,14 @@ origin-secrets -V ./secrets.vault -p ./pw.txt verify --recovery-log             
 
 `verify --share` performs **full Ed25519 + Falcon-1024 verification** when the
 vault is supplied (it derives the share-signing bundle from the master seed).
-A freshly-initialized vault (no audit entries yet) verifies OK.
+Even **without** the vault, `verify --share` performs a full offline hybrid-sig
+check (P3.4) because each share embeds its verifier public keys at shard time —
+no vault required to prove authenticity:
+
+```bash
+origin-secrets verify --share shares/share_001.json          # offline: full crypto check via embedded verifier
+origin-secrets -V ./secrets.vault -p ./pw.txt verify --share shares/share_001.json   # also enforces revocation/expiry
+```
 
 ### 6. Audit & compliance export (Week 4)
 
@@ -146,13 +160,36 @@ origin-secrets -V ./secrets.vault -p ./pw.txt list-keys
 ```
 
 **List the shares beside a vault** — scans `<vault_dir>/shares/` and reports each share's
-number, threshold, total, label, and recipient:
+number, threshold, total, label, recipient, expiry (P3.2), and revocation status (P3.1):
 
 ```bash
 origin-secrets -V ./secrets.vault -p ./pw.txt list-shares
 ```
 
-### 7. Failure journal (vault-independent)
+### 7. Share hardening (P3)
+
+**Revoke a share (P3.1)** — mark a share number as revoked in the vault without
+re-sharding. Once revoked, `recover` and `verify --share` reject it. The vault's
+audit history is preserved (a `Revoke` entry is appended):
+
+```bash
+origin-secrets -V ./secrets.vault -p ./pw.txt revoke-share 2
+```
+
+**Encrypted shares at rest (P3.3)** — share files written by `shard` are
+encrypted with XChaCha20-Poly1305 using a key derived from the vault master
+seed (via the `origin-crypto-sdk`). Without the vault they are opaque; with it,
+`recover` / `verify` / `list-shares` transparently decrypt them. Legacy
+plaintext share files are still read for backward compatibility. Exported
+custodian shares (`export-share`) remain a deliberate, operator-controlled
+artifact and are encrypted at rest too.
+
+**Offline verification (P3.4)** — every share embeds the verifier public keys
+(ed25519 + Falcon-1024), so `verify --share` can prove the hybrid signature
+**without** the vault. This is the recommended check for a custodian holding a
+share file.
+
+### 8. Failure journal (vault-independent)
 
 Failures are recorded to `~/.origin/failures.log` (one JSON line per event)
 independent of any vault, so you can audit *denied* operations even when the
@@ -169,11 +206,11 @@ origin-secrets     audit --show-failures --json   # vault-independent, structure
 cargo test -p origin-secrets --release
 ```
 
-- 145 lib unit tests (inline `#[cfg(test)]`)
+- 155 lib unit tests (inline `#[cfg(test)]`)
 - 11 integration + security test binaries under `tests/integration/` and
   `tests/security/`
 - Coverage target: ≥ 90 % (cargo-llvm-cov); current lib coverage ≈ 88 % lines
-  (new command modules 85–92 %)
+  / 89 % regions (P3 modules: revoke 89 %, share_io 89 %, recover 91 %, verify 91 %)
 
 ## Security notes
 

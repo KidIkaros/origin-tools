@@ -54,6 +54,54 @@ pub struct Share {
     pub signature: HybridSignature,
     pub created_at: String,
     pub recipient: Option<String>,
+    /// ISO-8601 expiry time (P3.2). When set and in the past, the share is
+    /// rejected by `verify` and `recover`. `None` means no expiry.
+    #[serde(default)]
+    pub expires_at: Option<String>,
+    /// Verifier public keys (P3.4) enabling full hybrid-sig verification
+    /// WITHOUT the vault. Embedded at share time so any holder can verify
+    /// offline. `None` for legacy/plaintext shares (verify falls back to
+    /// structural-only when no vault and no verifier is present).
+    #[serde(default)]
+    pub verifier: Option<ShareVerifier>,
+}
+
+/// Public keys needed to verify a share's hybrid signature, embedded in the
+/// share file so verification does not require the vault (P3.4).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ShareVerifier {
+    pub ed25519: Vec<u8>,
+    pub falcon1024: Vec<u8>,
+}
+
+impl ShareVerifier {
+    pub fn ed25519_pk(&self) -> Result<ed25519_dalek::VerifyingKey, CryptoError> {
+        let bytes: [u8; 32] = self
+            .ed25519
+            .as_slice()
+            .try_into()
+            .map_err(|_| CryptoError::InvalidParameter("bad ed25519 pubkey length".into()))?;
+        ed25519_dalek::VerifyingKey::from_bytes(&bytes)
+            .map_err(|e| CryptoError::InvalidParameter(format!("{e}")))
+    }
+
+    pub fn falcon_pk(
+        &self,
+    ) -> Result<origin_crypto_sdk::pqc::falcon1024::FalconPublicKey, CryptoError> {
+        origin_crypto_sdk::pqc::falcon1024::FalconPublicKey::from_bytes(&self.falcon1024)
+    }
+}
+
+/// On-disk envelope for an encrypted share (P3.3). The inner `Share` JSON is
+/// sealed with XChaCha20-Poly1305 under a key derived from the vault master
+/// seed, so local shares are opaque at rest. Readers decrypt when the vault is
+/// available and fall back to plaintext for backward compatibility / exported
+/// shares.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct EncryptedShare {
+    pub version: u8,
+    pub nonce: [u8; 24],
+    pub ciphertext: Vec<u8>,
 }
 
 #[cfg(test)]
@@ -105,6 +153,8 @@ mod tests {
             },
             created_at: "2026-07-30T21:27:45Z".to_string(),
             recipient: Some("alice@company.com".to_string()),
+            expires_at: None,
+            verifier: None,
         };
 
         let serialized = serde_json::to_string(&share).unwrap();

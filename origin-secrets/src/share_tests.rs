@@ -18,6 +18,8 @@ fn test_share_creation() {
         },
         created_at: "2026-07-30T21:27:45Z".to_string(),
         recipient: Some("alice@example.com".to_string()),
+        expires_at: None,
+        verifier: None,
     };
 
     assert_eq!(share.share_number, 1);
@@ -42,6 +44,8 @@ fn test_share_serialization_roundtrip() {
         },
         created_at: "2026-07-30T21:27:45Z".to_string(),
         recipient: Some("bob@example.com".to_string()),
+        expires_at: None,
+        verifier: None,
     };
 
     let serialized = serde_json::to_string(&share).unwrap();
@@ -92,6 +96,8 @@ fn test_share_roundtrip_file() {
         },
         created_at: "2026-07-30T21:27:45Z".to_string(),
         recipient: Some("carol@example.com".to_string()),
+        expires_at: None,
+        verifier: None,
     };
 
     let serialized = serde_json::to_string(&share).unwrap();
@@ -121,6 +127,8 @@ fn test_share_edge_cases() {
         },
         created_at: "2026-07-30T21:27:45Z".to_string(),
         recipient: None,
+        expires_at: None,
+        verifier: None,
     };
 
     let serialized = serde_json::to_string(&share).unwrap();
@@ -148,6 +156,8 @@ fn test_share_with_large_data() {
         },
         created_at: "2026-07-30T21:27:45Z".to_string(),
         recipient: Some("dave@example.com".to_string()),
+        expires_at: None,
+        verifier: None,
     };
 
     let serialized = serde_json::to_string(&share).unwrap();
@@ -172,6 +182,8 @@ fn test_share_with_unicode_recipient() {
         },
         created_at: "2026-07-30T21:27:45Z".to_string(),
         recipient: Some("用户@example.com".to_string()),
+        expires_at: None,
+        verifier: None,
     };
 
     let serialized = serde_json::to_string(&share).unwrap();
@@ -211,6 +223,8 @@ fn test_share_various_numbers() {
             },
             created_at: "2026-07-30T21:27:45Z".to_string(),
             recipient: Some(format!("share-{}.example.com", i)),
+            expires_at: None,
+            verifier: None,
         };
 
         let serialized = serde_json::to_string(&share).unwrap();
@@ -236,6 +250,8 @@ fn test_share_without_recipient() {
         },
         created_at: "2026-07-30T21:27:45Z".to_string(),
         recipient: None,
+        expires_at: None,
+        verifier: None,
     };
 
     let serialized = serde_json::to_string(&share).unwrap();

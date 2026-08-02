@@ -28,17 +28,29 @@ pub fn cmd_recover(args: RecoverArgs, new_passphrase: &str, json: bool) -> Resul
         });
     }
 
-    // Load all share files.
+    // P3.3: shares are encrypted at rest with the vault master-seed key. To
+    // decrypt them during recovery we need the vault that owns the shares.
+    // Prefer an explicit --source-vault; otherwise derive the sibling vault
+    // sitting next to the `shares/` directory (the normal on-disk layout).
+    let share_vault = args.source_vault.clone().or_else(|| {
+        args.shares
+            .first()
+            .and_then(|p| p.parent())
+            .and_then(|shares_dir| shares_dir.parent())
+            .map(|vault_dir| vault_dir.join("secrets.vault"))
+            .filter(|p| p.exists())
+    });
+
+    // Load all share files. Uses the shared reader so encrypted-at-rest shares
+    // (P3.3) decrypt, and expired (P3.2) / revoked (P3.1) shares are rejected
+    // when a source vault is supplied.
     let mut shares: Vec<Share> = Vec::with_capacity(args.shares.len());
     for path in &args.shares {
-        let raw = std::fs::read_to_string(path).map_err(|_| Error::ShareNotFound {
-            share_number: 0,
-            path: path.clone(),
-        })?;
-        let share: Share = serde_json::from_str(&raw).map_err(|_| Error::ShareCorrupted {
-            share_number: 0,
-            path: path.clone(),
-        })?;
+        let share = crate::commands::share_io::read_share_file(
+            path,
+            share_vault.as_deref(),
+            new_passphrase,
+        )?;
         shares.push(share);
     }
 
@@ -346,6 +358,7 @@ mod tests {
             threshold,
             shares: total,
             force: false,
+            expires: None,
         };
         cmd_shard(args, &vault_path, &passphrase, false).unwrap();
         (vault_path, passphrase)
@@ -360,7 +373,7 @@ mod tests {
     #[test]
     fn test_recover_from_threshold_shares() {
         let dir = tempdir().unwrap();
-        shard_dir(dir.path(), 3, 5);
+        let (_vault_path, passphrase) = shard_dir(dir.path(), 3, 5);
 
         let args = RecoverArgs {
             shares: share_paths(dir.path(), 3),
@@ -370,14 +383,14 @@ mod tests {
             force: false,
             source_vault: None,
         };
-        let recovered = cmd_recover(args, "new-pass", false).unwrap();
+        let recovered = cmd_recover(args, &passphrase, false).unwrap();
         assert_eq!(recovered, vec![99u8; 32]); // build_vault uses [99;32] as master seed
     }
 
     #[test]
     fn test_recover_insufficient_shares() {
         let dir = tempdir().unwrap();
-        shard_dir(dir.path(), 3, 5);
+        let (_vault_path, passphrase) = shard_dir(dir.path(), 3, 5);
 
         let args = RecoverArgs {
             shares: share_paths(dir.path(), 2),
@@ -387,7 +400,7 @@ mod tests {
             force: false,
             source_vault: None,
         };
-        let result = cmd_recover(args, "new-pass", false);
+        let result = cmd_recover(args, &passphrase, false);
         assert!(matches!(
             result,
             Err(Error::InsufficientShares {
@@ -400,7 +413,7 @@ mod tests {
     #[test]
     fn test_recover_writes_to_out_file() {
         let dir = tempdir().unwrap();
-        shard_dir(dir.path(), 2, 4);
+        let (_vault_path, passphrase) = shard_dir(dir.path(), 2, 4);
 
         let out = dir.path().join("recovered.txt");
         let args = RecoverArgs {
@@ -411,7 +424,7 @@ mod tests {
             force: false,
             source_vault: None,
         };
-        let recovered = cmd_recover(args, "new-pass", false).unwrap();
+        let recovered = cmd_recover(args, &passphrase, false).unwrap();
         let written = std::fs::read_to_string(&out).unwrap();
         assert_eq!(written, hex::encode(&recovered));
     }
@@ -419,7 +432,7 @@ mod tests {
     #[test]
     fn test_recover_rebuilds_vault() {
         let dir = tempdir().unwrap();
-        shard_dir(dir.path(), 3, 5);
+        let (vault_path, passphrase) = shard_dir(dir.path(), 3, 5);
 
         let vault_out = dir.path().join("recovered.vault");
         let args = RecoverArgs {
@@ -428,21 +441,17 @@ mod tests {
             vault_out: Some(vault_out.clone()),
             tier: "sovereign".to_string(),
             force: false,
-            source_vault: None,
+            source_vault: Some(vault_path.clone()),
         };
-        let recovered = cmd_recover(args, "rebuilt-passphrase", false).unwrap();
+        let recovered = cmd_recover(args, &passphrase, false).unwrap();
         assert_eq!(recovered, vec![99u8; 32]);
 
         // The rebuilt vault must decrypt and yield the same master seed.
         let raw = std::fs::read_to_string(&vault_out).unwrap();
         let vault: Vault = serde_json::from_str(&raw).unwrap();
         assert_eq!(vault.tier, MemoryTier::Sovereign);
-        let key = derive_vault_key(
-            "rebuilt-passphrase".as_bytes(),
-            &vault.salt,
-            MemoryTier::Sovereign,
-        )
-        .unwrap();
+        let key =
+            derive_vault_key(passphrase.as_bytes(), &vault.salt, MemoryTier::Sovereign).unwrap();
         let enc = crate::crypto::EncryptedVault {
             version: vault.version,
             created_at: vault.created_at.clone(),
@@ -459,7 +468,7 @@ mod tests {
     #[test]
     fn test_recover_wrong_tier_string() {
         let dir = tempdir().unwrap();
-        shard_dir(dir.path(), 2, 4);
+        let (_vault_path, passphrase) = shard_dir(dir.path(), 2, 4);
 
         let args = RecoverArgs {
             shares: share_paths(dir.path(), 2),
@@ -470,18 +479,21 @@ mod tests {
             source_vault: None,
         };
         // Only fails because of the bad tier (seed recovery itself would succeed).
-        let result = cmd_recover(args, "p", false);
+        let result = cmd_recover(args, &passphrase, false);
         assert!(result.is_err());
     }
 
     #[test]
     fn test_recover_rejects_tampered_share() {
         let dir = tempdir().unwrap();
-        shard_dir(dir.path(), 2, 4);
+        let (vault_path, passphrase) = shard_dir(dir.path(), 2, 4);
 
-        // Load share 1, flip a byte in its data, rewrite it.
+        // Take a real share, flip a byte in its data, and write it back as
+        // plaintext (read_share_file tries plaintext first). The hybrid
+        // signature check must then reject it.
         let p = dir.path().join("shares").join("share_001.json");
-        let mut share: Share = serde_json::from_str(&std::fs::read_to_string(&p).unwrap()).unwrap();
+        let mut share =
+            crate::commands::share_io::read_share_file(&p, Some(&vault_path), &passphrase).unwrap();
         share.share_data[0] ^= 0xFF;
         std::fs::write(&p, serde_json::to_string_pretty(&share).unwrap()).unwrap();
 
@@ -493,7 +505,7 @@ mod tests {
             force: false,
             source_vault: None,
         };
-        let result = cmd_recover(args, "new-pass", false);
+        let result = cmd_recover(args, &passphrase, false);
         assert!(matches!(
             result,
             Err(Error::ShareVerificationFailed {
@@ -533,6 +545,7 @@ mod tests {
             threshold: 3,
             shares: 5,
             force: false,
+            expires: None,
         };
         cmd_shard(sargs, &vault_path, &passphrase, false).unwrap();
 
@@ -580,7 +593,7 @@ mod tests {
     #[test]
     fn test_recover_without_source_vault_has_only_recover_entry() {
         let dir = tempdir().unwrap();
-        shard_dir(dir.path(), 3, 5);
+        let (_vault_path, passphrase) = shard_dir(dir.path(), 3, 5);
 
         let recovered_vault = dir.path().join("recovered.vault");
         let args = RecoverArgs {
@@ -591,12 +604,12 @@ mod tests {
             force: false,
             source_vault: None,
         };
-        cmd_recover(args, "new-passphrase-12", false).unwrap();
+        cmd_recover(args, &passphrase, false).unwrap();
 
         let raw = std::fs::read_to_string(&recovered_vault).unwrap();
         let vault: Vault = serde_json::from_str(&raw).unwrap();
         let key =
-            derive_vault_key(b"new-passphrase-12", &vault.salt, MemoryTier::Standard).unwrap();
+            derive_vault_key(passphrase.as_bytes(), &vault.salt, MemoryTier::Standard).unwrap();
         let enc = crate::crypto::EncryptedVault {
             version: vault.version,
             created_at: vault.created_at.clone(),

@@ -77,6 +77,11 @@ pub enum Commands {
         after_help = "Example:\n  origin-secrets -V ./secrets.vault -p ./pw.txt list-shares"
     )]
     ListShares(ListSharesArgs),
+    /// Revoke a share number so it is rejected by recover/verify (P3.1)
+    #[command(
+        after_help = "Example:\n  origin-secrets -V ./secrets.vault -p ./pw.txt revoke-share 2"
+    )]
+    RevokeShare(RevokeShareArgs),
     /// Generate shell completions
     #[command(about = "Generate shell completion scripts (bash/zsh/fish)")]
     Completions(CompletionsArgs),
@@ -110,6 +115,11 @@ pub struct ShardArgs {
     /// leaving stale shares from a previous sharding behind).
     #[arg(long)]
     pub force: bool,
+
+    /// ISO-8601 expiry time for the generated shares (P3.2). After this time,
+    /// the shares are rejected by `verify` and `recover`.
+    #[arg(long)]
+    pub expires: Option<String>,
 }
 
 #[derive(Parser, Clone, Debug)]
@@ -248,6 +258,13 @@ pub struct ListKeysArgs {}
 
 #[derive(Parser, Clone, Debug)]
 pub struct ListSharesArgs {}
+
+#[derive(Parser, Clone, Debug)]
+pub struct RevokeShareArgs {
+    /// Share number to revoke (must be in 1..=255).
+    #[arg(value_name = "SHARE_NUMBER")]
+    pub share_number: u8,
+}
 
 #[derive(Parser, Clone, Debug)]
 pub struct CompletionsArgs {

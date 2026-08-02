@@ -56,13 +56,15 @@ fn tampered_share_fails_verify() {
     init_and_shard(&vault, 2, 3);
 
     let share_path = dir.path().join("shares").join("share_001.json");
-    // Flip a byte in the share data to simulate tampering.
+    // P3.3: shares are encrypted at rest, so the on-disk file is an
+    // EncryptedShare envelope. Flip a byte in its `ciphertext` to simulate
+    // tampering; the AEAD check must then reject it during verification.
     let mut share: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(&share_path).unwrap()).unwrap();
-    let data = share["share_data"].clone();
+    let data = share["ciphertext"].clone();
     let mut bytes: Vec<u8> = serde_json::from_value(data).unwrap();
     bytes[0] ^= 0xFF;
-    share["share_data"] = serde_json::to_value(&bytes).unwrap();
+    share["ciphertext"] = serde_json::to_value(&bytes).unwrap();
     std::fs::write(&share_path, serde_json::to_string_pretty(&share).unwrap()).unwrap();
 
     let r = dispatch(cli(

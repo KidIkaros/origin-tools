@@ -4,7 +4,7 @@ use crate::audit::{AuditEntry, Operation, OperationDetails};
 use crate::cli::ShardArgs;
 use crate::crypto::{decrypt_vault_data, derive_vault_key, encrypt_vault_data, EncryptedVault};
 use crate::error::Error;
-use crate::share::{HybridSignature, Share};
+use crate::share::{HybridSignature, Share, ShareVerifier};
 use crate::vault::Vault;
 use origin_crypto_sdk::error_correction::ReedSolomonCodec;
 use origin_crypto_sdk::signing::hybrid::HybridSigningKeyBundle;
@@ -118,6 +118,13 @@ pub fn cmd_shard(
         let fingerprint = blake3::hash(shard_data);
         let signature = HybridSignature::from_sdk(&signer.sign_hybrid(shard_data));
 
+        // P3.4: embed the verifier public keys so the share can be fully
+        // verified offline (without the vault).
+        let verifier = ShareVerifier {
+            ed25519: signer.ed25519_pk().to_bytes().to_vec(),
+            falcon1024: signer.falcon1024_pk().as_bytes().to_vec(),
+        };
+
         let share = Share {
             version: 1,
             key_id: args.key.clone(),
@@ -129,10 +136,17 @@ pub fn cmd_shard(
             signature,
             created_at: timestamp.clone(),
             recipient: None,
+            expires_at: args.expires.clone(),
+            verifier: Some(verifier),
         };
 
+        // P3.3: write the share encrypted at rest, keyed to the vault master
+        // seed. The vault owner can decrypt; without the vault the file is
+        // opaque (structurally inspectable only via `list-shares`/`verify`
+        // with the vault).
+        let enc = crate::crypto::encrypt_share(&share, &vault_data.master_seed)?;
         let out_path = shares_dir.join(format!("share_{:03}.json", share_number));
-        let serialized = serde_json::to_string_pretty(&share)
+        let serialized = serde_json::to_string_pretty(&enc)
             .map_err(|e| Error::IoError(format!("serialize share: {e}")))?;
         std::fs::write(&out_path, serialized).map_err(|e| Error::IoError(e.to_string()))?;
 
@@ -261,6 +275,7 @@ mod tests {
             threshold: 2,
             shares: 4,
             force: false,
+            expires: None,
         };
         cmd_shard(args, &vault_path, &passphrase, false).unwrap();
 
@@ -321,6 +336,7 @@ mod tests {
             threshold: 3,
             shares: 5,
             force: false,
+            expires: None,
         };
 
         let shares = cmd_shard(args, &vault_path, &passphrase, false).unwrap();
@@ -379,6 +395,7 @@ mod tests {
             threshold: 2,
             shares: 3,
             force: false,
+            expires: None,
         };
         let result = cmd_shard(args, &vault_path, &passphrase, false);
         assert!(result.is_err(), "empty --label must be rejected");
@@ -394,6 +411,7 @@ mod tests {
             threshold: 0,
             shares: 3,
             force: false,
+            expires: None,
         };
         let result = cmd_shard(args, &vault_path, &passphrase, false);
         assert!(matches!(
@@ -411,6 +429,7 @@ mod tests {
             threshold: 5,
             shares: 3,
             force: false,
+            expires: None,
         };
         let result = cmd_shard(args, &vault_path, &passphrase, false);
         assert!(matches!(
@@ -431,6 +450,7 @@ mod tests {
             threshold: 2,
             shares: 3,
             force: false,
+            expires: None,
         };
         let result = cmd_shard(args, &vault_path, "wrong-passphrase", false);
         assert!(matches!(result, Err(Error::VaultDecryptionFailed(_))));
@@ -445,6 +465,7 @@ mod tests {
             threshold: 2,
             shares: 3,
             force: false,
+            expires: None,
         };
         let result = cmd_shard(args, &missing, "x", false);
         assert!(matches!(result, Err(Error::VaultNotFound(_))));
@@ -461,6 +482,7 @@ mod tests {
             threshold: 2,
             shares: 4,
             force: false,
+            expires: None,
         };
         let shares = cmd_shard(args, &vault_path, &passphrase, false).unwrap();
         assert_eq!(shares.len(), 4);

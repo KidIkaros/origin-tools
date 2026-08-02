@@ -310,6 +310,7 @@ mod tests {
             threshold: 2,
             shares: 3,
             force: false,
+            expires: None,
         };
         cmd_shard(args, &vault_path, &passphrase, false).unwrap();
 
@@ -339,6 +340,7 @@ mod tests {
             threshold: 2,
             shares: 3,
             force: false,
+            expires: None,
         };
         cmd_shard(args, &vault_path, &passphrase, false).unwrap();
 
@@ -368,6 +370,7 @@ mod tests {
             threshold: 2,
             shares: 3,
             force: false,
+            expires: None,
         };
         cmd_shard(args, &vault_path, &passphrase, false).unwrap();
 
@@ -401,6 +404,7 @@ mod tests {
             threshold: 2,
             shares: 3,
             force: false,
+            expires: None,
         };
         cmd_shard(args, &vault_path, &passphrase, false).unwrap();
 
@@ -433,6 +437,7 @@ mod tests {
             threshold: 2,
             shares: 3,
             force: false,
+            expires: None,
         };
         cmd_shard(args, &vault_path, &passphrase, false).unwrap();
 

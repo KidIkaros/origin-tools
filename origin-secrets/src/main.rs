@@ -34,6 +34,7 @@ fn command_name(cmd: &Commands) -> &'static str {
         Commands::RotatePassphrase(_) => "rotate-passphrase",
         Commands::ListKeys(_) => "list-keys",
         Commands::ListShares(_) => "list-shares",
+        Commands::RevokeShare(_) => "revoke-share",
         Commands::Completions(_) => "completions",
     }
 }

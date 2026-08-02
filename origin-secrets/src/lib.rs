@@ -78,14 +78,10 @@ pub fn dispatch(cli: Cli) -> Result<(), Error> {
                         .map(|_| ())
                 }
                 cli::Commands::Recover(args) => {
-                    // `recover` only needs a passphrase when it rebuilds a vault
-                    // (--vault-out). A share-only recovery writes nothing to disk
-                    // and never opens a vault, so the passphrase gate is skipped.
-                    if args.vault_out.is_some() {
-                        commands::recover::cmd_recover(args, &passphrase, json).map(|_| ())
-                    } else {
-                        commands::recover::cmd_recover(args, "", json).map(|_| ())
-                    }
+                    // P3.3: shares are encrypted at rest, so even a share-only
+                    // recovery must open the (sibling) vault to decrypt them and
+                    // enforce revocation. The passphrase is always required.
+                    commands::recover::cmd_recover(args, &passphrase, json).map(|_| ())
                 }
                 cli::Commands::Verify(args) => {
                     commands::verify::cmd_verify(args, &resolved_vault, &passphrase, json)
@@ -105,6 +101,10 @@ pub fn dispatch(cli: Cli) -> Result<(), Error> {
                 }
                 cli::Commands::ListShares(args) => {
                     commands::shares::cmd_list_shares(args, &resolved_vault, &passphrase, json)
+                        .map(|_| ())
+                }
+                cli::Commands::RevokeShare(args) => {
+                    commands::revoke::cmd_revoke_share(args, &resolved_vault, &passphrase, json)
                         .map(|_| ())
                 }
                 cli::Commands::Init(_) | cli::Commands::Completions(_) => unreachable!(),

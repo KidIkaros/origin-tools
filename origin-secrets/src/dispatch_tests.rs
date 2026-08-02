@@ -51,6 +51,7 @@ fn test_dispatch_requires_passphrase_without_flag() {
             threshold: 3,
             shares: 5,
             force: false,
+            expires: None,
         }),
     };
     assert!(matches!(
@@ -72,6 +73,7 @@ fn test_dispatch_shard_routes_to_impl() {
             threshold: 3,
             shares: 5,
             force: false,
+            expires: None,
         }),
     };
 

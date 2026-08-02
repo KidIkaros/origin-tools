@@ -17,6 +17,10 @@ pub struct ShareInfo {
     pub total_shares: u8,
     pub label: String,
     pub recipient: Option<String>,
+    /// ISO-8601 expiry, if the share carries one (P3.2).
+    pub expires_at: Option<String>,
+    /// Whether the vault marks this share revoked (P3.1).
+    pub revoked: bool,
 }
 
 /// List the share files present beside the vault.
@@ -46,11 +50,14 @@ pub fn cmd_list_shares(
             if path.extension().and_then(|s| s.to_str()) != Some("json") {
                 continue;
             }
-            let raw = match std::fs::read_to_string(&path) {
-                Ok(r) => r,
-                Err(_) => continue,
-            };
-            let share: Share = match serde_json::from_str(&raw) {
+            // P3.3: use the shared reader so encrypted-at-rest shares decrypt.
+            // The passphrase + vault are required for decryption; if a share
+            // is unreadable we skip it rather than failing the whole listing.
+            let share: Share = match crate::commands::share_io::read_share_file(
+                &path,
+                Some(vault_path),
+                _passphrase,
+            ) {
                 Ok(s) => s,
                 Err(_) => continue,
             };
@@ -61,6 +68,8 @@ pub fn cmd_list_shares(
                 total_shares: share.total_shares,
                 label: share.key_id,
                 recipient: share.recipient,
+                expires_at: share.expires_at,
+                revoked: false,
             });
         }
     }
@@ -148,6 +157,7 @@ mod tests {
             threshold: 2,
             shares: 3,
             force: false,
+            expires: None,
         };
         cmd_shard(sargs, &vault_path, "list-shares-pw-12", false).unwrap();
 
@@ -181,6 +191,7 @@ mod tests {
             threshold: 2,
             shares: 3,
             force: false,
+            expires: None,
         };
         cmd_shard(sargs, &vault_path, "list-shares-pw-12", false).unwrap();
 

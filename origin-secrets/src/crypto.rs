@@ -7,6 +7,7 @@ use crate::error::Error;
 use crate::vault::MemoryTier;
 use origin_crypto_sdk::aead::XChaCha20Poly1305;
 use serde::{Deserialize, Serialize};
+use std::path::PathBuf;
 
 /// Fill `dest` with cryptographically secure random bytes sourced from the
 /// `origin-crypto-sdk` OS-CSPRNG wrapper (`getrandom(2)` / `/dev/urandom` /
@@ -43,6 +44,10 @@ pub struct VaultData {
     pub master_seed: [u8; 32],
     pub keys: std::collections::HashMap<String, Vec<u8>>,
     pub audit_log: Vec<crate::audit::AuditEntry>,
+    /// Share numbers that have been revoked (P3.1). A revoked share is
+    /// rejected during `recover` and flagged during `verify`, without needing
+    /// to re-shard.
+    pub revoked_shares: std::collections::HashSet<u8>,
 }
 
 impl VaultData {
@@ -51,6 +56,7 @@ impl VaultData {
             master_seed: [0u8; 32],
             keys: std::collections::HashMap::new(),
             audit_log: Vec::new(),
+            revoked_shares: std::collections::HashSet::new(),
         }
     }
 }
@@ -105,6 +111,57 @@ pub fn decrypt_vault_data(encrypted: &EncryptedVault, key: &[u8; 32]) -> Result<
 
     serde_json::from_slice(&plaintext)
         .map_err(|e| Error::VaultCorrupted(format!("Failed to deserialize vault: {}", e)))
+}
+
+/// Derive a 32-byte share-encryption key from the vault master seed, keyed by
+/// the share number via a domain-separated blake3 (P3.3). This keeps local
+/// share files opaque at rest while remaining decryptable by the vault owner.
+pub fn derive_share_enc_key(seed: &[u8; 32], share_number: u8) -> [u8; 32] {
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(seed);
+    hasher.update(b"origin-secrets/share-enc/v1");
+    hasher.update(&[share_number]);
+    let mut key = [0u8; 32];
+    key.copy_from_slice(hasher.finalize().as_bytes());
+    key
+}
+
+/// Encrypt a `Share` to its on-disk envelope (P3.3) using a fresh nonce.
+pub fn encrypt_share(
+    share: &crate::share::Share,
+    seed: &[u8; 32],
+) -> Result<crate::share::EncryptedShare, Error> {
+    let key = derive_share_enc_key(seed, share.share_number);
+    let nonce: [u8; 24] = random_array()?;
+    let plaintext = serde_json::to_vec(share)
+        .map_err(|e| Error::CryptoError(format!("serialize share: {e}")))?;
+    let ciphertext = XChaCha20Poly1305::encrypt(&key, &nonce, &plaintext)
+        .map_err(|e| Error::CryptoError(format!("encrypt share: {e:?}")))?;
+    Ok(crate::share::EncryptedShare {
+        version: 1,
+        nonce,
+        ciphertext,
+    })
+}
+
+/// Decrypt a `Share` from its envelope (P3.3), given the vault master seed.
+pub fn decrypt_share(
+    enc: &crate::share::EncryptedShare,
+    seed: &[u8; 32],
+    share_number: u8,
+) -> Result<crate::share::Share, Error> {
+    let key = derive_share_enc_key(seed, share_number);
+    let plaintext =
+        XChaCha20Poly1305::decrypt(&key, &enc.nonce, &enc.ciphertext).map_err(|_| {
+            Error::ShareCorrupted {
+                share_number,
+                path: PathBuf::from("<encrypted share>"),
+            }
+        })?;
+    serde_json::from_slice(&plaintext).map_err(|e| Error::ShareCorrupted {
+        share_number,
+        path: PathBuf::from(format!("deserialize: {e}")),
+    })
 }
 
 /// Derive a 32-byte vault master key from a passphrase via the SDK's

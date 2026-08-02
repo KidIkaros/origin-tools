@@ -1,9 +1,7 @@
 //! Verify command — integrity checks for vaults and shares.
-
 use crate::cli::VerifyArgs;
 use crate::crypto::{decrypt_vault_data, derive_vault_key, EncryptedVault};
 use crate::error::Error;
-use crate::share::Share;
 use crate::vault::Vault;
 use origin_crypto_sdk::signing::hybrid::{Ed25519Falcon1024, HybridSigningKeyBundle};
 use std::path::Path;
@@ -208,14 +206,9 @@ fn verify_share(
     passphrase: &str,
     json: bool,
 ) -> Result<(), Error> {
-    let raw = std::fs::read_to_string(path).map_err(|_| Error::ShareNotFound {
-        share_number: 0,
-        path: path.to_path_buf(),
-    })?;
-    let share: Share = serde_json::from_str(&raw).map_err(|_| Error::ShareCorrupted {
-        share_number: 0,
-        path: path.to_path_buf(),
-    })?;
+    // P3.3/P3.1/P3.2: shared reader decrypts encrypted-at-rest shares, rejects
+    // revoked shares (when a vault is present), and enforces expiry.
+    let share = crate::commands::share_io::read_share_file(path, vault, passphrase)?;
 
     if share.share_data.is_empty() {
         return Err(Error::ShareCorrupted {
@@ -305,9 +298,22 @@ fn verify_share(
             share.share_data.len(),
             share.fingerprint
         );
-        println!(
-            "Cryptographic verification skipped (no vault available); supply -V <vault> or use `recover` for full check."
-        );
+        // P3.4: if the share embeds a verifier, perform a full offline
+        // hybrid-sig check without the vault.
+        match crate::commands::share_io::verify_share_offline(&share) {
+            Ok(()) => println!(
+                "Cryptographic verification PASSED offline (embedded verifier; Ed25519 + Falcon-1024)."
+            ),
+            Err(Error::SignatureVerificationFailed { .. }) => {
+                return Err(Error::ShareVerificationFailed {
+                    share_number: share.share_number,
+                    details: "offline hybrid signature invalid".to_string(),
+                });
+            }
+            Err(_) => println!(
+                "Cryptographic verification skipped (no embedded verifier and no vault); supply -V <vault>."
+            ),
+        }
     }
     Ok(())
 }
@@ -347,7 +353,7 @@ mod tests {
     use super::*;
     use crate::cli::ShardArgs;
     use crate::commands::shard::cmd_shard;
-    use crate::share::HybridSignature;
+    use crate::share::{HybridSignature, Share};
     use std::path::PathBuf;
     use tempfile::tempdir;
 
@@ -400,6 +406,7 @@ mod tests {
             threshold: 2,
             shares: 3,
             force: false,
+            expires: None,
         };
         cmd_shard(args, &vault_path, &passphrase, false).unwrap();
 
@@ -421,6 +428,7 @@ mod tests {
             threshold: 2,
             shares: 3,
             force: false,
+            expires: None,
         };
         cmd_shard(args, &vault_path, "verify-passphrase-test", false).unwrap();
 
@@ -455,6 +463,7 @@ mod tests {
             threshold: 2,
             shares: 3,
             force: false,
+            expires: None,
         };
         cmd_shard(args, &vault_path, &passphrase, false).unwrap();
 
@@ -522,6 +531,8 @@ mod tests {
             signature: HybridSignature::from_sdk(&sdk_sig),
             created_at: "2026-08-01T00:00:00Z".to_string(),
             recipient: Some(recipient.clone()),
+            expires_at: None,
+            verifier: None,
         };
         let share_path = dir.path().join("exported_share.json");
         std::fs::write(&share_path, serde_json::to_string_pretty(&share).unwrap()).unwrap();
@@ -561,6 +572,8 @@ mod tests {
             },
             created_at: "2026-08-01T00:00:00Z".to_string(),
             recipient: None,
+            expires_at: None,
+            verifier: None,
         };
         let share_path = dir.path().join("orphan_share.json");
         std::fs::write(&share_path, serde_json::to_string_pretty(&share).unwrap()).unwrap();
@@ -611,6 +624,8 @@ mod tests {
             signature: HybridSignature::from_sdk(&sdk_sig),
             created_at: "2026-08-01T00:00:00Z".to_string(),
             recipient: None,
+            expires_at: None,
+            verifier: None,
         };
         let share_path = shares_dir.join("share_002.json");
         std::fs::write(&share_path, serde_json::to_string_pretty(&share).unwrap()).unwrap();
@@ -653,6 +668,8 @@ mod tests {
             },
             created_at: "2026-08-01T00:00:00Z".to_string(),
             recipient: None,
+            expires_at: None,
+            verifier: None,
         };
         let share_path = dir.path().join("orphan.json");
         std::fs::write(&share_path, serde_json::to_string_pretty(&share).unwrap()).unwrap();
@@ -697,6 +714,8 @@ mod tests {
             signature: HybridSignature::from_sdk(&sdk_sig),
             created_at: "2026-08-01T00:00:00Z".to_string(),
             recipient: None,
+            expires_at: None,
+            verifier: None,
         };
         let share_path = dir.path().join("moved_share.json");
         std::fs::write(&share_path, serde_json::to_string_pretty(&share).unwrap()).unwrap();
@@ -743,6 +762,8 @@ mod tests {
             signature: HybridSignature::from_sdk(&sdk_sig),
             created_at: "2026-08-01T00:00:00Z".to_string(),
             recipient: Some("bob".to_string()),
+            expires_at: None,
+            verifier: None,
         };
         let share_path = dir.path().join("bad_recipient.json");
         std::fs::write(&share_path, serde_json::to_string_pretty(&share).unwrap()).unwrap();
@@ -781,6 +802,8 @@ mod tests {
             signature: HybridSignature::from_sdk(&sdk_sig),
             created_at: "2026-08-01T00:00:00Z".to_string(),
             recipient: None,
+            expires_at: None,
+            verifier: None,
         };
         let share_path = dir.path().join("good_share.json");
         std::fs::write(&share_path, serde_json::to_string_pretty(&share).unwrap()).unwrap();
@@ -828,6 +851,8 @@ mod tests {
             signature: HybridSignature::from_sdk(&sdk_sig),
             created_at: "2026-08-01T00:00:00Z".to_string(),
             recipient: None,
+            expires_at: None,
+            verifier: None,
         };
         let share_path = dir.path().join("cross_vault_share.json");
         std::fs::write(&share_path, serde_json::to_string_pretty(&share).unwrap()).unwrap();

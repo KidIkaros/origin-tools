@@ -226,6 +226,7 @@ mod tests {
             threshold: 2,
             shares: 3,
             force: false,
+            expires: None,
         };
         cmd_shard(sargs, &vault_path, "old-passphrase-123", false).unwrap();
 
