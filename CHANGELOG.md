@@ -5,9 +5,9 @@ All notable changes to **Origin-Tools** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.4.1] — 2026-08-03
+## [0.4.2] — 2026-08-03
 
-_Evidence-backed origin-crypto-sdk 0.7.1-rc.1 integration candidate._
+_Corrected evidence-backed origin-crypto-sdk 0.7.1-rc.2 integration candidate._
 
 ### Changed
 - Pinned the workspace and fuzz crate to `origin-crypto-sdk =0.7.1-rc.1`.
