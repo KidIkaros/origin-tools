@@ -121,7 +121,7 @@ pub fn cmd_init(
     } else {
         println!("Vault initialized: {:?}", vault_path);
         println!("Tier: {}", tier.label());
-        println!("Fingerprint: {}", &encrypted.fingerprint);
+        println!("Fingerprint: {}", encrypted.fingerprint);
         println!("Backup: protect this vault file and remember its passphrase.");
         println!("Next: create a verified share set with:");
         println!(
