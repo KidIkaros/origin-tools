@@ -21,7 +21,7 @@ exclude = ["fuzz"]
 resolver = "2"
 
 [workspace.package]
-version = "0.4.2"
+version = "0.4.3"
 edition = "2021"
 license = "Apache-2.0"
 authors = ["Origin SDK Contributors"]
@@ -29,7 +29,7 @@ authors = ["Origin SDK Contributors"]
 [workspace.dependencies]
 # The sibling SDK is the authoritative crypto provider. Keep the exact version
 # constraint so origin-tools cannot silently build against another SDK release.
-origin-crypto-sdk = { version = "=0.7.1-rc.2", path = "../origin-crypto-sdk" }
+origin-crypto-sdk = { version = "=0.7.1-rc.3", path = "../origin-crypto-sdk" }
 origin-common = { path = "origin-common" }
 origin-identity = { path = "origin-identity" }
 origin-pass = { path = "origin-pass" }

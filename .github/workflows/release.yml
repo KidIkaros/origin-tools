@@ -50,7 +50,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: KidIkaros/OriginSDK
-          ref: v0.7.1-rc.2 # immutable origin-crypto-sdk candidate
+          ref: v0.7.1-rc.3 # immutable origin-crypto-sdk candidate
           path: origin-crypto-sdk
 
       - name: Install Rust

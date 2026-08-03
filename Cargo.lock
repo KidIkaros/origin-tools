@@ -144,7 +144,7 @@ dependencies = [
  "arrayvec",
  "cc",
  "cfg-if",
- "constant_time_eq 0.4.2",
+ "constant_time_eq",
  "cpufeatures 0.3.0",
  "zeroize",
 ]
@@ -223,12 +223,12 @@ dependencies = [
 
 [[package]]
 name = "chacha20-blake3"
-version = "0.9.13"
+version = "0.9.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a0a8f2f3886d4d40375f7e43b2be364af83e06786d5c89b1e2e19e73d24ac58b"
+checksum = "fd615fc89bad0c5db133906c4706eab1465a19738d8b4edf80751fa6834492eb"
 dependencies = [
  "blake3",
- "constant_time_eq 0.5.0",
+ "constant_time_eq",
  "zeroize",
 ]
 
@@ -334,12 +334,6 @@ name = "constant_time_eq"
 version = "0.4.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3d52eff69cd5e647efe296129160853a42795992097e8af39800e1060caeea9b"
-
-[[package]]
-name = "constant_time_eq"
-version = "0.5.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1a1ec0cfec728a79a5109075543131387f911cb4d07716436d7ae20533657a96"
 
 [[package]]
 name = "cpubits"
@@ -962,7 +956,7 @@ checksum = "04744f49eae99ab78e0d5c0b603ab218f515ea8cfe5a456d7629ad883a3b6e7d"
 
 [[package]]
 name = "origin"
-version = "0.4.2"
+version = "0.4.3"
 dependencies = [
  "clap",
  "origin-channel",
@@ -981,7 +975,7 @@ dependencies = [
 
 [[package]]
 name = "origin-attest"
-version = "0.4.2"
+version = "0.4.3"
 dependencies = [
  "clap",
  "hex",
@@ -996,7 +990,7 @@ dependencies = [
 
 [[package]]
 name = "origin-channel"
-version = "0.4.2"
+version = "0.4.3"
 dependencies = [
  "clap",
  "ed25519-dalek",
@@ -1014,7 +1008,7 @@ dependencies = [
 
 [[package]]
 name = "origin-common"
-version = "0.4.2"
+version = "0.4.3"
 dependencies = [
  "dirs",
  "hex",
@@ -1039,7 +1033,7 @@ dependencies = [
 
 [[package]]
 name = "origin-crypto-sdk"
-version = "0.7.1-rc.2"
+version = "0.7.1-rc.3"
 dependencies = [
  "argon2",
  "blake3",
@@ -1074,7 +1068,7 @@ dependencies = [
 
 [[package]]
 name = "origin-entropy"
-version = "0.4.2"
+version = "0.4.3"
 dependencies = [
  "clap",
  "hex",
@@ -1087,7 +1081,7 @@ dependencies = [
 
 [[package]]
 name = "origin-identity"
-version = "0.4.2"
+version = "0.4.3"
 dependencies = [
  "clap",
  "ed25519-dalek",
@@ -1101,7 +1095,7 @@ dependencies = [
 
 [[package]]
 name = "origin-pass"
-version = "0.4.2"
+version = "0.4.3"
 dependencies = [
  "clap",
  "hex",
@@ -1117,7 +1111,7 @@ dependencies = [
 
 [[package]]
 name = "origin-proof"
-version = "0.4.2"
+version = "0.4.3"
 dependencies = [
  "clap",
  "hex",
@@ -1131,7 +1125,7 @@ dependencies = [
 
 [[package]]
 name = "origin-provenance"
-version = "0.4.2"
+version = "0.4.3"
 dependencies = [
  "clap",
  "hex",
@@ -1145,7 +1139,7 @@ dependencies = [
 
 [[package]]
 name = "origin-schnorr"
-version = "0.4.2"
+version = "0.4.3"
 dependencies = [
  "clap",
  "hex",
@@ -1159,7 +1153,7 @@ dependencies = [
 
 [[package]]
 name = "origin-seal"
-version = "0.4.2"
+version = "0.4.3"
 dependencies = [
  "clap",
  "hex",
@@ -1196,7 +1190,7 @@ dependencies = [
 
 [[package]]
 name = "origin-seed"
-version = "0.4.2"
+version = "0.4.3"
 dependencies = [
  "clap",
  "hex",
@@ -1210,7 +1204,7 @@ dependencies = [
 
 [[package]]
 name = "origin-shard"
-version = "0.4.2"
+version = "0.4.3"
 dependencies = [
  "clap",
  "hex",
@@ -1223,7 +1217,7 @@ dependencies = [
 
 [[package]]
 name = "origin-stealth"
-version = "0.4.2"
+version = "0.4.3"
 dependencies = [
  "clap",
  "hex",

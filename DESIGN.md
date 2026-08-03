@@ -1,7 +1,7 @@
 # Origin-Tools Design Specification
 
 > **Status**: Draft (v0.3.0+)  
-> **SDK dependency**: sibling `origin-crypto-sdk =0.7.1-rc.2` (immutable revision in CI)
+> **SDK dependency**: sibling `origin-crypto-sdk =0.7.1-rc.3` (immutable revision in CI)
 > **Last updated**: 2026-07-27
 
 This document covers the **origin-tools** workspace. The shared cryptographic

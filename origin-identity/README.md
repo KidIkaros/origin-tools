@@ -13,11 +13,11 @@ Unicode recovery phrases.
 ## Installation
 
 The SDK is a required dependency. Origin-tools currently builds against the
-sibling `origin-crypto-sdk` `0.7.1-rc.2` candidate pinned by the workspace and CI.
+sibling `origin-crypto-sdk` `0.7.1-rc.3` candidate pinned by the workspace and CI.
 The SDK is experimental until independently audited.
 
 ```bash
-# 1. Use the sibling origin-crypto-sdk 0.7.1-rc.2 checkout required by origin-tools.
+# 1. Use the sibling origin-crypto-sdk 0.7.1-rc.3 checkout required by origin-tools.
 # The workspace and CI pin the exact SDK revision; no separate SDK install is needed.
 
 # 2. Install origin-identity from a local checkout (origin-tools is
