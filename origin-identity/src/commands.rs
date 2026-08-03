@@ -436,6 +436,9 @@ impl CombinedSignature {
     pub const ED_LEN: usize = 64;
     /// 4-byte BE unsigned length prefix.
     pub const LEN_PREFIX: usize = 4;
+    /// Maximum wire size using the SDK's Falcon-1024 CT signature maximum.
+    pub const MAX_WIRE_LEN: usize =
+        Self::LEN_PREFIX + Self::ED_LEN + origin_crypto_sdk::pqc::falcon1024::sizes::SIGNATURE_MAX;
 
     /// Serialize to the canonical wire byte format.
     pub fn to_wire_bytes(&self) -> Vec<u8> {
@@ -457,6 +460,12 @@ impl CombinedSignature {
             ));
         }
         let falcon_len = u32::from_be_bytes([raw[0], raw[1], raw[2], raw[3]]) as usize;
+        let max_falcon_len = origin_crypto_sdk::pqc::falcon1024::sizes::SIGNATURE_MAX;
+        if falcon_len > max_falcon_len {
+            return Err(format!(
+                "falcon signature length {falcon_len} exceeds maximum {max_falcon_len} bytes"
+            ));
+        }
         let expected_len = min + falcon_len;
         if raw.len() != expected_len {
             return Err(format!(
@@ -1217,6 +1226,24 @@ mod tests {
     }
 
     #[test]
+    fn combined_signature_accepts_sdk_falcon1024_maximum() {
+        let ed = ed25519_dalek::Signature::from_bytes(&[0xAAu8; 64]);
+        let falcon = origin_crypto_sdk::pqc::falcon1024::FalconSignature::from_bytes(
+            &vec![0x55u8; origin_crypto_sdk::pqc::falcon1024::sizes::SIGNATURE_MAX],
+        )
+        .unwrap();
+        let signature = CombinedSignature { ed, falcon };
+
+        let wire = signature.to_wire_bytes();
+        assert_eq!(wire.len(), CombinedSignature::MAX_WIRE_LEN);
+        let decoded = CombinedSignature::from_wire(&wire).unwrap();
+        assert_eq!(
+            decoded.falcon.as_bytes().len(),
+            origin_crypto_sdk::pqc::falcon1024::sizes::SIGNATURE_MAX
+        );
+    }
+
+    #[test]
     fn combined_signature_rejects_short() {
         let err = CombinedSignature::from_wire(&[0u8; 50]).unwrap_err();
         assert!(err.contains("at least 68 bytes"), "got: {err}");
@@ -1247,20 +1274,27 @@ mod tests {
             v
         };
         let err = CombinedSignature::from_wire(&bad).unwrap_err();
-        assert!(err.contains("size mismatch"), "got: {err}");
+        // 2048 > 1280 max, so the max-length check fires first.
+        assert!(
+            err.contains("exceeds maximum") || err.contains("size mismatch"),
+            "got: {err}"
+        );
     }
 
     #[test]
     fn combined_signature_handles_max_falcon_len() {
-        // u32::MAX declared length should fail size check (can't fit).
+        // u32::MAX declared length should fail (exceeds max or size mismatch).
         let mut bad = Vec::new();
         bad.extend_from_slice(&u32::MAX.to_be_bytes());
         bad.extend_from_slice(&[0u8; 64]);
-        // We don't actually allocate 4GB; the size-mismatch check kicks
-        // in long before we try to read that many bytes.
+        // We don't actually allocate 4GB; the max-length or size-mismatch
+        // check kicks in long before we try to read that many bytes.
         bad.extend_from_slice(&[0u8; 100]);
         let err = CombinedSignature::from_wire(&bad).unwrap_err();
-        assert!(err.contains("size mismatch"), "got: {err}");
+        assert!(
+            err.contains("exceeds maximum") || err.contains("size mismatch"),
+            "got: {err}"
+        );
     }
 
     #[test]
@@ -1440,7 +1474,7 @@ mod tests {
             p.parent().unwrap().exists(),
             "parent dir must exist after ensure_dir"
         );
-        let _ = std::fs::remove_dir_all(p.parent().unwrap());
+        let _ = std::fs::remove_file(&p);
     }
 
     #[test]

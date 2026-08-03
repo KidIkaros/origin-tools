@@ -98,10 +98,10 @@ impl DelegationAttestation {
     }
 
     /// Generate a random 16-byte nonce from the OS CSPRNG.
-    fn random_nonce() -> String {
+    fn random_nonce() -> Result<String, String> {
         let mut buf = [0u8; 16];
-        getrandom::fill(&mut buf).expect("OS CSPRNG failed");
-        hex::encode(buf)
+        origin_crypto_sdk::fill_random(&mut buf).map_err(|_| "OS CSPRNG failed".to_string())?;
+        Ok(hex::encode(buf))
     }
 }
 
@@ -178,7 +178,7 @@ impl SignedDelegation {
             expires_at,
             audience,
             resource_scope,
-            nonce: DelegationAttestation::random_nonce(),
+            nonce: DelegationAttestation::random_nonce()?,
         };
 
         let canonical = attestation.canonical_bytes()?;

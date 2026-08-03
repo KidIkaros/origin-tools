@@ -5,7 +5,7 @@
 
 use crate::error::Error;
 use crate::vault::MemoryTier;
-use origin_crypto_sdk::aead::XChaCha20Poly1305;
+use origin_crypto_sdk::{aead::XChaCha20Poly1305, blake3};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
@@ -15,7 +15,7 @@ use std::path::PathBuf;
 /// MUST be generated through this helper — never via a raw `rand` instance — so
 /// every random byte in the system has a single, audited provenance.
 pub fn random_bytes(dest: &mut [u8]) -> Result<(), Error> {
-    origin_crypto_sdk::internal::getrandom::fill(dest)
+    origin_crypto_sdk::fill_random(dest)
         .map_err(|e| Error::CryptoError(format!("RNG failure: {e}")))
 }
 
@@ -31,6 +31,7 @@ pub fn random_array<const N: usize>() -> Result<[u8; N], Error> {
 pub struct EncryptedVault {
     pub version: u8,
     pub created_at: String,
+    #[serde(with = "origin_common::tier::serde_compat")]
     pub tier: MemoryTier,
     pub fingerprint: String,
     pub salt: [u8; 16],
@@ -93,7 +94,7 @@ pub fn encrypt_vault_data(
         version: 1,
         created_at: std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
+            .map_err(|e| crate::error::Error::CryptoError(format!("system clock error: {e}")))?
             .as_secs()
             .to_string(),
         tier,
@@ -171,9 +172,7 @@ pub fn derive_vault_key(
     salt: &[u8; 16],
     tier: MemoryTier,
 ) -> Result<[u8; 32], Error> {
-    let derived = tier
-        .argon2_builder()
-        .output_len(32)
+    let derived = origin_common::argon2_builder(tier, 32)
         .derive(passphrase, salt)
         .map_err(|e| Error::CryptoError(format!("Failed to derive key: {:?}", e)))?;
     derived
@@ -316,6 +315,7 @@ mod integration_workflow_tests {
     use super::*;
     use crate::cli::InitArgs;
     use crate::commands::init::cmd_init;
+    use crate::vault::parse_tier;
 
     /// A passphrase file on disk; cmd_init now requires a passphrase source via
     /// -p/--passphrase-file (it never falls back to a demo string), so the
@@ -382,7 +382,7 @@ mod integration_workflow_tests {
             let vault: crate::vault::Vault = serde_json::from_str(&vault_json).unwrap();
             assert_eq!(
                 vault.tier,
-                MemoryTier::parse_tier(tier).unwrap(),
+                parse_tier(tier).unwrap(),
                 "Tier mismatch for: {}",
                 tier
             );

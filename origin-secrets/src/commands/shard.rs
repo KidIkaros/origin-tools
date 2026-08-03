@@ -5,6 +5,7 @@ use crate::cli::ShardArgs;
 use crate::error::Error;
 use crate::share::{HybridSignature, Share, ShareVerifier};
 use crate::vault_handle::VaultHandle;
+use origin_crypto_sdk::blake3;
 use origin_crypto_sdk::error_correction::ReedSolomonCodec;
 use origin_crypto_sdk::signing::hybrid::HybridSigningKeyBundle;
 use serde::Serialize;

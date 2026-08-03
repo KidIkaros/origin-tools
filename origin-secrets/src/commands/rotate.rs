@@ -7,7 +7,7 @@ use crate::audit::{AuditEntry, Operation, OperationDetails};
 use crate::cli::RotatePassphraseArgs;
 use crate::error::Error;
 use crate::share::HybridSignature;
-use crate::vault::MemoryTier;
+use crate::vault::parse_tier;
 use crate::vault_handle::VaultHandle;
 use serde::Serialize;
 use std::path::Path;
@@ -48,7 +48,7 @@ pub fn cmd_rotate_passphrase(
     let old_tier = handle.tier;
 
     // Resolve the target tier. Default: keep current tier (pure passphrase
-    let target_tier = MemoryTier::parse_tier(&args.tier).map_err(Error::CryptoError)?;
+    let target_tier = parse_tier(&args.tier).map_err(Error::CryptoError)?;
 
     // Append the rotation record BEFORE re-encrypting so it lands in history.
     let timestamp = crate::observability::epoch_to_ymd_hms_now();
@@ -110,7 +110,7 @@ mod tests {
     use crate::commands::init::cmd_init;
     use crate::commands::shard::cmd_shard;
     use crate::crypto::{decrypt_vault_data, derive_vault_key};
-    use crate::vault::Vault;
+    use crate::vault::{MemoryTier, Vault};
     use std::path::PathBuf;
     use tempfile::tempdir;
 

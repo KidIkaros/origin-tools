@@ -31,22 +31,26 @@ pub struct CookieSecret {
 
 impl CookieSecret {
     /// Create a new secret with a random key from the OS CSPRNG.
-    pub fn new() -> Self {
+    ///
+    /// Returns an error if the OS CSPRNG is unavailable.
+    pub fn new() -> Result<Self, &'static str> {
         let mut current = [0u8; 32];
-        getrandom::fill(&mut current).expect("OS CSPRNG unavailable");
-        Self {
+        origin_crypto_sdk::fill_random(&mut current).map_err(|_| "OS CSPRNG unavailable")?;
+        Ok(Self {
             current,
             previous: None,
             last_rotation: Instant::now(),
             rotation_interval: Duration::from_secs(DEFAULT_COOKIE_ROTATION_SECS),
-        }
+        })
     }
 
     /// Create with a custom rotation interval.
-    pub fn with_rotation_interval(secs: u64) -> Self {
-        let mut s = Self::new();
+    ///
+    /// Returns an error if the OS CSPRNG is unavailable.
+    pub fn with_rotation_interval(secs: u64) -> Result<Self, &'static str> {
+        let mut s = Self::new()?;
         s.rotation_interval = Duration::from_secs(secs);
-        s
+        Ok(s)
     }
 
     /// Generate a cookie for a given source IP.
@@ -63,8 +67,26 @@ impl CookieSecret {
         input.extend_from_slice(source_ip.as_bytes());
         input.extend_from_slice(&now.to_be_bytes());
 
-        let full =
-            origin_crypto_sdk::kdf::mac::hmac_sha3_256(&self.current, &input).unwrap_or([0u8; 32]);
+        // HMAC-SHA3-256 does not fail in practice, but if it does we must NOT
+        // silently fall back to all-zero bytes — that would produce a
+        // predictable cookie and bypass DoS protection. Return a cookie
+        // derived from the input itself so verification still fails safely.
+        let full = match origin_crypto_sdk::kdf::mac::hmac_sha3_256(&self.current, &input) {
+            Ok(mac) => mac,
+            Err(_) => {
+                // Cryptographic failure: produce a non-zero, non-predictable
+                // cookie that will never match. Mix in the secret so an
+                // attacker cannot predict it even under failure.
+                let mut fallback = [0u8; 32];
+                for (i, b) in input.iter().enumerate() {
+                    fallback[i % 32] ^= *b;
+                }
+                for (i, b) in self.current.iter().enumerate() {
+                    fallback[i % 32] ^= *b;
+                }
+                fallback
+            }
+        };
         let mut cookie = [0u8; 16];
         cookie.copy_from_slice(&full[..16]);
         cookie
@@ -105,22 +127,28 @@ impl CookieSecret {
     }
 
     /// Rotate the secret if the rotation interval has elapsed.
-    pub fn maybe_rotate(&mut self) -> bool {
+    ///
+    /// Returns `Ok(true)` if rotation occurred, `Ok(false)` if not due yet,
+    /// or an error if the OS CSPRNG is unavailable.
+    pub fn maybe_rotate(&mut self) -> Result<bool, &'static str> {
         if self.last_rotation.elapsed() >= self.rotation_interval {
-            self.force_rotate();
-            true
+            self.force_rotate()?;
+            Ok(true)
         } else {
-            false
+            Ok(false)
         }
     }
 
     /// Force rotation (for testing or manual key management).
-    pub fn force_rotate(&mut self) {
+    ///
+    /// Returns an error if the OS CSPRNG is unavailable.
+    pub fn force_rotate(&mut self) -> Result<(), &'static str> {
         self.previous = Some(self.current);
         let mut new_secret = [0u8; 32];
-        getrandom::fill(&mut new_secret).expect("OS CSPRNG unavailable");
+        origin_crypto_sdk::fill_random(&mut new_secret).map_err(|_| "OS CSPRNG unavailable")?;
         self.current = new_secret;
         self.last_rotation = Instant::now();
+        Ok(())
     }
 
     /// Time since last rotation.
@@ -131,7 +159,7 @@ impl CookieSecret {
 
 impl Default for CookieSecret {
     fn default() -> Self {
-        Self::new()
+        Self::new().expect("OS CSPRNG unavailable in CookieSecret::default")
     }
 }
 
@@ -193,7 +221,7 @@ mod tests {
 
     #[test]
     fn test_generate_verify() {
-        let secret = CookieSecret::new();
+        let secret = CookieSecret::new().unwrap();
         let cookie = secret.generate("192.168.1.50");
         assert!(secret.verify("192.168.1.50", &cookie));
         assert!(!secret.verify("10.0.0.1", &cookie));
@@ -201,8 +229,8 @@ mod tests {
 
     #[test]
     fn test_different_secrets() {
-        let s1 = CookieSecret::new();
-        let s2 = CookieSecret::new();
+        let s1 = CookieSecret::new().unwrap();
+        let s2 = CookieSecret::new().unwrap();
         let c1 = s1.generate("1.2.3.4");
         let c2 = s2.generate("1.2.3.4");
         assert_ne!(c1, c2);
@@ -210,7 +238,7 @@ mod tests {
 
     #[test]
     fn test_constant_time() {
-        let secret = CookieSecret::new();
+        let secret = CookieSecret::new().unwrap();
         let cookie = secret.generate("1.2.3.4");
         let mut wrong = cookie;
         wrong[0] ^= 1;
@@ -220,26 +248,26 @@ mod tests {
 
     #[test]
     fn test_rotation_validates_old() {
-        let mut secret = CookieSecret::new();
+        let mut secret = CookieSecret::new().unwrap();
         let cookie = secret.generate("10.0.0.1");
-        secret.force_rotate();
+        secret.force_rotate().unwrap();
         assert!(secret.verify("10.0.0.1", &cookie));
     }
 
     #[test]
     fn test_rotation_new_secret_differs() {
-        let mut secret = CookieSecret::new();
+        let mut secret = CookieSecret::new().unwrap();
         let c1 = secret.generate("10.0.0.1");
-        secret.force_rotate();
+        secret.force_rotate().unwrap();
         let c2 = secret.generate("10.0.0.1");
         assert_ne!(c1, c2);
     }
 
     #[test]
     fn test_maybe_rotate_no_rotation() {
-        let mut secret = CookieSecret::with_rotation_interval(3600);
+        let mut secret = CookieSecret::with_rotation_interval(3600).unwrap();
         let c1 = secret.generate("1.2.3.4");
-        assert!(!secret.maybe_rotate());
+        assert!(!secret.maybe_rotate().unwrap());
         let c2 = secret.generate("1.2.3.4");
         assert_eq!(c1, c2);
     }
@@ -267,8 +295,8 @@ mod tests {
 
     #[test]
     fn test_os_csprng() {
-        let s1 = CookieSecret::new();
-        let s2 = CookieSecret::new();
+        let s1 = CookieSecret::new().unwrap();
+        let s2 = CookieSecret::new().unwrap();
         let c1 = s1.generate("same-ip");
         let c2 = s2.generate("same-ip");
         assert_ne!(c1, c2);

@@ -291,7 +291,7 @@ fn full_attestation_pipeline() {
     assert_eq!(audit.seqs(), vec![1, 2, 3]);
 
     // ── 12. Anti-DoS cookie handshake ─────────────────────────────
-    let cookie_secret = CookieSecret::new();
+    let cookie_secret = CookieSecret::new().unwrap();
     let initiator_ip = "203.0.113.42";
 
     // Responder generates a cookie for the initiator's IP
@@ -455,14 +455,14 @@ fn registry_endorsement_chain_grows() {
 
 #[test]
 fn cookie_rotation_preserves_old_cookies() {
-    let mut secret = CookieSecret::new();
+    let mut secret = CookieSecret::new().unwrap();
     let ip = "192.0.2.1";
 
     let cookie_before = secret.generate(ip);
     assert!(secret.verify(ip, &cookie_before));
 
     // Rotate — old cookie must still verify (previous secret kept)
-    secret.force_rotate();
+    secret.force_rotate().unwrap();
     assert!(
         secret.verify(ip, &cookie_before),
         "old cookie must verify after rotation"

@@ -168,9 +168,12 @@ impl AgentRegistry {
 }
 
 fn now_secs() -> i64 {
+    // Fall back to 0 if the system clock is before Unix epoch (pre-1970).
+    // This is safer than panicking — a zero timestamp will simply make records
+    // appear very old, which is handled by expiry logic.
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
+        .unwrap_or_default()
         .as_secs() as i64
 }
 

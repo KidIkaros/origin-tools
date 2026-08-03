@@ -1,7 +1,7 @@
 use crate::cli::InitArgs;
 use crate::crypto::{encrypt_vault_data, VaultData};
 use crate::error::Error;
-use crate::vault::{MemoryTier, Vault};
+use crate::vault::{parse_tier, Vault};
 use serde::Serialize;
 use std::io::IsTerminal;
 use std::path::Path;
@@ -47,8 +47,8 @@ pub fn cmd_init(
     json: bool,
 ) -> Result<(), Error> {
     // Parse tier
-    let tier = MemoryTier::parse_tier(&args.tier)
-        .map_err(|e| Error::CryptoError(format!("Invalid tier: {}", e)))?;
+    let tier =
+        parse_tier(&args.tier).map_err(|e| Error::CryptoError(format!("Invalid tier: {}", e)))?;
 
     // Check if vault already exists
     if vault_path.exists() {
@@ -74,7 +74,7 @@ pub fn cmd_init(
     let nonce: [u8; 24] = super::super::crypto::random_array()?;
 
     // Derive master key via Argon2id (origin-crypto-sdk, tier-aware cost)
-    let builder = tier.argon2_builder().output_len(32);
+    let builder = origin_common::argon2_builder(tier, 32);
     let derived = builder
         .derive(passphrase.as_bytes(), &salt)
         .map_err(|e| Error::CryptoError(format!("Failed to derive key: {:?}", e)))?;
@@ -114,13 +114,13 @@ pub fn cmd_init(
             ok: true,
             command: "init",
             vault: vault_path.display().to_string(),
-            tier: tier.to_string(),
+            tier: tier.label().to_string(),
             fingerprint: encrypted.fingerprint.clone(),
         };
         crate::commands::output::print_json(&response, "init")?;
     } else {
         println!("Vault initialized: {:?}", vault_path);
-        println!("Tier: {}", tier);
+        println!("Tier: {}", tier.label());
         println!("Fingerprint: {}", &encrypted.fingerprint);
         println!("Backup: protect this vault file and remember its passphrase.");
         println!("Next: create a verified share set with:");

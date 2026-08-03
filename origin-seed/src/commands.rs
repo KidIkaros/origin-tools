@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 
-use origin_common::{resolve_passphrase, tier_from_str};
+use origin_common::{random_bytes, resolve_passphrase, tier_from_str};
 use origin_crypto_sdk::blob::{create_blob, recover_seed};
 
 use crate::cli::{
@@ -20,7 +20,7 @@ pub fn dispatch(cli: crate::cli::Cli) -> Result<(), String> {
 
 fn cmd_generate(args: GenerateArgs) -> Result<(), String> {
     let mut seed = [0u8; 32];
-    rand::RngCore::fill_bytes(&mut rand::thread_rng(), &mut seed);
+    random_bytes(&mut seed)?;
     output_seed(&seed, &args.format)
 }
 
@@ -300,7 +300,7 @@ mod tests {
     #[test]
     fn generate_produces_32_bytes() {
         let mut seed = [0u8; 32];
-        rand::RngCore::fill_bytes(&mut rand::thread_rng(), &mut seed);
+        super::random_bytes(&mut seed).unwrap();
         // Extremely unlikely to be all zeros
         assert!(seed.iter().any(|&b| b != 0));
     }
@@ -309,8 +309,8 @@ mod tests {
     fn generate_two_seeds_differ() {
         let mut s1 = [0u8; 32];
         let mut s2 = [0u8; 32];
-        rand::RngCore::fill_bytes(&mut rand::thread_rng(), &mut s1);
-        rand::RngCore::fill_bytes(&mut rand::thread_rng(), &mut s2);
+        super::random_bytes(&mut s1).unwrap();
+        super::random_bytes(&mut s2).unwrap();
         assert_ne!(s1, s2);
     }
 }

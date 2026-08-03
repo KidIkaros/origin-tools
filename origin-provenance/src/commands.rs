@@ -2,7 +2,7 @@
 
 //! Command implementations for origin-provenance.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use crate::cli::{
     CheckArgs, Commands, ScanArgs, StampArgs, UnwatermarkArgs, VerifyArgs, WatermarkArgs,

@@ -15,11 +15,13 @@ use std::collections::BTreeMap;
 use std::io::Read;
 use std::path::Path;
 
+use origin_common::{argon2_builder, tier_from_byte, tier_from_str, tier_to_byte};
 use origin_crypto_sdk::{
-    chacha20_blake3::ChaCha20Blake3, kdf::hkdf::hkdf_sha3_256, kdf::Argon2idBuilder, sha3_256,
+    chacha20_blake3::{ChaCha20Blake3, TAG_SIZE},
+    kdf::hkdf::hkdf_sha3_256,
+    sha3_256,
     tier::MemoryTier,
 };
-use rand::RngCore;
 use serde::{Deserialize, Serialize};
 use zeroize::Zeroizing;
 
@@ -68,6 +70,9 @@ pub const INDEX_VERSION: u32 = 0x01;
 pub const HEADER_BYTES_LEN: usize =
     4 + 1 + 1 + 1 + 1 + KDF_SALT_LEN + HEADER_NONCE_LEN + 2 /* header_ct_len u16 BE */;
 
+/// Maximum vault file size: 256 MiB. Prevents memory exhaustion from oversized inputs.
+pub const MAX_VAULT_LEN: usize = 256 * 1024 * 1024;
+
 // ── Type tags inside the 16B `entry_reserved` block ────────────────────
 
 /// Type tag: password entry.
@@ -90,74 +95,31 @@ pub const ALGO_SHA512: u8 = 0x03;
 // ── Tier helpers ──────────────────────────────────────────────────────
 
 /// Parse a tier label ("nano" / "standard" / "sovereign") into the SDK
-/// `MemoryTier` enum. Errors are formatted strings per CLI conventions.
+/// `MemoryTier` enum. Delegates to `origin_common::tier_from_str`.
 pub fn parse_tier(s: &str) -> Result<MemoryTier, String> {
-    match s.to_lowercase().as_str() {
-        "nano" => Ok(MemoryTier::Nano),
-        "standard" => Ok(MemoryTier::Standard),
-        "sovereign" => Ok(MemoryTier::Sovereign),
-        other => Err(format!(
-            "unknown tier '{other}'; use nano, standard, or sovereign"
-        )),
-    }
+    tier_from_str(s)
 }
 
 /// Map `MemoryTier` to its single-byte wire format.
+/// Delegates to `origin_common::tier_to_byte`.
 pub fn tier_byte(t: MemoryTier) -> u8 {
-    match t {
-        MemoryTier::Nano => 0,
-        MemoryTier::Standard => 1,
-        MemoryTier::Sovereign => 2,
-    }
-}
-
-/// Inverse of `tier_byte`.
-pub fn tier_from_byte(b: u8) -> Result<MemoryTier, String> {
-    match b {
-        0 => Ok(MemoryTier::Nano),
-        1 => Ok(MemoryTier::Standard),
-        2 => Ok(MemoryTier::Sovereign),
-        _ => Err(format!(
-            "unknown tier byte 0x{b:02x}; vault file is corrupt"
-        )),
-    }
+    tier_to_byte(t)
 }
 
 // ── Argon2id tier-to-params ────────────────────────────────────────────
 
 /// Argon2id derivation for the vault master key, tier-specific.
 ///
-/// We use `Argon2idBuilder` rather than the preset `Argon2id::derive_key`
-/// helper because the preset only distinguishes "normal" vs "paranoid"
-/// but does not honour the SDK's three-tier scheme (Nano / Standard /
-/// Sovereign). The numbers below mirror
-/// `origin_crypto_sdk::primitives::tier::MemoryTier::argon2_params`.
+/// Uses `origin_common::argon2_builder` which reads the authoritative
+/// parameters from `MemoryTier::argon2_params` in the SDK.
 fn argon2id_derive(
     passphrase: &[u8],
     salt: &[u8; KDF_SALT_LEN],
     tier: MemoryTier,
 ) -> Result<Zeroizing<[u8; 32]>, String> {
-    let key_vec = match tier {
-        MemoryTier::Nano => Argon2idBuilder::new()
-            .memory_kib(8 * 1024)
-            .iterations(2)
-            .parallelism(1)
-            .output_len(32)
-            .derive(passphrase, salt),
-        MemoryTier::Standard => Argon2idBuilder::new()
-            .memory_kib(64 * 1024)
-            .iterations(3)
-            .parallelism(2)
-            .output_len(32)
-            .derive(passphrase, salt),
-        MemoryTier::Sovereign => Argon2idBuilder::new()
-            .memory_kib(256 * 1024)
-            .iterations(5)
-            .parallelism(4)
-            .output_len(32)
-            .derive(passphrase, salt),
-    }
-    .map_err(|e| format!("Argon2id derivation failed: {e:?}"))?;
+    let key_vec = argon2_builder(tier, 32)
+        .derive(passphrase, salt)
+        .map_err(|e| format!("Argon2id derivation failed: {e:?}"))?;
 
     if key_vec.len() != 32 {
         return Err(format!(
@@ -449,6 +411,17 @@ impl VaultHeader {
             ));
         }
         let cipher_suite = bytes[5];
+        if cipher_suite != CIPHER_CHACHA20_BLAKE3 {
+            return Err(format!(
+                "unsupported cipher suite 0x{cipher_suite:02x}; only ChaCha20-BLAKE3 (0x00) is implemented"
+            ));
+        }
+        if bytes[7] != 0 {
+            return Err(format!(
+                "unsupported reserved vault header byte: 0x{:02x}",
+                bytes[7]
+            ));
+        }
         let kdf_tier = tier_from_byte(bytes[6])?;
         let mut kdf_salt = [0u8; KDF_SALT_LEN];
         kdf_salt.copy_from_slice(&bytes[8..8 + KDF_SALT_LEN]);
@@ -457,6 +430,11 @@ impl VaultHeader {
         header_nonce.copy_from_slice(&bytes[off_salt..off_salt + HEADER_NONCE_LEN]);
         let off_nonce = off_salt + HEADER_NONCE_LEN;
         let header_ct_len = u16::from_be_bytes([bytes[off_nonce], bytes[off_nonce + 1]]) as usize;
+        if header_ct_len < TAG_SIZE {
+            return Err(format!(
+                "vault header ciphertext too short: {header_ct_len} bytes (need at least {TAG_SIZE})"
+            ));
+        }
         Ok(Self {
             cipher_suite,
             kdf_tier,
@@ -560,7 +538,8 @@ pub fn init_vault(path: &Path, passphrase: &str, tier: MemoryTier) -> Result<(),
 
     // 1. Generate Argon2id salt + master key.
     let mut kdf_salt = [0u8; KDF_SALT_LEN];
-    rand::thread_rng().fill_bytes(&mut kdf_salt);
+    origin_crypto_sdk::fill_random(&mut kdf_salt)
+        .map_err(|e| format!("salt generation failed: {e}"))?;
     let master_key = argon2id_derive(passphrase.as_bytes(), &kdf_salt, tier)?;
     let header_key = derive_header_key(master_key.as_ref());
 
@@ -596,6 +575,12 @@ pub fn unlock_vault(path: &Path, passphrase: &str) -> Result<Vault, String> {
     if data.len() < HEADER_BYTES_LEN {
         return Err(format!(
             "vault file too short: {} bytes (need ≥ {HEADER_BYTES_LEN})",
+            data.len()
+        ));
+    }
+    if data.len() > MAX_VAULT_LEN {
+        return Err(format!(
+            "vault file too large: {} bytes (max {MAX_VAULT_LEN})",
             data.len()
         ));
     }
@@ -770,7 +755,8 @@ pub fn change_vault_passphrase(
 
     // 2. Generate a fresh salt + derive new master key.
     let mut new_salt = [0u8; KDF_SALT_LEN];
-    rand::thread_rng().fill_bytes(&mut new_salt);
+    origin_crypto_sdk::fill_random(&mut new_salt)
+        .map_err(|e| format!("salt generation failed: {e}"))?;
     let new_master = argon2id_derive(new_passphrase.as_bytes(), &new_salt, tier)?;
 
     // 3. Replace the master key + salt on the in-memory vault.
@@ -996,6 +982,21 @@ mod tests {
     }
 
     #[test]
+    fn header_golden_vector_v1() {
+        let header = VaultHeader {
+            cipher_suite: CIPHER_CHACHA20_BLAKE3,
+            kdf_tier: MemoryTier::Standard,
+            kdf_salt: [42u8; 16],
+            header_nonce: [7u8; 24],
+            header_ct_len: 99,
+        };
+        assert_eq!(
+            hex::encode(header.to_wire()),
+            "4f564c54010001002a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a0707070707070707070707070707070707070707070707070063"
+        );
+    }
+
+    #[test]
     fn header_magic_mismatch_rejected() {
         let mut bad = VaultHeader {
             cipher_suite: CIPHER_CHACHA20_BLAKE3,
@@ -1007,6 +1008,69 @@ mod tests {
         .to_wire();
         bad[0] = b'X';
         assert!(VaultHeader::from_wire(&bad).is_err());
+    }
+
+    #[test]
+    fn header_rejects_unknown_cipher_suite() {
+        let mut wire = VaultHeader {
+            cipher_suite: CIPHER_CHACHA20_BLAKE3,
+            kdf_tier: MemoryTier::Standard,
+            kdf_salt: [0u8; 16],
+            header_nonce: [0u8; 24],
+            header_ct_len: TAG_SIZE,
+        }
+        .to_wire();
+        wire[5] = 0xFF;
+        let error = VaultHeader::from_wire(&wire).unwrap_err();
+        assert!(error.contains("unsupported cipher suite"));
+    }
+
+    #[test]
+    fn header_rejects_nonzero_reserved_byte() {
+        let mut wire = VaultHeader {
+            cipher_suite: CIPHER_CHACHA20_BLAKE3,
+            kdf_tier: MemoryTier::Standard,
+            kdf_salt: [0u8; 16],
+            header_nonce: [0u8; 24],
+            header_ct_len: TAG_SIZE,
+        }
+        .to_wire();
+        wire[7] = 1;
+        let error = VaultHeader::from_wire(&wire).unwrap_err();
+        assert!(error.contains("reserved vault header byte"));
+    }
+
+    #[test]
+    fn header_rejects_ciphertext_shorter_than_tag() {
+        let wire = VaultHeader {
+            cipher_suite: CIPHER_CHACHA20_BLAKE3,
+            kdf_tier: MemoryTier::Standard,
+            kdf_salt: [0u8; 16],
+            header_nonce: [0u8; 24],
+            header_ct_len: TAG_SIZE - 1,
+        }
+        .to_wire();
+        let error = VaultHeader::from_wire(&wire).unwrap_err();
+        assert!(error.contains("ciphertext too short"));
+    }
+
+    #[test]
+    fn entry_metadata_golden_vector_v1() {
+        let meta = EntryMetadata {
+            name_hash: [1u8; 32],
+            name: "github.com".into(),
+            entry_nonce: [2u8; 24],
+            entry_ct_offset: 0,
+            entry_ct_len: 256,
+            type_tag: TYPE_OCRA,
+            algo: ALGO_SHA1,
+            period_secs: 0,
+            digits: 6,
+        };
+        assert_eq!(
+            hex::encode(meta.to_wire()),
+            "01010101010101010101010101010101010101010101010101010101010101010202020202020202020202020202020202020202020202020000010003010000060000000000000000000000"
+        );
     }
 
     #[test]

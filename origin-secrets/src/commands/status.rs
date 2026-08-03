@@ -106,7 +106,7 @@ pub fn cmd_status(
         command: "status",
         vault: vault_path.display().to_string(),
         initialized: true,
-        tier: Some(handle.tier.to_string()),
+        tier: Some(handle.tier.label().to_string()),
         fingerprint: Some(handle.fingerprint.clone()),
         audit_entries: data.audit_log.len(),
         shares_dir: shares_dir.display().to_string(),

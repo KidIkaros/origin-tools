@@ -139,6 +139,34 @@ mod tests {
     }
 
     #[test]
+    fn test_share_json_golden_vector_v1() {
+        let share = Share {
+            version: 1,
+            key_id: "test-key".to_string(),
+            share_number: 1,
+            threshold: 3,
+            total_shares: 5,
+            share_data: vec![1, 2, 3],
+            fingerprint: "abc123".to_string(),
+            signature: HybridSignature {
+                ed25519: vec![4, 5],
+                falcon1024: vec![6, 7],
+            },
+            created_at: "2026-07-30T21:27:45Z".to_string(),
+            recipient: Some("alice@company.com".to_string()),
+            expires_at: Some("2027-01-01T00:00:00Z".to_string()),
+            verifier: Some(ShareVerifier {
+                ed25519: vec![8, 9],
+                falcon1024: vec![10, 11],
+            }),
+        };
+        assert_eq!(
+            serde_json::to_string(&share).unwrap(),
+            r#"{"version":1,"key_id":"test-key","share_number":1,"threshold":3,"total_shares":5,"share_data":[1,2,3],"fingerprint":"abc123","signature":{"ed25519":[4,5],"falcon1024":[6,7]},"created_at":"2026-07-30T21:27:45Z","recipient":"alice@company.com","expires_at":"2027-01-01T00:00:00Z","verifier":{"ed25519":[8,9],"falcon1024":[10,11]}}"#
+        );
+    }
+
+    #[test]
     fn test_share_roundtrip() {
         let share = Share {
             version: 1,

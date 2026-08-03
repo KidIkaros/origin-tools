@@ -12,12 +12,13 @@ Unicode recovery phrases.
 
 ## Installation
 
-The SDK is a required dependency. Pin the version explicitly to match
-DESIGN.md frontmatter (`^0.6.3`).
+The SDK is a required dependency. Origin-tools currently builds against the
+sibling `origin-crypto-sdk` `0.7.1-rc.1` candidate pinned by the workspace and CI.
+The SDK is experimental until independently audited.
 
 ```bash
-# 1. Install the SDK at the version pinned by DESIGN.md:
-cargo install origin-crypto-sdk --version '^0.6.3' --locked
+# 1. Use the sibling origin-crypto-sdk 0.7.1-rc.1 checkout required by origin-tools.
+# The workspace and CI pin the exact SDK revision; no separate SDK install is needed.
 
 # 2. Install origin-identity from a local checkout (origin-tools is
 #    currently a private local repo; replace `/path/to/origin-tools`

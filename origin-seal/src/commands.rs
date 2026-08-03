@@ -102,7 +102,11 @@ const MAGIC: &[u8; 4] = b"SEAL";
 const VERSION: u8 = 1;
 const FLAG_COMPRESSED: u8 = 0x01;
 const FLAG_STREAMED: u8 = 0x02;
+const SUPPORTED_FLAGS: u8 = FLAG_COMPRESSED | FLAG_STREAMED;
 const HEADER_LEN: usize = 8 + 16 + 24; // magic+ver+flags+tier+rsvd + salt + nonce
+
+/// Maximum total envelope size: 4 GiB. Prevents memory exhaustion from oversized inputs.
+const MAX_ENVELOPE_LEN: usize = 4 * 1024 * 1024 * 1024;
 
 /// Streaming chunk bounds. Framing stores explicit lengths, so power-of-2 is
 /// not required — only a sane min/max to avoid pathological buffers.
@@ -132,6 +136,21 @@ fn validate_chunk_size(cs: usize) -> Result<usize, String> {
         ));
     }
     Ok(cs)
+}
+
+fn validate_envelope_flags(flags: u8, reserved: u8) -> Result<(), String> {
+    if flags & !SUPPORTED_FLAGS != 0 {
+        return Err(format!("unsupported envelope flags: 0x{flags:02x}"));
+    }
+    if flags & FLAG_COMPRESSED != 0 && flags & FLAG_STREAMED != 0 {
+        return Err("compressed and streamed envelope flags are mutually exclusive".to_string());
+    }
+    if reserved != 0 {
+        return Err(format!(
+            "unsupported reserved envelope byte: 0x{reserved:02x}"
+        ));
+    }
+    Ok(())
 }
 
 /// Derive a 32-byte encryption key from the suite identity.
@@ -165,8 +184,8 @@ pub fn cmd_encrypt(args: EncryptArgs) -> Result<(), String> {
     // gets embedded in the envelope, so we generate the salt up front and reuse
     // it for both key derivation (here) and envelope encoding (below).
     let mut salt = [0u8; 16];
-    use rand::RngCore;
-    rand::thread_rng().fill_bytes(&mut salt);
+    origin_crypto_sdk::fill_random(&mut salt)
+        .map_err(|e| format!("salt generation failed: {e}"))?;
 
     let key_arr: [u8; 32] = if args.identity {
         key_from_identity("origin-seal::encrypt", args.passphrase_file.as_deref())?
@@ -205,7 +224,8 @@ pub fn cmd_encrypt(args: EncryptArgs) -> Result<(), String> {
 
     // Random nonce. (Salt already generated above.)
     let mut nonce = [0u8; 24];
-    rand::thread_rng().fill_bytes(&mut nonce);
+    origin_crypto_sdk::fill_random(&mut nonce)
+        .map_err(|e| format!("nonce generation failed: {e}"))?;
 
     let ct = XChaCha20Poly1305::encrypt(&key_arr, &nonce, &payload)
         .map_err(|e| format!("encryption failed: {e:?}"))?;
@@ -256,9 +276,10 @@ fn cmd_encrypt_stream(
     // Random salt + base nonce.
     let mut salt = [0u8; 16];
     let mut base_nonce = [0u8; 24];
-    use rand::RngCore;
-    rand::thread_rng().fill_bytes(&mut salt);
-    rand::thread_rng().fill_bytes(&mut base_nonce);
+    origin_crypto_sdk::fill_random(&mut salt)
+        .map_err(|e| format!("salt generation failed: {e}"))?;
+    origin_crypto_sdk::fill_random(&mut base_nonce)
+        .map_err(|e| format!("nonce generation failed: {e}"))?;
 
     let key = tier_argon2(tier)
         .derive(passphrase.as_bytes(), &salt)
@@ -355,6 +376,12 @@ pub fn cmd_decrypt(args: DecryptArgs) -> Result<(), String> {
             envelope.len()
         ));
     }
+    if envelope.len() > MAX_ENVELOPE_LEN {
+        return Err(format!(
+            "envelope too large ({} bytes, max {MAX_ENVELOPE_LEN})",
+            envelope.len()
+        ));
+    }
     if &envelope[..4] != MAGIC {
         return Err("not an origin-seal envelope (bad magic)".to_string());
     }
@@ -363,6 +390,7 @@ pub fn cmd_decrypt(args: DecryptArgs) -> Result<(), String> {
     }
 
     let flags = envelope[5];
+    validate_envelope_flags(flags, envelope[7])?;
     let env_tier = tier_from_byte_fn(envelope[6])?;
     let cli_tier = parse_tier(&args.tier)?;
     if env_tier != cli_tier {
@@ -722,8 +750,8 @@ pub fn cmd_kdf(args: KdfArgs) -> Result<(), String> {
         }
         None => {
             let mut a = [0u8; 16];
-            use rand::RngCore;
-            rand::thread_rng().fill_bytes(&mut a);
+            origin_crypto_sdk::fill_random(&mut a)
+                .map_err(|e| format!("random generation failed: {e}"))?;
             a
         }
     };
@@ -871,6 +899,24 @@ mod tests {
         let (ed_out, falcon_out) = parse_signature(hex_str.as_bytes()).unwrap();
         assert_eq!(ed_out, ed);
         assert_eq!(falcon_out, falcon);
+    }
+
+    #[test]
+    fn envelope_flags_reject_unknown_bits() {
+        let error = validate_envelope_flags(0x04, 0).unwrap_err();
+        assert!(error.contains("unsupported envelope flags"));
+    }
+
+    #[test]
+    fn envelope_flags_reject_compressed_streaming() {
+        let error = validate_envelope_flags(FLAG_COMPRESSED | FLAG_STREAMED, 0).unwrap_err();
+        assert!(error.contains("mutually exclusive"));
+    }
+
+    #[test]
+    fn envelope_flags_reject_nonzero_reserved_byte() {
+        let error = validate_envelope_flags(0, 1).unwrap_err();
+        assert!(error.contains("reserved envelope byte"));
     }
 
     #[test]

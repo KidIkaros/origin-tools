@@ -28,6 +28,8 @@ fn ensure_identity(home_dir: &Path, passphrase: &str) {
     let path = home.identity_seed_path();
     let _ = std::fs::remove_file(&path);
     IdentityStore::create(&home, passphrase, MemoryTier::Standard).expect("create identity");
+    let blob = std::fs::read(&path).expect("read created identity");
+    assert_eq!(&blob[..4], b"ORGB", "suite identity must use SDK blob v2");
 }
 
 /// Locate a sibling `origin-*` binary next to the current test executable.
@@ -155,7 +157,12 @@ fn identity_seed_derivation_is_deterministic() {
         ],
         oh,
     );
-    assert!(a.status.success(), "derive a: {}", stdout_of(&a));
+    assert!(
+        a.status.success(),
+        "derive a: stdout={} stderr={}",
+        stdout_of(&a),
+        String::from_utf8_lossy(&a.stderr)
+    );
 
     let b = run(
         &seed,
@@ -323,7 +330,12 @@ fn identity_schnorr_prove_verify() {
         ],
         oh,
     );
-    assert!(proof.status.success(), "prove: {}", stdout_of(&proof));
+    assert!(
+        proof.status.success(),
+        "prove: stdout={} stderr={}",
+        stdout_of(&proof),
+        String::from_utf8_lossy(&proof.stderr)
+    );
     let proof_path = write_file(&dir, "proof.json", &proof.stdout);
 
     // Verify with the suite identity (pubkey derived from same identity) and the

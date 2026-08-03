@@ -35,16 +35,11 @@ pub enum ChannelState {
 }
 
 /// Negotiated cipher suite for the session.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum CipherSuite {
     /// XChaCha20-Poly1305 (24-byte nonce, 16-byte tag) — default.
+    #[default]
     XChaCha20Poly1305,
-}
-
-impl Default for CipherSuite {
-    fn default() -> Self {
-        CipherSuite::XChaCha20Poly1305
-    }
 }
 
 impl CipherSuite {

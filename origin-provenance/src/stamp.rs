@@ -103,6 +103,19 @@ mod tests {
     }
 
     #[test]
+    fn stamp_golden_vector_v1() {
+        let stamp = Stamp::new(b"hello provenance", 1_700_000_000);
+        assert_eq!(
+            hex::encode(stamp.signing_payload()),
+            "0132363865376131356639313235653165306465643233313366313936353236366434363833386563633033663266383533346461343364313339306264633539100000000000000000f1536500000000"
+        );
+        assert_eq!(
+            stamp.to_json().unwrap(),
+            "{\n  \"version\": 1,\n  \"content_hash\": \"268e7a15f9125e1e0ded2313f1965266d46838ecc03f2f8534da43d1390bdc59\",\n  \"size\": 16,\n  \"timestamp\": 1700000000\n}"
+        );
+    }
+
+    #[test]
     fn signing_payload_deterministic() {
         let stamp = Stamp::new(b"data", 42);
         let p1 = stamp.signing_payload();

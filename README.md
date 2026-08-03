@@ -1,11 +1,15 @@
 # origin-tools
 
 A coherent, interoperable suite of cryptographic CLI tools built on the
-[origin-crypto-sdk](../origin-crypto-sdk). Modeled on Office 365 / Google
+[origin-crypto-sdk](../origin-crypto-sdk) `0.7.1-rc.1` candidate. Modeled on Office 365 / Google
 Workspace: one identity, one shared store, tools that compose.
 
 > **🌐 Try it in your browser:** [kidikaros.github.io/origin-web](https://kidikaros.github.io/origin-web)
 > — a zero-server WASM demo running the same crypto, entirely client-side.
+>
+> **SDK candidate:** `origin-crypto-sdk 0.7.1-rc.1`, pinned by exact version and
+> immutable Git tag. This is an evidence-backed release candidate, not an
+> independent security audit or blanket production approval for every module.
 
 ## Architecture
 

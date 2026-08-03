@@ -474,9 +474,10 @@ impl TrustGraph {
 }
 
 fn now_secs() -> i64 {
+    // Fall back to 0 if the system clock is before Unix epoch (pre-1970).
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
+        .unwrap_or_default()
         .as_secs() as i64
 }
 

@@ -115,6 +115,51 @@ fn identity_create_and_load_roundtrip() {
     let loaded = IdentityStore::load(&home, passphrase).expect("load");
     assert_eq!(loaded.seed_bytes(), &seed);
     assert_eq!(loaded.tier(), MemoryTier::Nano);
+
+    let blob = std::fs::read(home.identity_seed_path()).expect("read identity blob");
+    assert_eq!(&blob[..4], b"ORGB");
+    assert_eq!(blob[4], 2, "IdentityStore writes SDK blob v2");
+}
+
+#[test]
+fn identity_legacy_blob_remains_readable() {
+    let (_dir, home) = temp_home();
+    let passphrase = b"legacy-passphrase";
+    let seed = [0x33u8; 32];
+    let salt = [0x11u8; 16];
+    let nonce = [0x22u8; 24];
+    let tier = MemoryTier::Nano;
+    let mut key = origin_common::argon2_builder(tier, 32)
+        .derive(passphrase, &salt)
+        .expect("derive legacy key");
+    let mut key_arr = [0u8; 32];
+    key_arr.copy_from_slice(&key);
+    zeroize::Zeroize::zeroize(&mut key);
+    let ciphertext = origin_crypto_sdk::aead::XChaCha20Poly1305::encrypt(&key_arr, &nonce, &seed)
+        .expect("encrypt legacy blob");
+
+    let mut legacy = Vec::with_capacity(16 + 24 + 1 + ciphertext.len());
+    legacy.extend_from_slice(&salt);
+    legacy.extend_from_slice(&nonce);
+    legacy.push(tier_to_byte(tier));
+    legacy.extend_from_slice(&ciphertext);
+    std::fs::write(home.identity_seed_path(), legacy).expect("write legacy blob");
+
+    let loaded = IdentityStore::load(&home, std::str::from_utf8(passphrase).unwrap())
+        .expect("legacy blob should remain readable");
+    assert_eq!(loaded.seed_bytes(), &seed);
+    assert_eq!(loaded.tier(), tier);
+}
+
+#[test]
+fn identity_oversized_blob_fails_before_parsing() {
+    let (_dir, home) = temp_home();
+    std::fs::write(home.identity_seed_path(), vec![0u8; 1024 * 1024 + 1])
+        .expect("write oversized blob");
+
+    let result = IdentityStore::load(&home, "pass");
+    let error = result.err().expect("oversized blob must fail");
+    assert!(error.contains("too large"));
 }
 
 #[test]
@@ -342,6 +387,63 @@ fn envelope_wrong_version_fails() {
     let result = Envelope::from_bytes(&bytes);
     assert!(result.is_err());
     assert!(result.unwrap_err().contains("version"));
+}
+
+#[test]
+fn envelope_unknown_flags_fail_closed() {
+    let key = [0x44u8; 32];
+    let env = Envelope::encrypt(b"data", &key, MemoryTier::Nano, PayloadType::File, false)
+        .expect("encrypt");
+    let mut bytes = env.to_bytes();
+    bytes[6] = 0x02;
+
+    let result = Envelope::from_bytes(&bytes);
+    assert!(result.is_err());
+    assert!(result.unwrap_err().contains("unsupported envelope flags"));
+}
+
+#[test]
+fn envelope_golden_vector_v1_file() {
+    let key = [0x42u8; 32];
+    let salt = [0x11u8; 16];
+    let nonce = [0x22u8; 24];
+    let plaintext = b"origin envelope golden vector";
+    let payload_type = PayloadType::File;
+    let flags = 0u8;
+    let tier = MemoryTier::Nano;
+
+    let mut aad = Vec::with_capacity(48);
+    aad.extend_from_slice(origin_common::envelope::MAGIC);
+    aad.push(origin_common::envelope::VERSION);
+    aad.push(payload_type.to_byte());
+    aad.push(flags);
+    aad.push(tier_to_byte(tier));
+    aad.extend_from_slice(&salt);
+    aad.extend_from_slice(&nonce);
+
+    let ciphertext =
+        origin_crypto_sdk::aead::XChaCha20Poly1305::encrypt_aad(&key, &nonce, plaintext, &aad)
+            .expect("encrypt golden vector");
+
+    let mut encoded = Vec::with_capacity(48 + ciphertext.len());
+    encoded.extend_from_slice(origin_common::envelope::MAGIC);
+    encoded.push(origin_common::envelope::VERSION);
+    encoded.push(payload_type.to_byte());
+    encoded.push(flags);
+    encoded.push(tier_to_byte(tier));
+    encoded.extend_from_slice(&salt);
+    encoded.extend_from_slice(&nonce);
+    encoded.extend_from_slice(&ciphertext);
+
+    let expected = "4f52474e010200001111111111111111111111111111111122222222222222222222222222222222222222222222222286c3ed9c8e04a6fda5d0c7d38ee882bb1130b934e0dc778231deda65edb17da722169ffb19eb437f85a9a8b776";
+    assert_eq!(hex::encode(&encoded), expected);
+
+    let parsed = Envelope::from_bytes(&hex::decode(expected).expect("decode golden vector"))
+        .expect("parse golden vector");
+    assert_eq!(
+        parsed.decrypt(&key).expect("decrypt golden vector"),
+        plaintext
+    );
 }
 
 #[test]

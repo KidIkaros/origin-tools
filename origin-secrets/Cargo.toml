@@ -24,7 +24,6 @@ hex = { workspace = true }
 rpassword = { workspace = true }
 zeroize = { version = "1", features = ["derive"] }
 thiserror = "2"
-blake3 = "1"
 ed25519-dalek = { workspace = true }
 subtle = "2"
 

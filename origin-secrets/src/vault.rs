@@ -1,65 +1,11 @@
 //! Vault data structures and operations
 
-use origin_crypto_sdk::kdf::Argon2idBuilder;
+pub use origin_common::MemoryTier;
 use serde::{Deserialize, Serialize};
 
-/// Argon2id memory tier for vault KDF cost.
-///
-/// This is a local, serde-enabled mirror of
-/// `origin_crypto_sdk::primitives::tier::MemoryTier`. The SDK owns the
-/// authoritative definition; we convert to it for KDF parameter selection
-/// via [`MemoryTier::to_sdk`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum MemoryTier {
-    /// 8 MB — IoT / edge / RPi Zero
-    Nano,
-    /// 64 MB — mid-tier laptop / server
-    Standard,
-    /// 256 MB — datacenter / high-security
-    Sovereign,
-}
-
-impl MemoryTier {
-    pub fn parse_tier(s: &str) -> Result<Self, String> {
-        match s.to_lowercase().as_str() {
-            "nano" => Ok(MemoryTier::Nano),
-            "standard" => Ok(MemoryTier::Standard),
-            "sovereign" => Ok(MemoryTier::Sovereign),
-            _ => Err(format!("Invalid tier: {}", s)),
-        }
-    }
-
-    /// Build a tier-aware Argon2id KDF builder from the SDK.
-    pub fn argon2_builder(self) -> Argon2idBuilder {
-        match self {
-            MemoryTier::Nano => Argon2idBuilder::new()
-                .memory_kib(8 * 1024)
-                .iterations(2)
-                .parallelism(1),
-            MemoryTier::Standard => Argon2idBuilder::new()
-                .memory_kib(64 * 1024)
-                .iterations(3)
-                .parallelism(2),
-            MemoryTier::Sovereign => Argon2idBuilder::new()
-                .memory_kib(256 * 1024)
-                .iterations(5)
-                .parallelism(4),
-        }
-    }
-
-    pub fn label(&self) -> &'static str {
-        match self {
-            MemoryTier::Nano => "nano",
-            MemoryTier::Standard => "standard",
-            MemoryTier::Sovereign => "sovereign",
-        }
-    }
-}
-
-impl std::fmt::Display for MemoryTier {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.label())
-    }
+/// Parse the SDK-owned memory tier using origin-tools' CLI aliases.
+pub fn parse_tier(s: &str) -> Result<MemoryTier, String> {
+    origin_common::tier_from_str(s)
 }
 
 /// Vault metadata structure stored on disk
@@ -67,6 +13,7 @@ impl std::fmt::Display for MemoryTier {
 pub struct Vault {
     pub version: u8,
     pub created_at: String,
+    #[serde(with = "origin_common::tier::serde_compat")]
     pub tier: MemoryTier,
     pub fingerprint: String,
     pub salt: [u8; 16],
@@ -81,23 +28,17 @@ mod tests {
 
     #[test]
     fn test_memory_tier_parse() {
-        assert_eq!(MemoryTier::parse_tier("nano").unwrap(), MemoryTier::Nano);
-        assert_eq!(
-            MemoryTier::parse_tier("standard").unwrap(),
-            MemoryTier::Standard
-        );
-        assert_eq!(
-            MemoryTier::parse_tier("sovereign").unwrap(),
-            MemoryTier::Sovereign
-        );
-        assert!(MemoryTier::parse_tier("invalid").is_err());
+        assert_eq!(parse_tier("nano").unwrap(), MemoryTier::Nano);
+        assert_eq!(parse_tier("standard").unwrap(), MemoryTier::Standard);
+        assert_eq!(parse_tier("sovereign").unwrap(), MemoryTier::Sovereign);
+        assert!(parse_tier("invalid").is_err());
     }
 
     #[test]
     fn test_memory_tier_display() {
-        assert_eq!(MemoryTier::Nano.to_string(), "nano");
-        assert_eq!(MemoryTier::Standard.to_string(), "standard");
-        assert_eq!(MemoryTier::Sovereign.to_string(), "sovereign");
+        assert_eq!(MemoryTier::Nano.label().to_string(), "nano");
+        assert_eq!(MemoryTier::Standard.label().to_string(), "standard");
+        assert_eq!(MemoryTier::Sovereign.label().to_string(), "sovereign");
     }
 
     #[test]

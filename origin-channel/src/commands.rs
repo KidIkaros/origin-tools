@@ -17,11 +17,11 @@ use crate::session::RatchetedSession;
 use crate::types::ChannelState;
 use crate::usage_limit::AeadLimits;
 
-/// Generate a random X25519 static secret (getrandom-based, avoids rand version conflicts).
-fn random_x25519_secret() -> StaticSecret {
+/// Generate a random X25519 static secret using the SDK's CSPRNG wrapper.
+fn random_x25519_secret() -> Result<StaticSecret, String> {
     let mut bytes = [0u8; 32];
-    getrandom::fill(&mut bytes).expect("RNG failed");
-    StaticSecret::from(bytes)
+    origin_crypto_sdk::fill_random(&mut bytes).map_err(|_| "OS CSPRNG failed".to_string())?;
+    Ok(StaticSecret::from(bytes))
 }
 
 pub fn dispatch(cli: crate::cli::Cli) -> Result<(), String> {
@@ -55,7 +55,7 @@ fn cmd_keygen(args: KeygenArgs) -> Result<(), String> {
             .map_err(|e| format!("cannot create {}: {e}", parent.display()))?;
     }
 
-    let secret = random_x25519_secret();
+    let secret = random_x25519_secret()?;
     let public = PublicKey::from(&secret);
 
     let out = serde_json::json!({
@@ -101,9 +101,9 @@ fn cmd_demo(args: DemoArgs) -> Result<(), String> {
     eprintln!("=== origin-channel handshake demo ===\n");
 
     // Generate two identity keypairs
-    let alice_secret = random_x25519_secret();
+    let alice_secret = random_x25519_secret()?;
     let alice_pk = PublicKey::from(&alice_secret);
-    let bob_secret = random_x25519_secret();
+    let bob_secret = random_x25519_secret()?;
     let bob_pk = PublicKey::from(&bob_secret);
 
     eprintln!("Alice X25519: {}", hex::encode(alice_pk.as_bytes()));

@@ -9,7 +9,7 @@ tools that compose.
 ## Crate Dependency Graph
 
 ```
-                    origin-crypto-sdk (v0.6.4)
+                    origin-crypto-sdk (v0.7.1-rc.1, immutable sibling candidate)
                     ├── XChaCha20-Poly1305 AEAD (+ AAD)
                     ├── Argon2id KDF (tiered)
                     ├── HKDF-SHA3-256

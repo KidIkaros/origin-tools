@@ -27,18 +27,16 @@ use crate::error::{ChannelError, Result};
 use crate::message::{HandshakeMessage, MSG_HANDSHAKE_1, MSG_HANDSHAKE_2, MSG_HANDSHAKE_3};
 use crate::types::SessionId;
 
-/// Generate a random X25519 static secret using getrandom (avoids rand version conflicts).
-fn random_static_secret() -> StaticSecret {
+/// Generate a random X25519 static secret using the SDK's CSPRNG wrapper.
+fn random_static_secret() -> Result<StaticSecret> {
     let mut bytes = [0u8; 32];
-    getrandom::fill(&mut bytes).expect("RNG failed");
-    StaticSecret::from(bytes)
+    origin_crypto_sdk::fill_random(&mut bytes)
+        .map_err(|_| ChannelError::Handshake("OS CSPRNG failed".into()))?;
+    Ok(StaticSecret::from(bytes))
 }
 
 /// Domain label for shared secret derivation.
 const SS_LABEL: &str = "origin-channel:handshake:ss:v1";
-/// Domain label for session ID derivation.
-const SESSION_ID_LABEL: &str = "origin-channel:session-id:v1";
-
 /// Handshake state machine.
 pub struct Handshake {
     /// Our static X25519 key (long-term identity key).
@@ -82,7 +80,7 @@ impl Handshake {
             ));
         }
 
-        let eph_secret = random_static_secret();
+        let eph_secret = random_static_secret()?;
         let eph_public = PublicKey::from(&eph_secret);
 
         // Transcript: e_initiator
@@ -118,7 +116,7 @@ impl Handshake {
         self.transcript.extend_from_slice(&msg.ephemeral_pk);
 
         // Generate our ephemeral key
-        let eph_secret = random_static_secret();
+        let eph_secret = random_static_secret()?;
         let eph_public = PublicKey::from(&eph_secret);
         self.transcript.extend_from_slice(eph_public.as_bytes());
         self.ephemeral_secret = Some(eph_secret);
@@ -254,7 +252,7 @@ mod tests {
     use super::*;
 
     fn make_keypair() -> (StaticSecret, PublicKey) {
-        let secret = random_static_secret();
+        let secret = random_static_secret().unwrap();
         let public = PublicKey::from(&secret);
         (secret, public)
     }
@@ -291,12 +289,12 @@ mod tests {
 
     #[test]
     fn different_peers_different_secrets() {
-        let (alice_static, alice_pk) = make_keypair();
+        let (_alice_static, alice_pk) = make_keypair();
         let (bob_static, bob_pk) = make_keypair();
         let (_carol_static, carol_pk) = make_keypair();
 
         // Alice-Bob handshake
-        let mut ab_alice = Handshake::new(random_static_secret(), bob_pk, true);
+        let mut ab_alice = Handshake::new(random_static_secret().unwrap(), bob_pk, true);
         let mut ab_bob = Handshake::new(bob_static, alice_pk, false);
         let m1 = ab_alice.start().unwrap();
         let m2 = ab_bob.process_msg1(&m1).unwrap();
@@ -305,7 +303,7 @@ mod tests {
         let (ss_ab, _) = ab_alice.finalize().unwrap();
 
         // Alice-Carol handshake (different ephemeral, different peer)
-        let mut ac_alice = Handshake::new(random_static_secret(), carol_pk, true);
+        let mut ac_alice = Handshake::new(random_static_secret().unwrap(), carol_pk, true);
         let m1c = ac_alice.start().unwrap();
         // We can't complete without Carol, but the secret would differ
         // Just verify the handshake state is different

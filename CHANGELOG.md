@@ -5,6 +5,24 @@ All notable changes to **Origin-Tools** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.1] — 2026-08-03
+
+_Evidence-backed origin-crypto-sdk 0.7.1-rc.1 integration candidate._
+
+### Changed
+- Pinned the workspace and fuzz crate to `origin-crypto-sdk =0.7.1-rc.1`.
+- Migrated identity storage to SDK-owned ORGB v2 writes with legacy readers.
+- Added deterministic ORGN, OVLT, Share, and provenance fixtures.
+- Hardened ORGN, SEAL, and OVLT parsers against unsupported flags, reserved
+  fields, unsupported suites, and invalid length fields.
+- Removed direct downstream randomness ownership and repaired cross-tool CLI
+  workflows against freshly built binaries.
+
+### Verification
+- Full workspace tests pass after `cargo build --workspace --bins`.
+- Strict workspace Clippy and formatting checks pass.
+- SDK candidate package and KAT evidence pass.
+
 ## [Unreleased]
 
 ### Added

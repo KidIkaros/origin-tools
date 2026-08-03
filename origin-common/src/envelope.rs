@@ -30,8 +30,12 @@ pub const VERSION: u8 = 1;
 /// Header length: magic(4) + version(1) + payload_type(1) + flags(1) + tier(1) + salt(16) + nonce(24).
 pub const HEADER_LEN: usize = 48;
 
-/// Flag bits.
+/// Maximum payload size: 1 GiB. Prevents memory exhaustion from oversized inputs.
+pub const MAX_PAYLOAD_LEN: usize = 1024 * 1024 * 1024;
+
+/// Flag bits supported by the current ORGN v1 implementation.
 pub const FLAG_COMPRESSED: u8 = 0x01;
+const SUPPORTED_FLAGS: u8 = FLAG_COMPRESSED;
 
 /// Payload type — what's inside the envelope.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -105,8 +109,8 @@ impl Envelope {
     ) -> Result<Self, String> {
         let mut salt = [0u8; 16];
         let mut nonce = [0u8; 24];
-        rand::RngCore::fill_bytes(&mut rand::thread_rng(), &mut salt);
-        rand::RngCore::fill_bytes(&mut rand::thread_rng(), &mut nonce);
+        crate::random_bytes(&mut salt)?;
+        crate::random_bytes(&mut nonce)?;
 
         let payload_data = if compress {
             origin_crypto_sdk::compression::compress(plaintext)
@@ -214,11 +218,25 @@ impl Envelope {
 
         let payload_type = PayloadType::from_byte(bytes[5])?;
         let flags = bytes[6];
+        if flags & !SUPPORTED_FLAGS != 0 {
+            return Err(format!("unsupported envelope flags: 0x{flags:02x}"));
+        }
         let tier = tier_from_byte(bytes[7])?;
 
-        let salt: [u8; 16] = bytes[8..24].try_into().unwrap();
-        let nonce: [u8; 24] = bytes[24..48].try_into().unwrap();
+        let salt: [u8; 16] = bytes[8..24]
+            .try_into()
+            .map_err(|_| "internal: salt slice has wrong length".to_string())?;
+        let nonce: [u8; 24] = bytes[24..48]
+            .try_into()
+            .map_err(|_| "internal: nonce slice has wrong length".to_string())?;
         let payload = bytes[48..].to_vec();
+
+        if payload.len() > MAX_PAYLOAD_LEN {
+            return Err(format!(
+                "envelope payload too large ({} bytes, max {MAX_PAYLOAD_LEN})",
+                payload.len()
+            ));
+        }
 
         Ok(Self {
             header: EnvelopeHeader {

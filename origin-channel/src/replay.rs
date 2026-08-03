@@ -26,7 +26,7 @@ pub struct ReplayWindow {
 
 impl ReplayWindow {
     pub fn new(window_size: usize) -> Self {
-        let words = (window_size + 63) / 64;
+        let words = window_size.div_ceil(64);
         ReplayWindow {
             highest: 0,
             bitmap: vec![0u64; words],

@@ -307,12 +307,7 @@ fn run_preflight(
 
 /// Parse a tier string into [`MemoryTier`].
 fn parse_tier(s: &str) -> Result<crate::vault::MemoryTier, Error> {
-    match s.to_ascii_lowercase().as_str() {
-        "nano" => Ok(crate::vault::MemoryTier::Nano),
-        "standard" => Ok(crate::vault::MemoryTier::Standard),
-        "sovereign" => Ok(crate::vault::MemoryTier::Sovereign),
-        other => Err(Error::CryptoError(format!("unknown tier: {other}"))),
-    }
+    origin_common::tier_from_str(s).map_err(Error::CryptoError)
 }
 
 /// Encrypt `seed` into a fresh vault file at `path`.

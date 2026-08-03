@@ -172,9 +172,14 @@ fn import_preserves_seed_byte_for_byte() {
     );
 
     // 3. The blob file must exist on disk after the binary exits.
+    //    v2 format: magic(4) + version(1) + tier(1) + salt(16) + nonce(24) + ct+tag(48) = 94 bytes.
     let blob_path = tmp.join("alice.id");
     let blob = fs::read(&blob_path).expect("read blob");
-    assert_eq!(blob.len(), 88, "blob must be 88 bytes (salt+nonce+ct+tag)");
+    assert_eq!(
+        blob.len(),
+        94,
+        "blob must be 94 bytes (v2: magic+version+tier+salt+nonce+ct+tag)"
+    );
 
     // 4. Recover the seed via the SDK using the SAME passphrase and tier.
     //    This is the byte-exact assertion: the original seed was encoded
@@ -637,11 +642,9 @@ fn sign_output_hex_then_verify_hex_roundtrip() {
     // Uses the Orionid identity (created in earlier test) or creates
     // a fresh one — this test is self-contained.
     //
-    // A Falcon-1024 empirical length run proved all signatures are
-    // exactly 1280 bytes (always even), so wire bytes = 4+64+1280 = 1348
-    // → 2696 hex chars. The "Odd number of digits" error encountered
-    // during earlier integration work was a test-infra artifact (not a
-    // parity issue in the SDK).
+    // Falcon-1024 signatures use the SDK-owned variable-length CT format.
+    // The wire format carries an explicit length prefix, so hex encoding must
+    // remain valid for every signature length up to the SDK maximum.
     let tmp = TempDir::new("hexpipe-roundtrip");
     write_text(&tmp.join("pw.txt"), "hexpipe-pw");
 
