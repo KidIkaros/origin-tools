@@ -55,7 +55,7 @@ fn memory_facade_unifies_hot_and_cold() {
     let mem2 = Memory::open(&dir, &SEED, "origin-memory-test").expect("reopen");
     assert_eq!(mem2.len(), 2);
     assert!(mem2.verify("event-2004"));
-    assert!(mem2.verify_all().is_empty(), "no tampering after reload");
+    assert!(mem2.verify_all().all_sound(), "no tampering after reload");
 
     // Zoom still works after reload, with no hot-cache seeding by caller.
     let reloaded = mem2.zoom_time(NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(), 365);

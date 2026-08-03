@@ -167,6 +167,17 @@ impl MemoryNode {
             .unwrap_or(0);
         origin_provenance::stamp::Stamp::new(self.to_markdown().as_bytes(), ts)
     }
+
+    /// The node's content hash as raw bytes (for revocation keying).
+    pub fn content_hash_bytes(&self) -> [u8; 32] {
+        let hex = self.stamp().content_hash;
+        let bytes = hex::decode(&hex).unwrap_or_default();
+        let mut arr = [0u8; 32];
+        if bytes.len() == 32 {
+            arr.copy_from_slice(&bytes);
+        }
+        arr
+    }
 }
 
 fn split_frontmatter(md: &str) -> Result<(&str, &str), String> {

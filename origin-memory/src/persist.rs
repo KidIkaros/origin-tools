@@ -15,6 +15,7 @@
 //!   question points.
 
 use crate::node::MemoryNode;
+use crate::revoke::RevocationStore;
 use crate::sign::{sign_node, NodeSignature};
 use chrono::NaiveDate;
 use origin_crypto_sdk::signing::hybrid::HybridSigningKeyBundle;
@@ -25,11 +26,13 @@ use std::sync::Arc;
 pub struct MemoryStore {
     root: PathBuf,
     conn: Connection,
+    revocations: RevocationStore,
 }
 
 impl MemoryStore {
     /// Open (or create) a store rooted at `root`. Markdown lives in `root/`,
-    /// the index in `root/memory.sqlite`.
+    /// the index in `root/memory.sqlite`, the revocation journal in
+    /// `root/revocations.json`.
     pub fn open(root: &Path) -> rusqlite::Result<Self> {
         std::fs::create_dir_all(root).map_err(|e| {
             rusqlite::Error::FromSqlConversionFailure(0, rusqlite::types::Type::Text, Box::new(e))
@@ -59,6 +62,7 @@ impl MemoryStore {
         Ok(Self {
             root: root.to_path_buf(),
             conn,
+            revocations: RevocationStore::open(root),
         })
     }
 
@@ -273,5 +277,23 @@ impl MemoryStore {
             )
             .ok()
             .flatten()
+    }
+
+    /// Access the append-only revocation journal (tamper-evident retraction).
+    pub fn revocations(&self) -> &RevocationStore {
+        &self.revocations
+    }
+
+    /// Revoke a node by content hash (delegates to the internal journal, which
+    /// signs with the bundle's Falcon-1024 component and persists to disk).
+    pub fn revoke_node(
+        &mut self,
+        content_hash: [u8; 32],
+        revoked_by: &str,
+        reason: &str,
+        bundle: &Arc<HybridSigningKeyBundle>,
+    ) {
+        self.revocations
+            .revoke(content_hash, revoked_by, reason, bundle);
     }
 }

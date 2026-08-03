@@ -23,6 +23,23 @@ use origin_crypto_sdk::signing::hybrid::HybridSigningKeyBundle;
 use std::path::Path;
 use std::sync::Arc;
 
+/// Verification summary: every node falls into exactly one bucket.
+#[derive(Debug, Default)]
+pub struct VerifyReport {
+    /// Nodes whose hybrid signature passes and are not revoked.
+    pub valid: Vec<String>,
+    /// Nodes that are cryptographically valid but retracted (revoked).
+    pub revoked: Vec<String>,
+    /// Nodes whose signature failed verification (tampered / corrupted).
+    pub failed: Vec<String>,
+}
+
+impl VerifyReport {
+    pub fn all_sound(&self) -> bool {
+        self.failed.is_empty()
+    }
+}
+
 pub struct Memory {
     index: MemoryIndex,
     store: MemoryStore,
@@ -71,7 +88,9 @@ impl Memory {
 
     /// Build a coarse summary node over `leaves` and persist it (star-chart zoom).
     /// The leaves are committed to a `LayerMmr`; its root is stored on the summary
-    /// row so membership of any leaf is provable after reload.
+    /// row so membership of any leaf is provable after reload. Revoked leaves
+    /// (retracted via the journal) are silently excluded — a coarse layer never
+    /// anchors itself on retracted evidence.
     pub fn summarize(
         &mut self,
         summary_id: &str,
@@ -79,8 +98,13 @@ impl Memory {
         center: NaiveDate,
         leaves: &[MemoryNode],
     ) -> rusqlite::Result<()> {
+        let active: Vec<MemoryNode> = leaves
+            .iter()
+            .filter(|n| !self.store.revocations().is_revoked(&n.content_hash_bytes()))
+            .cloned()
+            .collect();
         self.store
-            .save_summary(summary_id, wing, center, leaves, &self.bundle)
+            .save_summary(summary_id, wing, center, &active, &self.bundle)
             .map(|summary_node| {
                 // Keep the hot index consistent so the summary is queryable and
                 // layer-verifiable within this session too.
@@ -122,12 +146,54 @@ impl Memory {
         }
     }
 
+    /// Retract a node without deleting it (preserves provenance + layer MMRs).
+    /// Records an append-only, hash-chained, Falcon-signed revocation keyed by
+    /// the node's content hash. The revocation survives reload and is itself
+    /// verifiable via `revocations_verified`.
+    pub fn revoke(&mut self, id: &str, reason: &str) -> rusqlite::Result<()> {
+        let node = self
+            .node(id)
+            .ok_or_else(|| rusqlite::Error::QueryReturnedNoRows)?
+            .clone();
+        let content_hash = node.content_hash_bytes();
+        let fingerprint = hex::encode(self.bundle.ed25519_pk().as_bytes());
+        // The revocation store mutates its journal + persists; reach through store.
+        self.store
+            .revoke_node(content_hash, &fingerprint, reason, &self.bundle);
+        Ok(())
+    }
+
+    /// Has this node's content hash been revoked?
+    pub fn is_revoked(&self, id: &str) -> bool {
+        match self.node(id) {
+            Some(n) => self.store.revocations().is_revoked(&n.content_hash_bytes()),
+            None => false,
+        }
+    }
+
+    /// Verify the revocation journal's hash chain AND every record's Falcon sig.
+    pub fn revocations_verified(&self) -> bool {
+        self.store.revocations().verify(&self.bundle)
+    }
+
     pub fn verify(&self, id: &str) -> bool {
         self.index.verify(id)
     }
 
-    pub fn verify_all(&self) -> Vec<String> {
-        self.index.verify_all()
+    /// Verify every node's signature and classify into valid / revoked / failed.
+    /// `all_sound()` on the report means no tampering or corruption was detected.
+    pub fn verify_all(&self) -> VerifyReport {
+        let mut report = VerifyReport::default();
+        for id in self.index.nodes().keys() {
+            if self.is_revoked(id) {
+                report.revoked.push(id.clone());
+            } else if self.index.verify(id) {
+                report.valid.push(id.clone());
+            } else {
+                report.failed.push(id.clone());
+            }
+        }
+        report
     }
 
     pub fn zoom_time(&self, center: NaiveDate, window_days: i64) -> Vec<String> {
@@ -184,6 +250,10 @@ impl Memory {
             let set: std::collections::HashSet<String> = self.by_tier(*tier).into_iter().collect();
             candidates.retain(|id| set.contains(id));
         }
+
+        // Retracted nodes never appear in a zoom result — they remain in the
+        // store (provenance preserved) but are excluded from queries.
+        candidates.retain(|id| !self.is_revoked(id));
 
         candidates
     }

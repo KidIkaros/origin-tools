@@ -140,6 +140,99 @@ fn multi_axis_zoom_intersects_axes() {
 }
 
 #[test]
+fn retraction_loop_is_closed() {
+    // P3 loop-closer: revoke a node, then verify it's excluded from zoom,
+    // classified as `revoked` in verify_all, and skipped when building a summary.
+    let dir = std::env::temp_dir().join(format!("origin-memory-loop-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let mut mem = Memory::open(&dir, &SEED, "origin-memory-test").expect("open");
+
+    let a = MemoryNode::from_markdown(
+        "doc-a",
+        "---\ntitle: A\ntime: 2004-06-01\ntopic: [geopolitics]\nevidence: documented\n---\nA documented event.\n",
+    ).unwrap();
+    let b = MemoryNode::from_markdown(
+        "doc-b",
+        "---\ntitle: B\ntime: 2004-06-15\ntopic: [geopolitics]\nevidence: documented\n---\nAnother documented event.\n",
+    ).unwrap();
+    mem.add(a).expect("add a");
+    mem.add(b).expect("add b");
+
+    // Both visible before revocation.
+    let q = ZoomQuery {
+        time: Some((NaiveDate::from_ymd_opt(2004, 6, 8).unwrap(), 30)),
+        topics: Some(vec!["geopolitics".into()]),
+        evidence: None,
+        tier: None,
+    };
+    assert_eq!(mem.zoom(&q).len(), 2, "both visible before revocation");
+
+    // Revoke doc-a.
+    mem.revoke("doc-a", "superseded").expect("revoke");
+
+    // (1) Zoom excludes the revoked node.
+    let result = mem.zoom(&q);
+    assert_eq!(result.len(), 1, "zoom excludes revoked");
+    assert!(
+        result.contains(&"doc-b".to_string()),
+        "surviving node is doc-b"
+    );
+
+    // (2) verify_all classifies doc-a as `revoked`, not `valid` or `failed`.
+    let report = mem.verify_all();
+    assert!(report.all_sound(), "no tampering");
+    assert!(
+        report.revoked.contains(&"doc-a".to_string()),
+        "doc-a is revoked"
+    );
+    assert!(
+        report.valid.contains(&"doc-b".to_string()),
+        "doc-b is valid"
+    );
+
+    // (3) Summarize skips revoked leaves — summary covers only doc-b.
+    mem.summarize(
+        "summary-1",
+        "geopolitics",
+        NaiveDate::from_ymd_opt(2004, 6, 8).unwrap(),
+        &[
+            MemoryNode::from_markdown("doc-a", "---\ntitle: A\ntime: 2004-06-01\ntopic: [geopolitics]\nevidence: documented\n---\nA documented event.\n").unwrap(),
+            MemoryNode::from_markdown("doc-b", "---\ntitle: B\ntime: 2004-06-15\ntopic: [geopolitics]\nevidence: documented\n---\nAnother documented event.\n").unwrap(),
+        ],
+    ).expect("summarize");
+    let summary = mem.node("summary-1").expect("summary exists");
+    assert_eq!(summary.links.len(), 1, "summary excludes revoked leaf");
+    assert!(summary.links.contains(&"doc-b".to_string()));
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn retraction_is_append_only_and_survives_reload() {
+    // P3: retraction reuses origin-attest's RevocationJournal (hash-chained,
+    // Falcon-signed), so a revoked node is attributable and the journal verifies.
+    let dir = std::env::temp_dir().join(format!("origin-memory-revoke-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let mut mem = Memory::open(&dir, &SEED, "origin-memory-test").expect("open");
+    let n = MemoryNode::from_markdown("event-2004", MD_2004).unwrap();
+    mem.add(n).expect("add");
+
+    assert!(!mem.is_revoked("event-2004"));
+    mem.revoke("event-2004", "superseded by corrected record")
+        .expect("revoke");
+    assert!(mem.is_revoked("event-2004"), "revoked node is flagged");
+    assert!(mem.revocations_verified(), "journal chain + sigs verify");
+
+    // Reload — the revocation journal persists and still verifies.
+    drop(mem);
+    let mem = Memory::open(&dir, &SEED, "origin-memory-test").expect("reopen");
+    assert!(mem.is_revoked("event-2004"), "revocation survives reload");
+    assert!(mem.revocations_verified(), "journal verifies after reload");
+    assert_eq!(mem.store().revocations().len(), 1);
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+#[test]
 fn missing_evidence_field_is_rejected() {
     // M3: a node without an `evidence` field must fail to parse, not silently
     // degrade to Assertion (lower trust) in a provenance system.

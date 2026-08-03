@@ -28,12 +28,14 @@ pub mod layer;
 pub mod memory;
 pub mod node;
 pub mod persist;
+pub mod revoke;
 pub mod sign;
 
 pub use axis::{Axis, AxisKind, ZoomQuery};
 pub use index::MemoryIndex;
 pub use layer::LayerMmr;
-pub use memory::Memory;
+pub use memory::{Memory, VerifyReport};
 pub use node::MemoryNode;
 pub use persist::MemoryStore;
+pub use revoke::RevocationStore;
 pub use sign::{sign_node, verify_node, NodeSignature};
