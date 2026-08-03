@@ -258,6 +258,50 @@ impl Memory {
         candidates
     }
 
+    /// The children (linked nodes) of a summary — the one-level descent.
+    /// Returns `None` if the node doesn't exist; empty if it's a leaf.
+    pub fn children(&self, id: &str) -> Option<Vec<String>> {
+        self.node(id).map(|n| n.links.iter().cloned().collect())
+    }
+
+    /// Is this node a leaf (no children/links)?
+    pub fn is_leaf(&self, id: &str) -> bool {
+        self.node(id).map(|n| n.links.is_empty()).unwrap_or(true)
+    }
+
+    /// Count the depth of the hierarchy rooted at `summary_id` (1 = flat,
+    /// 2 = one level of summaries-of-summaries, etc.). Returns 0 if not found.
+    pub fn depth(&self, summary_id: &str) -> usize {
+        let node = match self.node(summary_id) {
+            Some(n) => n,
+            None => return 0,
+        };
+        if node.links.is_empty() {
+            return 1;
+        }
+        let child_depths: Vec<usize> = node.links.iter().map(|lid| self.depth(lid)).collect();
+        1 + child_depths.into_iter().max().unwrap_or(0)
+    }
+
+    /// Walk the full subtree rooted at `summary_id` in breadth-first order.
+    /// Returns the ids at each level: `result[0]` = root, `result[1]` = its
+    /// children, etc. Useful for rendering the star-chart hierarchy.
+    pub fn levels(&self, summary_id: &str) -> Vec<Vec<String>> {
+        let mut result = Vec::new();
+        let mut frontier = vec![summary_id.to_string()];
+        while !frontier.is_empty() {
+            result.push(frontier.clone());
+            let mut next = Vec::new();
+            for id in &frontier {
+                if let Some(children) = self.children(id) {
+                    next.extend(children);
+                }
+            }
+            frontier = next;
+        }
+        result
+    }
+
     pub fn node(&self, id: &str) -> Option<&MemoryNode> {
         self.index.node(id)
     }
