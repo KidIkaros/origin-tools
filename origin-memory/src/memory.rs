@@ -23,6 +23,19 @@ use origin_crypto_sdk::signing::hybrid::HybridSigningKeyBundle;
 use std::path::Path;
 use std::sync::Arc;
 
+/// A scored zoom result — the node id plus a relevance breakdown.
+/// Every dimension is [0.0, 1.0]; the overall `score` is their weighted average
+/// (unspecified query axes don't contribute — they're orthogonal, not penalized).
+#[derive(Debug, Clone)]
+pub struct ZoomResult {
+    pub id: String,
+    pub score: f64,
+    pub temporal: Option<f64>,
+    pub topic_overlap: Option<f64>,
+    pub evidence_weight: Option<f64>,
+    pub tier_weight: Option<f64>,
+}
+
 /// Verification summary: every node falls into exactly one bucket.
 #[derive(Debug, Default)]
 pub struct VerifyReport {
@@ -258,6 +271,76 @@ impl Memory {
         candidates
     }
 
+    /// Scored zoom — same intersection as `zoom`, but each surviving node gets a
+    /// relevance score so results are *ranked*, not just filtered. The score is
+    /// a weighted average over every axis the query specifies:
+    ///
+    /// - **Temporal** (if `time` set): `1 - |days_from_center| / window`
+    /// - **Topic overlap** (if `topics` set): `matched / query_topics`
+    /// - **Evidence weight**: Documented=1.0, Assertion=0.7, Summary=0.5, Fiction=0.3
+    /// - **Tier weight**: Sovereign=1.0, Standard=0.7, Nano=0.4
+    ///
+    /// Unspecified axes don't contribute — they're orthogonal, not zeroed.
+    pub fn zoom_scored(&self, q: &ZoomQuery) -> Vec<ZoomResult> {
+        let ids = self.zoom(q);
+        let mut results: Vec<ZoomResult> = ids
+            .iter()
+            .filter_map(|id| {
+                let node = self.node(id)?;
+                let mut dims = Vec::new();
+
+                let temporal = q.time.map(|(center, window)| {
+                    let days = (node.time - center).num_days().abs();
+                    if window > 0 {
+                        1.0 - (days as f64 / window as f64).min(1.0)
+                    } else {
+                        1.0
+                    }
+                });
+                if let Some(t) = temporal {
+                    dims.push(t);
+                }
+
+                let topic_overlap = q.topics.as_ref().map(|topics| {
+                    if topics.is_empty() {
+                        1.0
+                    } else {
+                        let matched = topics
+                            .iter()
+                            .filter(|t| node.topics.iter().any(|nt| nt == *t))
+                            .count();
+                        matched as f64 / topics.len() as f64
+                    }
+                });
+                if let Some(t) = topic_overlap {
+                    dims.push(t);
+                }
+
+                let evidence_weight = evidence_score(&node.evidence);
+                dims.push(evidence_weight);
+
+                let tier_weight = tier_score(node.tier);
+                dims.push(tier_weight);
+
+                let score = dims.iter().sum::<f64>() / dims.len() as f64;
+                Some(ZoomResult {
+                    id: id.clone(),
+                    score,
+                    temporal,
+                    topic_overlap,
+                    evidence_weight: Some(evidence_weight),
+                    tier_weight: Some(tier_weight),
+                })
+            })
+            .collect();
+        results.sort_by(|a, b| {
+            b.score
+                .partial_cmp(&a.score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+        results
+    }
+
     /// The children (linked nodes) of a summary — the one-level descent.
     /// Returns `None` if the node doesn't exist; empty if it's a leaf.
     pub fn children(&self, id: &str) -> Option<Vec<String>> {
@@ -316,5 +399,28 @@ impl Memory {
 
     pub fn store(&self) -> &MemoryStore {
         &self.store
+    }
+}
+
+/// Evidence trust weight — Documented is the gold standard, Fiction is the
+/// weakest. Used by `zoom_scored` to rank nodes by evidentiary strength.
+fn evidence_score(e: &crate::node::Evidence) -> f64 {
+    use crate::node::Evidence;
+    match e {
+        Evidence::Documented => 1.0,
+        Evidence::Assertion => 0.7,
+        Evidence::Summary => 0.5,
+        Evidence::Fiction => 0.3,
+    }
+}
+
+/// Storage tier weight — Sovereign > Standard > Nano. Maps directly to the
+/// `MemoryTier` from `origin-common` (reused, not reinvented).
+fn tier_score(tier: origin_crypto_sdk::tier::MemoryTier) -> f64 {
+    use origin_crypto_sdk::tier::MemoryTier;
+    match tier {
+        MemoryTier::Sovereign => 1.0,
+        MemoryTier::Standard => 0.7,
+        MemoryTier::Nano => 0.4,
     }
 }

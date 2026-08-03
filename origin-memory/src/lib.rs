@@ -34,7 +34,7 @@ pub mod sign;
 pub use axis::{Axis, AxisKind, ZoomQuery};
 pub use index::MemoryIndex;
 pub use layer::LayerMmr;
-pub use memory::{Memory, VerifyReport};
+pub use memory::{Memory, VerifyReport, ZoomResult};
 pub use node::MemoryNode;
 pub use persist::MemoryStore;
 pub use revoke::RevocationStore;
