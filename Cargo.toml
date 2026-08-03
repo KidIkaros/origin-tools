@@ -15,6 +15,7 @@ members = [
     "origin-provenance",
     "origin-attest",
     "origin-secrets",
+    "origin-memory",
     "origin-cross-tests",
 ]
 exclude = ["fuzz"]
@@ -53,6 +54,10 @@ serde_json = "1"
 hex = "0.4"
 rpassword = "7"
 ed25519-dalek = "2"
+
+# Local sibling SDK checkpoint for development. Comment out to use crates.io.
+[patch.crates-io]
+origin-crypto-sdk = { path = "../origin-crypto-sdk" }
 
 # Optimize dependencies (Falcon-1024, ed25519-dalek, etc.) in dev builds.
 # Without this, PQC polynomial arithmetic runs ~10x slower at opt-level 0,

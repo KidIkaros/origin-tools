@@ -25,6 +25,6 @@ pub use tier_ext::{tier_from_byte, tier_from_str, tier_to_byte};
 pub use envelope::{Envelope, EnvelopeType, PayloadType};
 pub use home::{Config, OriginHome};
 pub use identity::IdentityStore;
-pub use io::{read_input, write_output};
+pub use io::{atomic_write, read_input, write_output};
 pub use passphrase::{resolve_passphrase, resolve_passphrase_confirm};
 pub use random::{random_array, random_bytes};
