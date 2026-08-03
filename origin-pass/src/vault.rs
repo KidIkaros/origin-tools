@@ -465,7 +465,7 @@ impl Drop for Vault {
     fn drop(&mut self) {
         // Best-effort: zero out each entry's secret bytes. Zeroizing on
         // `master_key` already covers the master key.
-        for (_, entry) in self.entries.iter_mut() {
+        for entry in self.entries.values_mut() {
             if let Some(ref mut s) = entry.secret {
                 for b in s.iter_mut() {
                     *b = 0;
