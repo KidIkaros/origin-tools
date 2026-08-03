@@ -59,6 +59,9 @@ pub struct Memory {
     bundle: Arc<HybridSigningKeyBundle>,
     cipher: crate::crypto::BodyCipher,
     trust: crate::trust::TrustStore,
+    /// Cache of computed layer roots by summary id, so repeated `verify_layer`
+    /// calls skip the O(n) MMR rebuild when the summary hasn't changed.
+    layer_roots: std::collections::HashMap<String, [u8; 32]>,
     /// Node ids whose stored signature failed verification on load (tampered).
     load_failures: Vec<String>,
 }
@@ -86,6 +89,7 @@ impl Memory {
             bundle,
             cipher: crate::crypto::BodyCipher::from_seed(master_seed),
             trust: crate::trust::TrustStore::new(self_fp),
+            layer_roots: std::collections::HashMap::new(),
             load_failures,
         })
     }
@@ -170,6 +174,16 @@ impl Memory {
                 // layer-verifiable within this session too.
                 let sig = crate::sign::sign_node(&summary_node, &self.bundle);
                 self.index.reindex_only(&summary_node, &sig);
+                // Cache the layer root so repeat verify_layer calls are O(1).
+                if let Some(root_hex) = self.store.layer_root(summary_id) {
+                    if let Ok(bytes) = hex::decode(&root_hex) {
+                        if bytes.len() == 32 {
+                            let mut arr = [0u8; 32];
+                            arr.copy_from_slice(&bytes);
+                            self.layer_roots.insert(summary_id.to_string(), arr);
+                        }
+                    }
+                }
             })
     }
 
@@ -177,17 +191,23 @@ impl Memory {
     /// stored layer root. Returns false if the summary has no layer root or the
     /// proof fails (i.e. the leaf was not part of that coarse layer).
     pub fn verify_layer(&self, summary_id: &str, leaf_id: &str) -> bool {
-        let root_hex = match self.store.layer_root(summary_id) {
-            Some(r) => r,
-            None => return false,
-        };
-        let root = match hex::decode(&root_hex) {
-            Ok(b) if b.len() == 32 => {
-                let mut arr = [0u8; 32];
-                arr.copy_from_slice(&b);
-                arr
+        // Use the cached root if available (avoids hex decode on hot path);
+        // fall back to the stored root from the cold store.
+        let root = if let Some(cached) = self.layer_roots.get(summary_id) {
+            *cached
+        } else {
+            let root_hex = match self.store.layer_root(summary_id) {
+                Some(r) => r,
+                None => return false,
+            };
+            match hex::decode(&root_hex) {
+                Ok(b) if b.len() == 32 => {
+                    let mut arr = [0u8; 32];
+                    arr.copy_from_slice(&b);
+                    arr
+                }
+                _ => return false,
             }
-            _ => return false,
         };
         // Rebuild a LayerMmr over the summary's linked leaves and prove membership.
         let summary = match self.node(summary_id) {
