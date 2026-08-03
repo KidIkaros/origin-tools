@@ -53,7 +53,8 @@ impl MemoryStore {
                 ed25519_sig TEXT NOT NULL,
                 falcon_sig  TEXT NOT NULL,
                 signer      TEXT NOT NULL,
-                layer_root  TEXT
+                layer_root  TEXT,
+                body_encrypted TEXT
             );
             CREATE INDEX IF NOT EXISTS idx_nodes_time ON nodes(time);
             CREATE INDEX IF NOT EXISTS idx_nodes_evidence ON nodes(evidence);
@@ -105,6 +106,58 @@ impl MemoryStore {
             ],
         )?;
         Ok(())
+    }
+
+    /// Persist a secret node: body is encrypted (hex), stored in
+    /// `body_encrypted`. The plaintext `body` column is set to `[encrypted]`
+    /// so it's not readable on disk.
+    pub fn save_encrypted(
+        &self,
+        node: &MemoryNode,
+        sig: &NodeSignature,
+        sealed_hex: &str,
+    ) -> rusqlite::Result<()> {
+        let md_path = self.root.join(format!("{}.md", node.id));
+        let md = node.to_markdown();
+        let _ = origin_common::io::atomic_write(&md_path, md.as_bytes());
+
+        let stamp = node.stamp();
+        self.conn.execute(
+            "INSERT INTO nodes (id, title, time, time_end, topics, evidence, tier, content_hash, body, ed25519_sig, falcon_sig, signer, body_encrypted)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
+             ON CONFLICT(id) DO UPDATE SET
+                title=?2, time=?3, time_end=?4, topics=?5, evidence=?6, tier=?7,
+                content_hash=?8, body=?9, ed25519_sig=?10, falcon_sig=?11, signer=?12,
+                body_encrypted=?13",
+            params![
+                node.id,
+                node.title,
+                node.time.format("%Y-%m-%d").to_string(),
+                node.time_end.map(|d| d.format("%Y-%m-%d").to_string()),
+                node.topics.join(", "),
+                node.evidence.as_str(),
+                node.tier.label(),
+                stamp.content_hash,
+                "[encrypted]",
+                sig.ed25519_hex,
+                sig.falcon_hex,
+                sig.signer_fingerprint,
+                sealed_hex,
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// Read the encrypted body (hex) for a secret node, if any.
+    pub fn encrypted_body(&self, id: &str) -> Option<String> {
+        self.conn
+            .query_row(
+                "SELECT body_encrypted FROM nodes WHERE id = ?1",
+                params![id],
+                |row| row.get::<_, Option<String>>(0),
+            )
+            .ok()
+            .flatten()
     }
 
     /// Load every node from the SQLite index (fast path after restart).
@@ -282,6 +335,11 @@ impl MemoryStore {
     /// Access the append-only revocation journal (tamper-evident retraction).
     pub fn revocations(&self) -> &RevocationStore {
         &self.revocations
+    }
+
+    /// Raw SQLite connection (for tests/diagnostics).
+    pub fn conn(&self) -> &Connection {
+        &self.conn
     }
 
     /// Revoke a node by content hash (delegates to the internal journal, which

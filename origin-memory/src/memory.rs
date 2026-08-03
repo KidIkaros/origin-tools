@@ -57,6 +57,7 @@ pub struct Memory {
     index: MemoryIndex,
     store: MemoryStore,
     bundle: Arc<HybridSigningKeyBundle>,
+    cipher: crate::crypto::BodyCipher,
     /// Node ids whose stored signature failed verification on load (tampered).
     load_failures: Vec<String>,
 }
@@ -81,6 +82,7 @@ impl Memory {
             index,
             store,
             bundle,
+            cipher: crate::crypto::BodyCipher::from_seed(master_seed),
             load_failures,
         })
     }
@@ -97,6 +99,28 @@ impl Memory {
         self.store.save(&node, &sig)?;
         self.index.reindex_only(&node, &sig);
         Ok(())
+    }
+
+    /// Add a secret node: sign the plaintext body, then encrypt the body at
+    /// rest. The signature commits to the plaintext (sign-then-encrypt); the
+    /// on-disk `.md` and SQLite store only the ciphertext. The hot index keeps
+    /// the plaintext for in-session queries.
+    pub fn add_secret(&mut self, node: MemoryNode) -> rusqlite::Result<()> {
+        let sig = sign_node(&node, &self.bundle);
+        let sealed = self.cipher.encrypt(node.body.as_bytes());
+        let sealed_hex = hex::encode(&sealed);
+        self.store.save_encrypted(&node, &sig, &sealed_hex)?;
+        self.index.reindex_only(&node, &sig);
+        Ok(())
+    }
+
+    /// Decrypt a secret node's body. Returns the plaintext body, or None if the
+    /// node is not encrypted or decryption fails (wrong key / tampered).
+    pub fn decrypt_body(&self, id: &str) -> Option<String> {
+        let sealed_hex = self.store.encrypted_body(id)?;
+        let sealed = hex::decode(&sealed_hex).ok()?;
+        let plaintext = self.cipher.decrypt(&sealed)?;
+        String::from_utf8(plaintext).ok()
     }
 
     /// Build a coarse summary node over `leaves` and persist it (star-chart zoom).

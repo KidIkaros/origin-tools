@@ -23,6 +23,7 @@
 //! the next frontier, intentionally left as `todo!()` markers.
 
 pub mod axis;
+pub mod crypto;
 pub mod index;
 pub mod layer;
 pub mod memory;
@@ -32,6 +33,7 @@ pub mod revoke;
 pub mod sign;
 
 pub use axis::{Axis, AxisKind, ZoomQuery};
+pub use crypto::BodyCipher;
 pub use index::MemoryIndex;
 pub use layer::LayerMmr;
 pub use memory::{Memory, VerifyReport, ZoomResult};
