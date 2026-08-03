@@ -29,7 +29,7 @@ qrcode = "0.14"
 
 # base32 encoding for otpauth:// URI generation reuses the SDK's
 # `origin_crypto_sdk::drbg::otp::base32_encode` is provided by the pinned
-# origin-crypto-sdk 0.7.1-rc.3 sibling dependency. No crate-local base32 dependency
+# origin-crypto-sdk 0.7.1-rc.4 sibling dependency. No crate-local base32 dependency
 # is needed.
 
 [dev-dependencies]

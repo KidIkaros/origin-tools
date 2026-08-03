@@ -91,9 +91,6 @@ name = "arrayvec"
 version = "0.7.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d3fb67a6e08acf24fdeccbac2cb6ac4305825bd1f117462e0e6f2f193345ad56"
-dependencies = [
- "zeroize",
-]
 
 [[package]]
 name = "autocfg"
@@ -146,7 +143,6 @@ dependencies = [
  "cfg-if",
  "constant_time_eq",
  "cpufeatures 0.3.0",
- "zeroize",
 ]
 
 [[package]]
@@ -223,9 +219,9 @@ dependencies = [
 
 [[package]]
 name = "chacha20-blake3"
-version = "0.9.12"
+version = "0.9.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fd615fc89bad0c5db133906c4706eab1465a19738d8b4edf80751fa6834492eb"
+checksum = "74e24412080fb69a0ac581d23cc0be2a204080302c879fe78bd53aea7da3b9c1"
 dependencies = [
  "blake3",
  "constant_time_eq",
@@ -1033,7 +1029,7 @@ dependencies = [
 
 [[package]]
 name = "origin-crypto-sdk"
-version = "0.7.1-rc.3"
+version = "0.7.1-rc.4"
 dependencies = [
  "argon2",
  "blake3",
