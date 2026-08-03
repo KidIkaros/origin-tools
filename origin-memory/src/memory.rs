@@ -388,6 +388,11 @@ impl Memory {
         results
     }
 
+    /// All node ids currently in the hot index (ordered by insertion).
+    pub fn node_ids(&self) -> Vec<String> {
+        self.index.nodes().keys().cloned().collect()
+    }
+
     /// The children (linked nodes) of a summary — the one-level descent.
     /// Returns `None` if the node doesn't exist; empty if it's a leaf.
     pub fn children(&self, id: &str) -> Option<Vec<String>> {

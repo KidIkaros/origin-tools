@@ -29,6 +29,7 @@ pub mod layer;
 pub mod memory;
 pub mod node;
 pub mod persist;
+pub mod render;
 pub mod revoke;
 pub mod sign;
 pub mod trust;
