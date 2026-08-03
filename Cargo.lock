@@ -1249,6 +1249,7 @@ dependencies = [
  "chrono",
  "ed25519-dalek",
  "hex",
+ "origin-attest",
  "origin-common",
  "origin-crypto-sdk",
  "origin-proof",
