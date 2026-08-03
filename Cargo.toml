@@ -29,7 +29,11 @@ authors = ["Origin SDK Contributors"]
 [workspace.dependencies]
 # The sibling SDK is the authoritative crypto provider. Keep the exact version
 # constraint so origin-tools cannot silently build against another SDK release.
-origin-crypto-sdk = { version = "=0.7.1-rc.4", path = "../origin-crypto-sdk" }
+# Uses crates.io for CI; for local development with a sibling checkout, add a
+# [patch.crates-io] section at the bottom of this file:
+#   [patch.crates-io]
+#   origin-crypto-sdk = { path = "../origin-crypto-sdk" }
+origin-crypto-sdk = "=0.7.1-rc.4"
 origin-common = { path = "origin-common" }
 origin-identity = { path = "origin-identity" }
 origin-pass = { path = "origin-pass" }

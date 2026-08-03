@@ -43,15 +43,6 @@ jobs:
     steps:
       - name: Checkout origin-tools
         uses: actions/checkout@v4
-        with:
-          path: origin-tools
-
-      - name: Checkout origin-crypto-sdk (sibling path dependency)
-        uses: actions/checkout@v4
-        with:
-          repository: KidIkaros/OriginSDK
-          ref: v0.7.1-rc.4 # immutable origin-crypto-sdk candidate
-          path: origin-crypto-sdk
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -77,13 +68,12 @@ jobs:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-            origin-tools/target
-          key: ${{ runner.os }}-${{ matrix.target }}-cargo-${{ hashFiles('origin-tools/Cargo.lock') }}
+            target
+          key: ${{ runner.os }}-${{ matrix.target }}-cargo-${{ hashFiles('Cargo.lock') }}
           restore-keys: ${{ runner.os }}-${{ matrix.target }}-cargo-
 
       - name: Build release binaries
         run: cargo build --release --target ${{ matrix.target }} --workspace
-        working-directory: origin-tools
 
       - name: Package binaries
         shell: bash
@@ -99,21 +89,21 @@ jobs:
                 origin-shard origin-proof origin-stealth origin-entropy origin-schnorr \
                 origin-secrets"
           for b in ${BINS}; do
-            cp "origin-tools/target/${{ matrix.target }}/release/${b}" "${STAGE}/"
+            cp "target/${{ matrix.target }}/release/${b}" "${STAGE}/"
           done
 
           # Docs users expect alongside the binaries
-          cp origin-tools/README.md "${STAGE}/"
-          cp origin-tools/LICENSE "${STAGE}/"
+          cp README.md "${STAGE}/"
+          cp LICENSE "${STAGE}/"
           mkdir -p "${STAGE}/origin-secrets"
-          cp origin-tools/origin-secrets/README.md "${STAGE}/origin-secrets/"
-          cp origin-tools/origin-secrets/SECURITY.md "${STAGE}/origin-secrets/"
-          cp origin-tools/origin-secrets/man/origin-secrets.1 "${STAGE}/origin-secrets/"
+          cp origin-secrets/README.md "${STAGE}/origin-secrets/"
+          cp origin-secrets/SECURITY.md "${STAGE}/origin-secrets/"
+          cp origin-secrets/man/origin-secrets.1 "${STAGE}/origin-secrets/"
 
           # Verify the product binary is present and record the source version
           # without executing a cross-compiled artifact on the host runner.
           test -x "${STAGE}/origin-secrets"
-          VERSION="$(sed -n 's/^version = "\(.*\)"/\1/p' origin-tools/origin-secrets/Cargo.toml | head -n 1)"
+          VERSION="$(sed -n 's/^version = "\(.*\)"/\1/p' origin-secrets/Cargo.toml | head -n 1)"
           printf 'origin-secrets %s\n' "${VERSION}" > "${STAGE}/origin-secrets-version.txt"
 
           # Archive + checksum

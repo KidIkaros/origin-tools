@@ -17,15 +17,6 @@ jobs:
     steps:
       - name: Checkout origin-tools
         uses: actions/checkout@v4
-        with:
-          path: origin-tools
-
-      - name: Checkout origin-crypto-sdk
-        uses: actions/checkout@v4
-        with:
-          repository: KidIkaros/OriginSDK
-          ref: v0.7.1-rc.4 # immutable origin-crypto-sdk candidate
-          path: origin-crypto-sdk
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -36,8 +27,8 @@ jobs:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-            origin-tools/target
-          key: ${{ runner.os }}-cargo-${{ hashFiles('origin-tools/Cargo.lock') }}
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('Cargo.lock') }}
           restore-keys: ${{ runner.os }}-cargo-
 
       - name: Build all binaries
@@ -45,13 +36,11 @@ jobs:
         # Build them first so `cargo test` never races to run a test before its
         # sibling binary exists.
         run: cargo build --workspace --bins
-        working-directory: origin-tools
 
       - name: Run tests
         # `timeout` fails the job if the suite hangs (e.g. a spawned sibling
         # binary spinning) instead of burning CI minutes indefinitely.
         run: timeout 600 cargo test --workspace
-        working-directory: origin-tools
 
   clippy:
     name: Clippy
@@ -59,15 +48,6 @@ jobs:
     steps:
       - name: Checkout origin-tools
         uses: actions/checkout@v4
-        with:
-          path: origin-tools
-
-      - name: Checkout origin-crypto-sdk
-        uses: actions/checkout@v4
-        with:
-          repository: KidIkaros/OriginSDK
-          ref: v0.7.1-rc.4 # immutable origin-crypto-sdk candidate
-          path: origin-crypto-sdk
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -80,17 +60,15 @@ jobs:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-            origin-tools/target
-          key: ${{ runner.os }}-cargo-clippy-${{ hashFiles('origin-tools/Cargo.lock') }}
+            target
+          key: ${{ runner.os }}-cargo-clippy-${{ hashFiles('Cargo.lock') }}
           restore-keys: ${{ runner.os }}-cargo-clippy-
 
       - name: Run clippy (origin-secrets, deny warnings)
         run: cargo clippy -p origin-secrets --all-targets -- -D warnings
-        working-directory: origin-tools
 
       - name: Run clippy (workspace, visibility only)
         run: cargo clippy --workspace --all-targets
-        working-directory: origin-tools
 
   fmt:
     name: Format
@@ -98,15 +76,6 @@ jobs:
     steps:
       - name: Checkout origin-tools
         uses: actions/checkout@v4
-        with:
-          path: origin-tools
-
-      - name: Checkout origin-crypto-sdk
-        uses: actions/checkout@v4
-        with:
-          repository: KidIkaros/OriginSDK
-          ref: v0.7.1-rc.4 # immutable origin-crypto-sdk candidate
-          path: origin-crypto-sdk
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -115,7 +84,6 @@ jobs:
 
       - name: Check formatting
         run: cargo fmt --all -- --check
-        working-directory: origin-tools
 
       - name: Check origin-secrets release metadata
         shell: bash
@@ -126,4 +94,3 @@ jobs:
           binary_version="$(cargo run -q -p origin-secrets -- --version)"
           test "${package_version}" = "${man_version}"
           test "${binary_version}" = "origin-secrets ${package_version}"
-        working-directory: origin-tools
