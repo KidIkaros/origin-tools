@@ -31,6 +31,7 @@ pub mod node;
 pub mod persist;
 pub mod revoke;
 pub mod sign;
+pub mod trust;
 
 pub use axis::{Axis, AxisKind, ZoomQuery};
 pub use crypto::BodyCipher;
@@ -41,3 +42,4 @@ pub use node::MemoryNode;
 pub use persist::MemoryStore;
 pub use revoke::RevocationStore;
 pub use sign::{sign_node, verify_node, NodeSignature};
+pub use trust::TrustStore;

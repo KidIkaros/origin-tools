@@ -58,6 +58,7 @@ pub struct Memory {
     store: MemoryStore,
     bundle: Arc<HybridSigningKeyBundle>,
     cipher: crate::crypto::BodyCipher,
+    trust: crate::trust::TrustStore,
     /// Node ids whose stored signature failed verification on load (tampered).
     load_failures: Vec<String>,
 }
@@ -69,6 +70,7 @@ impl Memory {
     /// rather than trusted silently.
     pub fn open(root: &Path, master_seed: &[u8; 32], domain: &str) -> rusqlite::Result<Self> {
         let bundle = derive_bundle(master_seed, domain);
+        let self_fp = hex::encode(bundle.ed25519_pk().as_bytes());
         let store = MemoryStore::open(root)?;
         let mut index = MemoryIndex::new(master_seed, domain);
         let mut load_failures = Vec::new();
@@ -83,6 +85,7 @@ impl Memory {
             store,
             bundle,
             cipher: crate::crypto::BodyCipher::from_seed(master_seed),
+            trust: crate::trust::TrustStore::new(self_fp),
             load_failures,
         })
     }
@@ -121,6 +124,26 @@ impl Memory {
         let sealed = hex::decode(&sealed_hex).ok()?;
         let plaintext = self.cipher.decrypt(&sealed)?;
         String::from_utf8(plaintext).ok()
+    }
+
+    /// This agent's own fingerprint (Ed25519 public key hex).
+    pub fn fingerprint(&self) -> &str {
+        &self.trust.self_fp
+    }
+
+    /// Endorse another signer in a capability domain (e.g. "memory-write").
+    /// Propagates trust through the personalized PageRank graph.
+    pub fn endorse(&mut self, target_fp: &str, domain: &str, confidence: f64) {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0);
+        self.trust.endorse(target_fp, domain, confidence, now);
+    }
+
+    /// Trust score for a signer in a capability domain [0.0, 1.0].
+    pub fn trust_score(&self, fp: &str, domain: &str) -> f64 {
+        self.trust.score(fp, domain)
     }
 
     /// Build a coarse summary node over `leaves` and persist it (star-chart zoom).
