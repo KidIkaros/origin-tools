@@ -34,6 +34,9 @@ pub struct ZoomResult {
     pub topic_overlap: Option<f64>,
     pub evidence_weight: Option<f64>,
     pub tier_weight: Option<f64>,
+    /// Trust score of the node's signer in the query's trust domain
+    /// (personalized PageRank). Present on every scored result — R3.
+    pub signer_trust: Option<f64>,
 }
 
 /// Verification summary: every node falls into exactly one bucket.
@@ -380,6 +383,21 @@ impl Memory {
         // store (provenance preserved) but are excluded from queries.
         candidates.retain(|id| !self.is_revoked(id));
 
+        // Trust axis (R3): a node is only visible if its *signer* holds at
+        // least `min_trust` personalized-PageRank trust in the query's trust
+        // domain. Unset = unconstrained — same orthogonality as the other axes.
+        if let Some(min_trust) = q.min_trust {
+            let domain = q
+                .trust_domain
+                .clone()
+                .unwrap_or_else(|| "memory-write".to_string());
+            candidates.retain(|id| {
+                self.index.sig(id).is_some_and(|sig| {
+                    self.trust.score(&sig.signer_fingerprint, &domain) >= min_trust
+                })
+            });
+        }
+
         candidates
     }
 
@@ -391,9 +409,18 @@ impl Memory {
     /// - **Topic overlap** (if `topics` set): `matched / query_topics`
     /// - **Evidence weight**: Documented=1.0, Assertion=0.7, Summary=0.5, Fiction=0.3
     /// - **Tier weight**: Sovereign=1.0, Standard=0.7, Nano=0.4
+    /// - **Signer trust** (R3): personalized-PageRank trust of the node's
+    ///   signer in the query's `trust_domain` (default "memory-write"). For a
+    ///   single-agent memory every node is self-signed (trust 1.0), so this is
+    ///   a constant that doesn't change relative rank; in a multi-agent memory
+    ///   it demotes nodes from untrusted signers.
     ///
     /// Unspecified axes don't contribute — they're orthogonal, not zeroed.
     pub fn zoom_scored(&self, q: &ZoomQuery) -> Vec<ZoomResult> {
+        let trust_domain = q
+            .trust_domain
+            .clone()
+            .unwrap_or_else(|| "memory-write".to_string());
         let ids = self.zoom(q);
         let mut results: Vec<ZoomResult> = ids
             .iter()
@@ -434,6 +461,18 @@ impl Memory {
                 let tier_weight = tier_score(node.tier);
                 dims.push(tier_weight);
 
+                // Signer trust (R3): the personalized-PageRank score of whoever
+                // signed this node, in the query's trust domain. Intrinsic to
+                // the node, so it always contributes — single-agent memories
+                // see a constant 1.0 that leaves relative ranking untouched.
+                let signer_trust = self
+                    .index
+                    .sig(id)
+                    .map(|sig| self.trust.score(&sig.signer_fingerprint, &trust_domain));
+                if let Some(t) = signer_trust {
+                    dims.push(t);
+                }
+
                 let score = dims.iter().sum::<f64>() / dims.len() as f64;
                 Some(ZoomResult {
                     id: id.clone(),
@@ -442,6 +481,7 @@ impl Memory {
                     topic_overlap,
                     evidence_weight: Some(evidence_weight),
                     tier_weight: Some(tier_weight),
+                    signer_trust,
                 })
             })
             .collect();

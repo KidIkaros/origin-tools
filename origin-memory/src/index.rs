@@ -99,6 +99,12 @@ impl MemoryIndex {
         &self.nodes
     }
 
+    /// Stored signature attestation for a node — the signer fingerprint lives
+    /// here (used by trust-weighted zoom, R3).
+    pub fn sig(&self, id: &str) -> Option<&NodeSignature> {
+        self.sigs.get(id)
+    }
+
     /// Node ids that fall on a given time axis value (a specific date).
     pub fn on_time(&self, date: &str) -> Vec<String> {
         self.axes

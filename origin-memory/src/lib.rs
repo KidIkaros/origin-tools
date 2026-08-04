@@ -64,7 +64,7 @@ pub use crypto::BodyCipher;
 pub use index::MemoryIndex;
 pub use layer::LayerMmr;
 pub use memory::{Memory, VerifyReport, ZoomResult};
-pub use node::MemoryNode;
+pub use node::{Evidence, MemoryNode};
 pub use persist::MemoryStore;
 pub use revoke::RevocationStore;
 pub use sign::{sign_node, verify_node, NodeSignature};

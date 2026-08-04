@@ -39,6 +39,8 @@ fn scored_zoom_ranks_by_relevance() {
         topics: Some(vec!["alpha".into()]),
         evidence: None,
         tier: None,
+        min_trust: None,
+        trust_domain: None,
     };
 
     let scored = mem.zoom_scored(&q);
@@ -107,6 +109,8 @@ fn scored_zoom_excludes_revoked() {
         topics: Some(vec!["x".into()]),
         evidence: None,
         tier: None,
+        min_trust: None,
+        trust_domain: None,
     };
     let scored = mem.zoom_scored(&q);
     assert_eq!(scored.len(), 1, "revoked node excluded from scored results");

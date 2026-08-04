@@ -36,6 +36,13 @@ pub struct ZoomQuery {
     pub evidence: Option<Evidence>,
     /// Storage tier axis filter (Sovereign/Standard/Nano).
     pub tier: Option<origin_crypto_sdk::tier::MemoryTier>,
+    /// Minimum trust score a node's *signer* must hold (personalized PageRank
+    /// in `trust_domain`) for the node to appear in results. None = no trust
+    /// filter — the orthogonal trust axis is unconstrained.
+    pub min_trust: Option<f64>,
+    /// Capability domain to evaluate `min_trust` in. Defaults to
+    /// `"memory-write"` when `min_trust` is set and this is None.
+    pub trust_domain: Option<String>,
 }
 
 /// A single resolvable axis value, plus the node ids that sit on it.

@@ -81,6 +81,8 @@ fn summary_layer_is_provable_after_reload() {
         topics: Some(vec!["geopolitics".to_string()]),
         evidence: Some(Evidence::Documented),
         tier: None,
+        min_trust: None,
+        trust_domain: None,
     };
     let mut got = mem.zoom(&q);
     got.sort();
@@ -94,6 +96,8 @@ fn summary_layer_is_provable_after_reload() {
         topics: None,
         evidence: None,
         tier: Some(MemoryTier::Standard),
+        min_trust: None,
+        trust_domain: None,
     };
     assert!(mem.zoom(&q_tier).contains(&"summary-2004".to_string()));
 

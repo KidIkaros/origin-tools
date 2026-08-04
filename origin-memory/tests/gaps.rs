@@ -105,6 +105,8 @@ fn multi_axis_zoom_intersects_axes() {
         topics: Some(vec!["geopolitics".to_string()]),
         evidence: Some(Evidence::Documented),
         tier: None,
+        min_trust: None,
+        trust_domain: None,
     };
     let got = mem.zoom(&q);
     assert_eq!(got, vec!["event-2004".to_string()]);
@@ -115,6 +117,8 @@ fn multi_axis_zoom_intersects_axes() {
         topics: Some(vec!["geopolitics".to_string()]),
         evidence: Some(Evidence::Assertion),
         tier: None,
+        min_trust: None,
+        trust_domain: None,
     };
     assert_eq!(mem.zoom(&q2), vec!["event-2024".to_string()]);
 
@@ -124,6 +128,8 @@ fn multi_axis_zoom_intersects_axes() {
         topics: None,
         evidence: None,
         tier: Some(MemoryTier::Sovereign),
+        min_trust: None,
+        trust_domain: None,
     };
     assert!(mem.zoom(&q3).contains(&"event-2004".to_string()));
 
@@ -164,6 +170,8 @@ fn retraction_loop_is_closed() {
         topics: Some(vec!["geopolitics".into()]),
         evidence: None,
         tier: None,
+        min_trust: None,
+        trust_domain: None,
     };
     assert_eq!(mem.zoom(&q).len(), 2, "both visible before revocation");
 
