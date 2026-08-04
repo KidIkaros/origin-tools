@@ -4,7 +4,7 @@
 //! Closes M1 (trust lost on reload) and M2 (unsigned/unchained endorsements).
 
 use origin_memory::sign::derive_bundle;
-use origin_memory::Memory;
+use origin_memory::{Memory, MemoryNode};
 
 const SEED: [u8; 32] = [7u8; 32];
 
@@ -103,6 +103,51 @@ fn tampered_journal_is_detected() {
     assert!(
         !mem.store_endorsements_verified(),
         "tampered journal must not verify"
+    );
+    // And the load-time check surfaced it (R2).
+    assert!(
+        mem.journal_tampered()
+            .iter()
+            .any(|p| p.starts_with("endorsements")),
+        "tampered endorsement journal must be surfaced at load"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn tampered_revocation_journal_is_surfaced_at_load() {
+    let dir = fresh_dir("rev-tamper");
+    let node = MemoryNode::from_markdown(
+        "evt",
+        "---\ntitle: E\ntime: 2004-06-01\ntopic: [x]\nevidence: documented\n---\nE.\n",
+    )
+    .unwrap();
+
+    {
+        let mut mem = Memory::open(&dir, &SEED, "origin-memory-test").expect("open");
+        mem.add(node).expect("add");
+        mem.revoke("evt", "retract").expect("revoke");
+        assert!(mem.revocations_verified(), "journal clean before tamper");
+        assert!(mem.journal_tampered().is_empty());
+    }
+
+    // Attacker edits the revocation reason in the journal.
+    let path = dir.join("revocations.json");
+    let raw = std::fs::read_to_string(&path).unwrap();
+    let tampered = raw.replacen(
+        "\"reason\": \"retract\"",
+        "\"reason\": \"never happened\"",
+        1,
+    );
+    assert_ne!(raw, tampered, "test setup: reason field present");
+    std::fs::write(&path, tampered).unwrap();
+
+    let mem = Memory::open(&dir, &SEED, "origin-memory-test").expect("reopen");
+    assert!(
+        mem.journal_tampered()
+            .iter()
+            .any(|p| p.starts_with("revocations")),
+        "tampered revocation journal must be surfaced at load"
     );
     let _ = std::fs::remove_dir_all(&dir);
 }

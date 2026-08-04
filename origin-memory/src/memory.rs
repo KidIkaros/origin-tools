@@ -64,13 +64,19 @@ pub struct Memory {
     layer_roots: std::collections::HashMap<String, [u8; 32]>,
     /// Node ids whose stored signature failed verification on load (tampered).
     load_failures: Vec<String>,
+    /// Journals (revocations / endorsements) that failed integrity verification
+    /// on load. Empty means both append-only chains verified cleanly.
+    journal_problems: Vec<String>,
 }
 
 impl Memory {
     /// Open (or create) a memory at `root`, bound to a signing identity.
     /// Loads any existing nodes from the cold store into the hot index, and
     /// verifies each one on load — a tampered row is recorded in `tampered()`
-    /// rather than trusted silently.
+    /// rather than trusted silently. Both append-only journals (revocations,
+    /// endorsements) are verified on load too; a broken chain is surfaced via
+    /// `journal_tampered()`. The endorsement chain is replayed into the trust
+    /// graph so multi-agent attribution survives restart.
     pub fn open(root: &Path, master_seed: &[u8; 32], domain: &str) -> rusqlite::Result<Self> {
         let bundle = derive_bundle(master_seed, domain);
         let self_fp = hex::encode(bundle.ed25519_pk().as_bytes());
@@ -89,6 +95,18 @@ impl Memory {
         for e in store.endorsements().chain().endorsements.iter() {
             trust.add_endorsement(e.clone());
         }
+        // Verify both append-only journals on load — same discipline as node
+        // signature re-verification: a broken chain or a bad signature is
+        // recorded and surfaced via `journal_tampered()`, never trusted
+        // silently. Entries are still replayed (data is never dropped; the
+        // flag is what carries the warning), mirroring `load_failures`.
+        let mut journal_problems = Vec::new();
+        if !store.revocations().verify(&bundle) {
+            journal_problems.push("revocations: chain broken or signature mismatch".to_string());
+        }
+        if !store.endorsements().verify(&bundle) {
+            journal_problems.push("endorsements: chain broken or signature mismatch".to_string());
+        }
         Ok(Self {
             index,
             store,
@@ -97,6 +115,7 @@ impl Memory {
             trust,
             layer_roots: std::collections::HashMap::new(),
             load_failures,
+            journal_problems,
         })
     }
 
@@ -104,6 +123,15 @@ impl Memory {
     /// Empty means every loaded node verified cleanly.
     pub fn tampered(&self) -> &[String] {
         &self.load_failures
+    }
+
+    /// Journals that failed integrity verification on load (broken hash chain
+    /// or bad Falcon signature). Empty means both the revocation and the
+    /// endorsement journal verified cleanly. Data from a flagged journal is
+    /// still replayed — it is never silently dropped — but it must not be
+    /// trusted without investigation.
+    pub fn journal_tampered(&self) -> &[String] {
+        &self.journal_problems
     }
 
     /// Add a node: sign it, persist to disk, and update the hot index.
