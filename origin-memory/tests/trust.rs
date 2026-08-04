@@ -4,7 +4,6 @@
 //! signers propagates via origin-attest's TrustGraph (personalized PageRank).
 
 use origin_memory::Memory;
-use origin_memory::MemoryNode;
 
 const SEED_A: [u8; 32] = [42u8; 32];
 const SEED_B: [u8; 32] = [99u8; 32];
@@ -13,7 +12,7 @@ const SEED_B: [u8; 32] = [99u8; 32];
 fn signer_fingerprint_is_attributable() {
     let dir = std::env::temp_dir().join(format!("origin-memory-p5-fp-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
-    let mut mem = Memory::open(&dir, &SEED_A, "agent-a").expect("open");
+    let mem = Memory::open(&dir, &SEED_A, "agent-a").expect("open");
 
     // The memory has a fingerprint — it's the Ed25519 public key hex.
     let fp = mem.fingerprint();

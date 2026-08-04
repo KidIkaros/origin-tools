@@ -15,21 +15,21 @@ fn scored_zoom_ranks_by_relevance() {
 
     // Three documented nodes at different temporal distances from center.
     // doc-near is 1 day from center, doc-mid is 10 days, doc-far is 30 days.
-    mem.add(MemoryNode::from_markdown(
+    let _ = mem.add(MemoryNode::from_markdown(
         "doc-near",
         "---\ntitle: Near\ntime: 2004-06-02\ntopic: [alpha]\nevidence: documented\n---\nNear event.\n",
     ).unwrap());
-    mem.add(MemoryNode::from_markdown(
+    let _ = mem.add(MemoryNode::from_markdown(
         "doc-mid",
         "---\ntitle: Mid\ntime: 2004-06-11\ntopic: [alpha]\nevidence: documented\n---\nMid event.\n",
     ).unwrap());
-    mem.add(MemoryNode::from_markdown(
+    let _ = mem.add(MemoryNode::from_markdown(
         "doc-far",
         "---\ntitle: Far\ntime: 2004-07-01\ntopic: [alpha]\nevidence: documented\n---\nFar event.\n",
     ).unwrap());
 
     // An assertion node — same topic/time as doc-near, but lower evidence weight.
-    mem.add(MemoryNode::from_markdown(
+    let _ = mem.add(MemoryNode::from_markdown(
         "assertion-near",
         "---\ntitle: Assert Near\ntime: 2004-06-02\ntopic: [alpha]\nevidence: assertion\n---\nNear assertion.\n",
     ).unwrap());
@@ -85,14 +85,14 @@ fn scored_zoom_excludes_revoked() {
     let _ = std::fs::remove_dir_all(&dir);
     let mut mem = Memory::open(&dir, &SEED, "origin-memory-test").expect("open");
 
-    mem.add(
+    let _ = mem.add(
         MemoryNode::from_markdown(
             "doc-a",
             "---\ntitle: A\ntime: 2004-06-01\ntopic: [x]\nevidence: documented\n---\nA.\n",
         )
         .unwrap(),
     );
-    mem.add(
+    let _ = mem.add(
         MemoryNode::from_markdown(
             "doc-b",
             "---\ntitle: B\ntime: 2004-06-02\ntopic: [x]\nevidence: documented\n---\nB.\n",

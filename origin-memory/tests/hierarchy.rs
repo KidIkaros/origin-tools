@@ -3,7 +3,7 @@
 //! P1: recursive coarse hierarchy — summaries of summaries, each level provable.
 
 use chrono::NaiveDate;
-use origin_memory::{Memory, MemoryNode, ZoomQuery};
+use origin_memory::{Memory, MemoryNode};
 
 const SEED: [u8; 32] = [42u8; 32];
 

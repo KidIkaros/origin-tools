@@ -48,6 +48,7 @@
 
 pub mod axis;
 pub mod crypto;
+pub mod endorse;
 pub mod index;
 pub mod layer;
 pub mod memory;

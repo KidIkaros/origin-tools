@@ -83,12 +83,18 @@ impl Memory {
             }
             index.reindex_only(&node, &sig);
         }
+        // Replay the persisted endorsement chain into the trust graph so
+        // multi-agent attribution survives restart.
+        let mut trust = crate::trust::TrustStore::new(self_fp);
+        for e in store.endorsements().chain().endorsements.iter() {
+            trust.add_endorsement(e.clone());
+        }
         Ok(Self {
             index,
             store,
             bundle,
             cipher: crate::crypto::BodyCipher::from_seed(master_seed),
-            trust: crate::trust::TrustStore::new(self_fp),
+            trust,
             layer_roots: std::collections::HashMap::new(),
             load_failures,
         })
@@ -136,13 +142,16 @@ impl Memory {
     }
 
     /// Endorse another signer in a capability domain (e.g. "memory-write").
-    /// Propagates trust through the personalized PageRank graph.
+    /// Creates a Falcon-1024-signed, hash-chained endorsement record, persists
+    /// it to the endorsement journal (`endorsements.json`), and adds it to the
+    /// in-memory trust graph. Propagates trust through the personalized
+    /// PageRank graph; survives reload via the journal replay in `open`.
     pub fn endorse(&mut self, target_fp: &str, domain: &str, confidence: f64) {
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs() as i64)
-            .unwrap_or(0);
-        self.trust.endorse(target_fp, domain, confidence, now);
+        let e =
+            self.store
+                .endorsements_mut()
+                .endorse(target_fp, domain, confidence, "", &self.bundle);
+        self.trust.add_endorsement(e);
     }
 
     /// Trust score for a signer in a capability domain [0.0, 1.0].
@@ -254,6 +263,14 @@ impl Memory {
     /// Verify the revocation journal's hash chain AND every record's Falcon sig.
     pub fn revocations_verified(&self) -> bool {
         self.store.revocations().verify(&self.bundle)
+    }
+
+    /// Verify the endorsement journal's hash chain AND the Falcon signature of
+    /// every endorsement this agent issued. Foreign endorsements (whose keys
+    /// are unknown locally) are skipped in signature checks but still chain-
+    /// bound.
+    pub fn store_endorsements_verified(&self) -> bool {
+        self.store.endorsements().verify(&self.bundle)
     }
 
     pub fn verify(&self, id: &str) -> bool {

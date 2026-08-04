@@ -14,6 +14,7 @@
 //!   This is the star-chart zoom pointer from the thesis: descend only where the
 //!   question points.
 
+use crate::endorse::EndorsementStore;
 use crate::node::MemoryNode;
 use crate::revoke::RevocationStore;
 use crate::sign::{sign_node, NodeSignature};
@@ -27,12 +28,14 @@ pub struct MemoryStore {
     root: PathBuf,
     conn: Connection,
     revocations: RevocationStore,
+    endorsements: EndorsementStore,
 }
 
 impl MemoryStore {
     /// Open (or create) a store rooted at `root`. Markdown lives in `root/`,
     /// the index in `root/memory.sqlite`, the revocation journal in
-    /// `root/revocations.json`.
+    /// `root/revocations.json`, the endorsement journal in
+    /// `root/endorsements.json`.
     pub fn open(root: &Path) -> rusqlite::Result<Self> {
         std::fs::create_dir_all(root).map_err(|e| {
             rusqlite::Error::FromSqlConversionFailure(0, rusqlite::types::Type::Text, Box::new(e))
@@ -64,6 +67,7 @@ impl MemoryStore {
             root: root.to_path_buf(),
             conn,
             revocations: RevocationStore::open(root),
+            endorsements: EndorsementStore::open(root),
         })
     }
 
@@ -335,6 +339,16 @@ impl MemoryStore {
     /// Access the append-only revocation journal (tamper-evident retraction).
     pub fn revocations(&self) -> &RevocationStore {
         &self.revocations
+    }
+
+    /// Access the append-only endorsement journal (multi-agent attribution).
+    pub fn endorsements(&self) -> &EndorsementStore {
+        &self.endorsements
+    }
+
+    /// Mutable access to the endorsement journal (for append during endorse).
+    pub fn endorsements_mut(&mut self) -> &mut EndorsementStore {
+        &mut self.endorsements
     }
 
     /// Raw SQLite connection (for tests/diagnostics).

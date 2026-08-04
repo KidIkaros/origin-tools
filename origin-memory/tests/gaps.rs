@@ -202,7 +202,7 @@ fn retraction_loop_is_closed() {
     ).expect("summarize");
     let summary = mem.node("summary-1").expect("summary exists");
     assert_eq!(summary.links.len(), 1, "summary excludes revoked leaf");
-    assert!(summary.links.contains(&"doc-b".to_string()));
+    assert!(summary.links.contains("doc-b"));
 
     let _ = std::fs::remove_dir_all(&dir);
 }
