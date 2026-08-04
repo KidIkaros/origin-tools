@@ -31,17 +31,121 @@ pub struct MemoryStore {
     endorsements: EndorsementStore,
 }
 
+/// Current SQLite schema version (stamped in `PRAGMA user_version`).
+/// Bump this and add a migration step in `migrate()` whenever the schema changes.
+pub const SCHEMA_VERSION: i32 = 1;
+
+/// Columns the canonical `nodes` table must have at `SCHEMA_VERSION`, in
+/// order of the migration steps that introduced them. Used both to detect
+/// what a legacy database is missing and to document history.
+const NODES_COLUMNS: &[(&str, &str)] = &[
+    ("id", "TEXT PRIMARY KEY"),
+    ("title", "TEXT NOT NULL"),
+    ("time", "TEXT NOT NULL"),
+    ("time_end", "TEXT"),
+    ("topics", "TEXT NOT NULL"),
+    ("evidence", "TEXT NOT NULL"),
+    ("tier", "TEXT NOT NULL"),
+    ("content_hash", "TEXT NOT NULL"),
+    ("body", "TEXT NOT NULL"),
+    ("ed25519_sig", "TEXT NOT NULL"),
+    ("falcon_sig", "TEXT NOT NULL"),
+    ("signer", "TEXT NOT NULL"),
+    ("layer_root", "TEXT"),
+    ("body_encrypted", "TEXT"),
+];
+
+/// Migrate a database from `from_version` to `SCHEMA_VERSION`.
+///
+/// Version 0 means "un-versioned": any database created before R4 introduced
+/// the stamp. Legacy data is never dropped — missing columns are added with
+/// NULL-friendly defaults (`layer_root`, `body_encrypted` are both nullable).
+///
+/// Refuses to open a database stamped *newer* than this build: downgrading a
+/// database with older code would silently lose future columns.
+fn migrate(conn: &Connection, from_version: i32) -> rusqlite::Result<i32> {
+    if from_version > SCHEMA_VERSION {
+        return Err(rusqlite::Error::FromSqlConversionFailure(
+            0,
+            rusqlite::types::Type::Null,
+            Box::new(std::io::Error::new(
+                std::io::ErrorKind::Unsupported,
+                format!(
+                    "database schema version {from_version} is newer than supported \
+                     {SCHEMA_VERSION}; upgrade origin-memory"
+                ),
+            )),
+        ));
+    }
+
+    let mut version = from_version;
+
+    if version == 0 {
+        // v0 -> v1: the un-versioned table predates the encrypted-body column
+        // (P4). Add whatever is missing rather than assuming one exact shape —
+        // a table can sit at any intermediate point. On a fresh database the
+        // table doesn't exist yet; the caller's CREATE TABLE builds the full
+        // shape, so nothing to add here.
+        let nodes_exists: i32 = conn.query_row(
+            "SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name = 'nodes'",
+            [],
+            |r| r.get(0),
+        )?;
+        if nodes_exists > 0 {
+            ensure_columns(conn, "nodes", NODES_COLUMNS)?;
+        }
+        version = 1;
+    }
+
+    // Future steps go here: `if version == 1 { ...; version = 2; }`
+
+    conn.execute_batch(&format!("PRAGMA user_version = {version};"))?;
+    Ok(version)
+}
+
+/// Add any of `columns` that the table doesn't have yet (SQLite has no
+/// `ADD COLUMN IF NOT EXISTS`, so existence is checked via `table_info`).
+fn ensure_columns(
+    conn: &Connection,
+    table: &str,
+    columns: &[(&str, &str)],
+) -> rusqlite::Result<()> {
+    let mut existing = std::collections::HashSet::new();
+    {
+        let mut stmt = conn.prepare(&format!("PRAGMA table_info({table})"))?;
+        let mut rows = stmt.query([])?;
+        while let Some(row) = rows.next()? {
+            existing.insert(row.get::<_, String>(1)?);
+        }
+    }
+    for (name, ty) in columns {
+        if !existing.contains(*name) {
+            conn.execute_batch(&format!("ALTER TABLE {table} ADD COLUMN {name} {ty};"))?;
+        }
+    }
+    Ok(())
+}
+
 impl MemoryStore {
     /// Open (or create) a store rooted at `root`. Markdown lives in `root/`,
     /// the index in `root/memory.sqlite`, the revocation journal in
     /// `root/revocations.json`, the endorsement journal in
     /// `root/endorsements.json`.
+    ///
+    /// The SQLite schema is version-stamped (`PRAGMA user_version`, R4):
+    /// legacy databases migrate forward automatically, and a database stamped
+    /// *newer* than this build refuses to open rather than degrade silently.
     pub fn open(root: &Path) -> rusqlite::Result<Self> {
         std::fs::create_dir_all(root).map_err(|e| {
             rusqlite::Error::FromSqlConversionFailure(0, rusqlite::types::Type::Text, Box::new(e))
         })?;
         let db_path = root.join("memory.sqlite");
         let conn = Connection::open(&db_path)?;
+
+        // Schema versioning (R4): read the stamp, migrate forward.
+        let from_version: i32 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
+        migrate(&conn, from_version)?;
+
         conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS nodes (
                 id          TEXT PRIMARY KEY,
@@ -69,6 +173,11 @@ impl MemoryStore {
             revocations: RevocationStore::open(root),
             endorsements: EndorsementStore::open(root),
         })
+    }
+
+    /// The SQLite schema version of the open database (post-migration).
+    pub fn schema_version(&self) -> rusqlite::Result<i32> {
+        self.conn.query_row("PRAGMA user_version", [], |r| r.get(0))
     }
 
     /// Persist a node: write the canonical `.md` file AND upsert into the index.

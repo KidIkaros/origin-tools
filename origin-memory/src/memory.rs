@@ -137,6 +137,11 @@ impl Memory {
         &self.journal_problems
     }
 
+    /// The SQLite schema version of the open database (post-migration, R4).
+    pub fn schema_version(&self) -> rusqlite::Result<i32> {
+        self.store.schema_version()
+    }
+
     /// Add a node: sign it, persist to disk, and update the hot index.
     pub fn add(&mut self, node: MemoryNode) -> rusqlite::Result<()> {
         let sig = sign_node(&node, &self.bundle);
