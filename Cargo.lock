@@ -1124,6 +1124,7 @@ dependencies = [
  "origin-common",
  "origin-entropy",
  "origin-identity",
+ "origin-memory",
  "origin-pass",
  "origin-proof",
  "origin-provenance",
@@ -1259,6 +1260,7 @@ name = "origin-memory"
 version = "0.4.3"
 dependencies = [
  "chrono",
+ "clap",
  "ed25519-dalek",
  "flate2",
  "hex",

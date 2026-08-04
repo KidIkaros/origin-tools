@@ -57,6 +57,8 @@ enum Tool {
     Channel(origin_channel::cli::Cli),
     /// File provenance (stamps, manifests, watermarks, verification)
     Provenance(origin_provenance::cli::Cli),
+    /// Signed, temporally-layered memory graph (add, zoom, verify, endorse)
+    Memory(origin_memory::cli::Cli),
     /// Health-check your ~/.origin setup
     Doctor,
 }
@@ -76,6 +78,7 @@ fn main() {
         Tool::Schnorr(sub) => origin_schnorr::commands::dispatch(sub),
         Tool::Channel(sub) => origin_channel::commands::dispatch(sub),
         Tool::Provenance(sub) => origin_provenance::commands::dispatch(sub),
+        Tool::Memory(sub) => origin_memory::commands::dispatch(sub),
         Tool::Doctor => doctor::run(),
     };
 

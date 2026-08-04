@@ -47,6 +47,8 @@
 //! for a hardened secrets manager or a formal PKI.
 
 pub mod axis;
+pub mod cli;
+pub mod commands;
 pub mod crypto;
 pub mod endorse;
 pub mod index;
