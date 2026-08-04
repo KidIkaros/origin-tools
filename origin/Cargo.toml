@@ -23,5 +23,4 @@ origin-entropy.workspace = true
 origin-schnorr.workspace = true
 origin-channel.workspace = true
 origin-provenance.workspace = true
-origin-memory = { path = "../origin-memory" }
 clap.workspace = true

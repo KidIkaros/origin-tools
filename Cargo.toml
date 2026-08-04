@@ -15,7 +15,6 @@ members = [
     "origin-provenance",
     "origin-attest",
     "origin-secrets",
-    "origin-memory",
     "origin-cross-tests",
 ]
 exclude = ["fuzz"]
