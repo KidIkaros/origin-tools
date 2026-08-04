@@ -153,7 +153,7 @@ fn recursive_hierarchy_survives_reload() {
     }
 
     // Reload and verify all proofs still hold.
-    let mem = Memory::open(&dir, &SEED, "origin-memory-test").expect("reopen");
+    let mut mem = Memory::open(&dir, &SEED, "origin-memory-test").expect("reopen");
     assert_eq!(mem.depth("sum-root"), 3, "depth preserved after reload");
     assert!(
         mem.verify_layer("sum-alpha", "leaf-a1"),

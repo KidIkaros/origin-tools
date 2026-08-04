@@ -354,8 +354,13 @@ impl MemoryStore {
         let leaf_ids: Vec<String> = leaves.iter().map(|l| l.id.clone()).collect();
 
         // Commit the leaves to a layer MMR; its root is the layer's fingerprint.
+        // R5: commit in sorted-id order so the commitment is independent of the
+        // caller's input order — `verify_layer` reconstructs from the summary's
+        // `links` (a BTreeSet, i.e. sorted), and both sides must agree.
+        let mut by_id: Vec<&MemoryNode> = leaves.iter().collect();
+        by_id.sort_by(|a, b| a.id.cmp(&b.id));
         let mut layer = crate::layer::LayerMmr::new(summary_id);
-        for leaf in leaves {
+        for leaf in by_id {
             layer.append(leaf);
         }
         let layer_root = hex::encode(layer.root());

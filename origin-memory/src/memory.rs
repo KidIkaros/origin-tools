@@ -63,8 +63,12 @@ pub struct Memory {
     cipher: crate::crypto::BodyCipher,
     trust: crate::trust::TrustStore,
     /// Cache of computed layer roots by summary id, so repeated `verify_layer`
-    /// calls skip the O(n) MMR rebuild when the summary hasn't changed.
+    /// calls skip the hex decode of the stored root.
     layer_roots: std::collections::HashMap<String, [u8; 32]>,
+    /// Cache of built `LayerMmr`s by summary id (R5). A membership proof needs
+    /// the full MMR; rebuilding it per proof is O(n). The cache makes repeated
+    /// `verify_layer` proofs O(log n); cleared whenever any node mutates.
+    layer_mmrs: std::collections::HashMap<String, crate::layer::LayerMmr>,
     /// Node ids whose stored signature failed verification on load (tampered).
     load_failures: Vec<String>,
     /// Journals (revocations / endorsements) that failed integrity verification
@@ -117,6 +121,7 @@ impl Memory {
             cipher: crate::crypto::BodyCipher::from_seed(master_seed),
             trust,
             layer_roots: std::collections::HashMap::new(),
+            layer_mmrs: std::collections::HashMap::new(),
             load_failures,
             journal_problems,
         })
@@ -147,6 +152,8 @@ impl Memory {
         let sig = sign_node(&node, &self.bundle);
         self.store.save(&node, &sig)?;
         self.index.reindex_only(&node, &sig);
+        // A node's content changed => any layer committing to it is stale.
+        self.layer_mmrs.clear();
         Ok(())
     }
 
@@ -160,6 +167,8 @@ impl Memory {
         let sealed_hex = hex::encode(&sealed);
         self.store.save_encrypted(&node, &sig, &sealed_hex)?;
         self.index.reindex_only(&node, &sig);
+        // A node's content changed => any layer committing to it is stale.
+        self.layer_mmrs.clear();
         Ok(())
     }
 
@@ -219,25 +228,31 @@ impl Memory {
                 // layer-verifiable within this session too.
                 let sig = crate::sign::sign_node(&summary_node, &self.bundle);
                 self.index.reindex_only(&summary_node, &sig);
-                // Cache the layer root so repeat verify_layer calls are O(1).
-                if let Some(root_hex) = self.store.layer_root(summary_id) {
-                    if let Ok(bytes) = hex::decode(&root_hex) {
-                        if bytes.len() == 32 {
-                            let mut arr = [0u8; 32];
-                            arr.copy_from_slice(&bytes);
-                            self.layer_roots.insert(summary_id.to_string(), arr);
-                        }
-                    }
+                // Prewarm both caches (R5): root from the store's commitment,
+                // and the built LayerMmr. Both must use sorted-id order —
+                // the same order save_summary committed in.
+                let mut by_id: Vec<&MemoryNode> = active.iter().collect();
+                by_id.sort_by(|a, b| a.id.cmp(&b.id));
+                let mut layer = crate::layer::LayerMmr::new(summary_id);
+                for leaf in by_id {
+                    layer.append(leaf);
                 }
+                self.layer_roots
+                    .insert(summary_id.to_string(), layer.root());
+                self.layer_mmrs.insert(summary_id.to_string(), layer);
             })
     }
 
     /// Verify a leaf's membership in a summary layer after reload, using the
     /// stored layer root. Returns false if the summary has no layer root or the
     /// proof fails (i.e. the leaf was not part of that coarse layer).
-    pub fn verify_layer(&self, summary_id: &str, leaf_id: &str) -> bool {
-        // Use the cached root if available (avoids hex decode on hot path);
-        // fall back to the stored root from the cold store.
+    ///
+    /// R5: the built `LayerMmr` is cached per summary id, so the first proof
+    /// after reload pays one O(n) rebuild and every following proof is O(log n).
+    /// The cache is cleared whenever a node mutates (`add` / `add_secret`).
+    pub fn verify_layer(&mut self, summary_id: &str, leaf_id: &str) -> bool {
+        // Root: cache hit avoids the hex decode; otherwise load from the cold
+        // store and populate the root cache.
         let root = if let Some(cached) = self.layer_roots.get(summary_id) {
             *cached
         } else {
@@ -249,22 +264,29 @@ impl Memory {
                 Ok(b) if b.len() == 32 => {
                     let mut arr = [0u8; 32];
                     arr.copy_from_slice(&b);
+                    self.layer_roots.insert(summary_id.to_string(), arr);
                     arr
                 }
                 _ => return false,
             }
         };
-        // Rebuild a LayerMmr over the summary's linked leaves and prove membership.
-        let summary = match self.node(summary_id) {
-            Some(n) => n,
-            None => return false,
-        };
-        let mut layer = crate::layer::LayerMmr::new(summary_id);
-        for lid in &summary.links {
-            if let Some(leaf) = self.node(lid) {
-                layer.append(leaf);
+
+        // MMR: cache hit skips the rebuild entirely. On a miss, reconstruct
+        // from the summary's linked leaves (the same set the store committed).
+        if !self.layer_mmrs.contains_key(summary_id) {
+            let links: Vec<String> = match self.node(summary_id) {
+                Some(n) => n.links.iter().cloned().collect(),
+                None => return false,
+            };
+            let mut layer = crate::layer::LayerMmr::new(summary_id);
+            for lid in &links {
+                if let Some(leaf) = self.node(lid) {
+                    layer.append(leaf);
+                }
             }
+            self.layer_mmrs.insert(summary_id.to_string(), layer);
         }
+        let layer = &self.layer_mmrs[summary_id];
         match layer.prove(leaf_id) {
             Some(proof) => layer.verify(&proof) && layer.root() == root,
             None => false,

@@ -58,7 +58,7 @@ fn summary_layer_is_provable_after_reload() {
 
     // Reload — summary node + layer root must survive from the cold store.
     drop(mem);
-    let mem = Memory::open(&dir, &SEED, "origin-memory-test").expect("reopen");
+    let mut mem = Memory::open(&dir, &SEED, "origin-memory-test").expect("reopen");
 
     // The summary node is present and verifiable (signature survives reload).
     assert!(
@@ -100,6 +100,56 @@ fn summary_layer_is_provable_after_reload() {
         trust_domain: None,
     };
     assert!(mem.zoom(&q_tier).contains(&"summary-2004".to_string()));
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn layer_commitment_is_independent_of_input_order() {
+    // R5 regression: save_summary must commit leaves in sorted-id order so the
+    // root matches verify_layer's reconstruction from the summary's `links`
+    // (a BTreeSet). Passing leaves deliberately unsorted must still verify.
+    let dir = std::env::temp_dir().join(format!("origin-memory-order-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let mut mem = Memory::open(&dir, &SEED, "origin-memory-test").expect("open");
+
+    let mut leaves = Vec::new();
+    for id in ["zeta", "alpha", "mid"] {
+        let node = MemoryNode::from_markdown(
+            id,
+            &format!(
+                "---\ntitle: {}\ntime: 2004-06-01\ntopic: [ord]\nevidence: documented\n---\nBody {}.\n",
+                id, id
+            ),
+        )
+        .unwrap();
+        mem.add(node.clone()).expect("add");
+        leaves.push(node);
+    }
+
+    // Input order zeta, alpha, mid — deliberately NOT sorted.
+    mem.summarize(
+        "sum-ord",
+        "ord",
+        NaiveDate::from_ymd_opt(2004, 6, 1).unwrap(),
+        &leaves,
+    )
+    .expect("summarize");
+
+    for id in ["zeta", "alpha", "mid"] {
+        assert!(mem.verify_layer("sum-ord", id), "{} proves", id);
+    }
+
+    // Same guarantee must hold after reload (cold cache rebuilds from links).
+    drop(mem);
+    let mut mem = Memory::open(&dir, &SEED, "origin-memory-test").expect("reopen");
+    for id in ["zeta", "alpha", "mid"] {
+        assert!(
+            mem.verify_layer("sum-ord", id),
+            "{} proves after reload",
+            id
+        );
+    }
 
     let _ = std::fs::remove_dir_all(&dir);
 }
