@@ -333,8 +333,14 @@ impl Demux {
     /// everything else is returned to the caller for control handling.
     pub async fn route_inbound(&self, tag: u8, payload: Vec<u8>) -> Option<(u8, Vec<u8>)> {
         if tag == WireType::MuxFrame.to_u8() {
+            // A MuxFrame MUST carry a [4B stream id][inner frame]. A shorter
+            // payload is malformed: surface it as a control ERROR rather than
+            // forwarding an unparsable frame to the control path.
             if payload.len() < 4 {
-                return Some((tag, payload)); // malformed → control error path
+                return Some((
+                    WireType::Error.to_u8(),
+                    format!("malformed MuxFrame: {} bytes < 4", payload.len()).into_bytes(),
+                ));
             }
             let id = u32::from_be_bytes(payload[..4].try_into().unwrap());
             let body = payload[4..].to_vec();
@@ -536,7 +542,14 @@ mod tests {
         let out = demux
             .route_inbound(WireType::MuxFrame.to_u8(), vec![1, 2])
             .await;
-        assert!(out.is_some());
+        // Malformed MuxFrame surfaces as a control ERROR (not the raw mux tag).
+        assert_eq!(
+            out,
+            Some((
+                WireType::Error.to_u8(),
+                b"malformed MuxFrame: 2 bytes < 4".to_vec()
+            ))
+        );
     }
 
     #[tokio::test]

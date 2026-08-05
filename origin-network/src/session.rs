@@ -173,21 +173,6 @@ impl Endpoint {
         self.fingerprint
     }
 
-    /// Dial a known peer and establish an authenticated pipe.
-    pub async fn connect(&self, peer: &PeerKeys) -> Result<SecurePipe> {
-        let addr = match self.transport.local_addr() {
-            Some(a) => a,
-            None => {
-                return Err(NetworkError::Transport(
-                    "endpoint transport has no address".into(),
-                ))
-            }
-        };
-        let _ = addr;
-        self.connect_at(peer, &dial_addr(self.transport.as_ref())?)
-            .await
-    }
-
     /// Dial a known peer at an explicit transport address.
     pub async fn connect_at(&self, peer: &PeerKeys, addr: &TransportAddr) -> Result<SecurePipe> {
         // Validate the record's transport key before dialing.
@@ -212,11 +197,9 @@ impl Endpoint {
         peer_hint: &PeerKeys,
         is_initiator: bool,
     ) -> Result<SecurePipe> {
-        let peer_fp_expected;
         let (hs, msg1_bytes, msg2_bytes, msg3_bytes) = if is_initiator {
             let peer_pk = PublicKey::from(peer_hint.transport_pk_bytes()?);
             let mut hs = Handshake::new(self.static_secret.clone(), peer_pk, true);
-            peer_fp_expected = Some(peer_hint.fingerprint());
 
             // msg1: start, then embed our static key for the responder.
             let mut msg1 = hs
@@ -277,7 +260,6 @@ impl Endpoint {
             hs.process_msg3(&msg3)
                 .map_err(|e| NetworkError::Handshake(e.to_string()))?;
             let m3 = msg3.to_bytes();
-            peer_fp_expected = None;
             (hs, m1, m2, m3)
         };
 
@@ -288,7 +270,7 @@ impl Endpoint {
 
         // AUTH claim exchange (initiator first).
         let transcript = handshake_transcript(&msg1_bytes, &msg2_bytes, &msg3_bytes);
-        let (peer_fp, peer_keys_verified) = if is_initiator {
+        let (peer_fp, _peer_keys_verified) = if is_initiator {
             let claim = sign_auth_claim(
                 &self.seed,
                 self.device_index,
@@ -363,8 +345,6 @@ impl Endpoint {
             .await?;
             (claimed_fp, keys)
         };
-        let _ = peer_fp_expected;
-        let _ = peer_keys_verified;
 
         // Ratchet + pipe.
         let keys = init_ratchet(&shared_secret, is_initiator)
@@ -410,13 +390,6 @@ async fn expect_auth_ok(conn: &mut dyn FrameConn) -> Result<AuthOk> {
             "unexpected auth response frame {other:#04x}"
         ))),
     }
-}
-
-/// Best-effort dial address resolution for connector transports.
-fn dial_addr(_t: &dyn Transport) -> Result<TransportAddr> {
-    Err(NetworkError::Transport(
-        "use connect_at with an explicit address".into(),
-    ))
 }
 
 // ── Small extension shims so the drive() flow reads linearly ────────────
@@ -680,7 +653,9 @@ mod tests {
         )
         .unwrap();
         let peer_b = PeerKeys::from_seed(&seed_b(), 0).unwrap();
-        assert!(ep.connect(&peer_b).await.is_err());
+        // connect_at to a non-listening address must fail to dial.
+        let bad = TransportAddr::Tcp(([127, 0, 0, 1], 1).into());
+        assert!(ep.connect_at(&peer_b, &bad).await.is_err());
     }
 
     #[test]
