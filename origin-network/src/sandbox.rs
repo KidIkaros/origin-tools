@@ -83,17 +83,19 @@ pub fn restrict_to_home(home: &Path) -> Result<SandboxStatus> {
             .map_err(|e| e.to_string())?;
         added.restrict_self().map_err(|e| e.to_string())
     })();
-    match restriction {
-        Ok(status) => match status.ruleset {
-            RulesetStatus::FullyEnforced | RulesetStatus::PartiallyEnforced => {
-                Ok(SandboxStatus::Enforced)
-            }
-            RulesetStatus::NotEnforced => Ok(SandboxStatus::NotEnforced(format!(
-                "ruleset {:?}",
-                status.ruleset
-            ))),
-        },
-        Err(e) => Ok(SandboxStatus::NotEnforced(e.to_string())),
+    Ok(map_status(restriction.map(|s| s.ruleset)))
+}
+
+/// Map a Landlock enforcement result to our status. Pure so the
+/// degraded (kernel-without-Landlock) paths are unit-testable without
+/// needing a Landlock-less host at integration time.
+fn map_status(result: std::result::Result<RulesetStatus, String>) -> SandboxStatus {
+    match result {
+        Ok(RulesetStatus::FullyEnforced | RulesetStatus::PartiallyEnforced) => {
+            SandboxStatus::Enforced
+        }
+        Ok(RulesetStatus::NotEnforced) => SandboxStatus::NotEnforced("ruleset NotEnforced".into()),
+        Err(e) => SandboxStatus::NotEnforced(e),
     }
 }
 
@@ -145,6 +147,27 @@ mod tests {
                 assert!(!outside_denied, "no sandbox means writes must succeed");
             }
         }
+    }
+
+    #[test]
+    fn map_status_degraded_arms() {
+        // Exercises lines 97-100 without needing a Landlock-less host.
+        assert_eq!(
+            map_status(Ok(RulesetStatus::NotEnforced)),
+            SandboxStatus::NotEnforced("ruleset NotEnforced".into())
+        );
+        assert_eq!(
+            map_status(Err("seccomp blocked landlock".to_string())),
+            SandboxStatus::NotEnforced("seccomp blocked landlock".to_string())
+        );
+        assert_eq!(
+            map_status(Ok(RulesetStatus::FullyEnforced)),
+            SandboxStatus::Enforced
+        );
+        assert_eq!(
+            map_status(Ok(RulesetStatus::PartiallyEnforced)),
+            SandboxStatus::Enforced
+        );
     }
 
     #[test]
