@@ -94,8 +94,8 @@ fn relay_seed_path(home: &std::path::Path) -> PathBuf {
 /// operator fixes the file instead of silently running without peers.
 fn load_allowlist(path: &str, resolver: &mut StaticResolver) -> Result<usize, String> {
     let path = expand_home(path);
-    let content =
-        std::fs::read_to_string(&path).map_err(|e| format!("read allowlist {}: {e}", path.display()))?;
+    let content = std::fs::read_to_string(&path)
+        .map_err(|e| format!("read allowlist {}: {e}", path.display()))?;
     let mut count = 0;
     for (n, line) in content.lines().enumerate() {
         let line = line.trim();
