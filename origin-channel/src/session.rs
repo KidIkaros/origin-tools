@@ -127,12 +127,24 @@ impl RatchetedSession {
     }
 
     /// Rotate to new ratchet keys after a DH ratchet step.
-    /// Resets all usage counters and the nonce tracker for the new epoch.
+    /// Resets all usage counters, the nonce tracker, and the replay
+    /// window for the new epoch. This is sound: the new epoch keys make
+    /// old-epoch ciphertext undecryptable, so the per-epoch replay window
+    /// restarts with the epoch (a resent old-epoch frame fails AEAD
+    /// before it reaches the window).
     pub fn rotate(&mut self, new_keys: RatchetKeys) {
         self.keys = new_keys;
         self.usage.reset();
         self.send_nonce = NonceTracker::new("send");
         self.send_seq = 0;
+        self.replay = ReplayWindow::new(1024);
+    }
+
+    /// Read-only access to the current ratchet keys. Needed by transport
+    /// layers (origin-network) that drive DH-ratchet rotation: they mix a
+    /// fresh DH shared secret into `keys().root` and call `rotate`.
+    pub fn keys(&self) -> &RatchetKeys {
+        &self.keys
     }
 
     /// Current send message count in this epoch.
@@ -323,5 +335,36 @@ mod tests {
         receiver.decrypt(&msg).unwrap();
         assert_eq!(receiver.recv_messages(), 1);
         assert_eq!(receiver.recv_bytes(), 5);
+    }
+
+    #[test]
+    fn rotate_resets_epoch_state() {
+        let mut sender = RatchetedSession::with_defaults(test_keys());
+        let mut receiver = RatchetedSession::with_defaults(peer_keys());
+
+        // Epoch 1: one message, seq 0 lands in the receiver's window.
+        let msg = sender.encrypt(b"epoch-1").unwrap();
+        receiver.decrypt(&msg).unwrap();
+
+        // Rotate both to mirrored keys (network layer's dh_ratchet step).
+        let fresh_dh = [0x77u8; 32];
+        let s_keys = ratchet::dh_ratchet(&sender.keys().root, &fresh_dh).unwrap();
+        let r_keys_raw = ratchet::dh_ratchet(&receiver.keys().root, &fresh_dh).unwrap();
+        let r_keys = RatchetKeys {
+            root: r_keys_raw.root,
+            send_chain: r_keys_raw.recv_chain,
+            recv_chain: r_keys_raw.send_chain,
+        };
+        sender.rotate(s_keys);
+        receiver.rotate(r_keys);
+
+        // Epoch 2 counters are clean…
+        assert_eq!(sender.send_messages(), 0);
+        assert_eq!(receiver.recv_messages(), 0);
+
+        // …and the first post-rotation message (seq 0 again) decrypts —
+        // the replay window restarted with the epoch.
+        let msg2 = sender.encrypt(b"epoch-2").unwrap();
+        assert_eq!(receiver.decrypt(&msg2).unwrap(), b"epoch-2");
     }
 }

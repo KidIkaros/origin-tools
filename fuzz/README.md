@@ -17,8 +17,8 @@ rustup toolchain install nightly   # libFuzzer requires nightly
 # Run a single target for 60 seconds
 cargo +nightly fuzz run fuzz_envelope -- -max_total_time=60
 
-# Run all three
-for t in fuzz_envelope fuzz_config fuzz_tier; do
+# Run all four
+for t in fuzz_envelope fuzz_config fuzz_tier fuzz_wire; do
   cargo +nightly fuzz run "$t" -- -max_total_time=60
 done
 ```
@@ -30,6 +30,7 @@ done
 | `fuzz_envelope` | `Envelope::from_bytes` (ORGN binary parser) | never panics; `to_bytes` round-trip is stable        |
 | `fuzz_config`   | `toml::from_str::<Config>` + `Config::tier` | parsing never panics; tier resolution never panics   |
 | `fuzz_tier`     | `tier_from_byte` / `tier_from_str`          | byte domain is exactly {0,1,2}; round-trip identity  |
+| `fuzz_wire`     | `origin_network::wire::decode_wire` + all control payload decoders | decode is total; `consumed ≤ len`; network-owned frames re-encode identically |
 
 ## Why these targets
 
@@ -39,6 +40,9 @@ Every tool in the suite reads untrusted bytes through `origin-common`:
 - The envelope tier byte and config tier string are converted via `tier_*`
 
 These are the trust boundaries. A panic here is a DoS on every tool.
+`origin-network` adds the wire-framing boundary: relays decode arbitrary
+client bytes off the network, so `decode_wire` and the control-payload
+decoders must be panic-free too.
 
 ## Notes
 

@@ -15,6 +15,7 @@ members = [
     "origin-provenance",
     "origin-attest",
     "origin-secrets",
+    "origin-network",
     "origin-cross-tests",
 ]
 exclude = ["fuzz"]
@@ -47,6 +48,11 @@ origin-schnorr = { path = "origin-schnorr" }
 origin-channel = { path = "origin-channel" }
 origin-provenance = { path = "origin-provenance" }
 origin-attest = { path = "origin-attest" }
+origin-network = { path = "origin-network" }
+# Async runtime — origin-network is the workspace's first async crate.
+# Async-native internals + blocking facade (spec REV 3 §6.5).
+tokio = { version = "1", features = ["rt", "rt-multi-thread", "net", "io-util", "sync", "time", "macros"] }
+async-trait = "0.1"
 clap = { version = "4", features = ["derive"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

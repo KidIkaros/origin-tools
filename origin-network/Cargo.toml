@@ -1,0 +1,30 @@
+[package]
+name = "origin-network"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Universal transport substrate — identity-addressed connections, relay, NAT traversal, spam gates"
+
+[dependencies]
+origin-common = { path = "../origin-common" }
+origin-channel = { path = "../origin-channel" }
+origin-attest = { path = "../origin-attest" }
+origin-crypto-sdk.workspace = true
+tokio.workspace = true
+async-trait.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+hex.workspace = true
+clap.workspace = true
+thiserror = "2"
+zeroize = { version = "1", features = ["derive"] }
+x25519-dalek = { version = "2", features = ["static_secrets"] }
+ed25519-dalek.workspace = true
+
+[dev-dependencies]
+tempfile = "3"
+
+[[bin]]
+name = "origin-relay"
+path = "src/bin/relay_main.rs"
