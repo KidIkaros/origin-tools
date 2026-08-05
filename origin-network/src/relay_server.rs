@@ -25,8 +25,8 @@ use crate::session::PeerResolver;
 use crate::transport::{FrameConn, TcpTransport, Transport, TransportAddr};
 use crate::wire::{
     decode_payload, encode_payload, AdvertFetch, AdvertPublish, AuthClaim, AuthOk, AuthReject,
-    InboxPull, InboxPush, PresenceEvent, PresenceSubscribe, Probe, RelayData, RelayDataAck,
-    SessionClose, SessionOpen, WireError, WireType,
+    InboxPull, InboxPush, PresenceEvent, PresenceSubscribe, Probe, RelayData, SessionClose,
+    SessionOpen, SessionOpenAck, WireError, WireType,
 };
 
 /// Select-over-two helper for the control loop's inbound/outbound fan-in.
@@ -433,11 +433,7 @@ impl RelayServer {
             let next = tokio::select! {
                 frame = conn.recv_frame() => Some(Either::Inbound(frame)),
                 data = outbound_rx.recv() => {
-                    if let Some(data) = data {
-                        Some(Either::Outbound(data))
-                    } else {
-                        None // peer channel closed — re-loop to drain presence
-                    }
+                    data.map(Either::Outbound)
                 }
                 _ = tokio::time::sleep(Self::PRESENCE_PUSH_LATENCY) => None,
             };
@@ -467,8 +463,8 @@ impl RelayServer {
                             match self.state.open_pair(&self.eviction, fp, &target).await {
                                 Ok(pair_id) => {
                                     conn.send_frame(
-                                        WireType::SessionOpen.to_u8(),
-                                        &encode_payload(&SessionClose { pair_id })?,
+                                        WireType::SessionOpenAck.to_u8(),
+                                        &encode_payload(&SessionOpenAck { pair_id })?,
                                     )
                                     .await?;
                                 }
@@ -897,8 +893,8 @@ mod tests {
         .await
         .unwrap();
         let (tag, body) = conn.recv_frame().await.unwrap();
-        assert_eq!(tag, WireType::SessionOpen.to_u8());
-        let ack: SessionClose = decode_payload(&body).unwrap();
+        assert_eq!(tag, WireType::SessionOpenAck.to_u8());
+        let ack: SessionOpenAck = decode_payload(&body).unwrap();
         assert!(ack.pair_id > 0);
         assert_eq!(server.state().active_pair_count().await, 1);
 
@@ -942,8 +938,8 @@ mod tests {
             .await
             .unwrap();
         let (tag, body) = alice.recv_frame().await.unwrap();
-        assert_eq!(tag, WireType::SessionOpen.to_u8());
-        let open_ack: SessionClose = decode_payload(&body).unwrap();
+        assert_eq!(tag, WireType::SessionOpenAck.to_u8());
+        let open_ack: SessionOpenAck = decode_payload(&body).unwrap();
         let pair_id = open_ack.pair_id;
         assert!(pair_id > 0);
         tokio::time::sleep(std::time::Duration::from_millis(30)).await;

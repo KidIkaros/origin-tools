@@ -62,6 +62,10 @@ pub enum WireType {
     /// Flow-control ack for a relayed frame (relay → receiver). Carries the
     /// `seq` so a sender can bound in-flight frames if it wants to.
     RelayDataAck = 0x4E,
+    /// Acceptance of a `SessionOpen` (relay → client). Carries the issued
+    /// `pair_id`. Distinct from `SessionClose` so a teardown frame is never
+    /// mistaken for an open-ack.
+    SessionOpenAck = 0x4F,
     /// Generic error frame.
     Error = 0xF0,
 }
@@ -88,6 +92,7 @@ impl WireType {
             0x4C => Self::PresenceEvent,
             0x4D => Self::RelayData,
             0x4E => Self::RelayDataAck,
+            0x4F => Self::SessionOpenAck,
             0xF0 => Self::Error,
             _ => return None,
         })
@@ -161,6 +166,14 @@ pub struct SessionOpen {
 /// Tear down a forwarding pair.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SessionClose {
+    pub pair_id: u64,
+}
+
+/// Acceptance of a `SessionOpen`; carries the relay-issued `pair_id`.
+/// Kept distinct from `SessionClose` so a teardown frame is never mistaken
+/// for an open-acknowledgement.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SessionOpenAck {
     pub pair_id: u64,
 }
 
@@ -375,6 +388,11 @@ mod tests {
         assert_eq!(
             decode_payload::<SessionClose>(&encode_payload(&close).unwrap()).unwrap(),
             close
+        );
+        let ack = SessionOpenAck { pair_id: 7 };
+        assert_eq!(
+            decode_payload::<SessionOpenAck>(&encode_payload(&ack).unwrap()).unwrap(),
+            ack
         );
         let push = InboxPush {
             target_fp: [4; 32],
