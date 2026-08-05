@@ -25,9 +25,15 @@ use crate::session::PeerResolver;
 use crate::transport::{FrameConn, TcpTransport, Transport, TransportAddr};
 use crate::wire::{
     decode_payload, encode_payload, AdvertFetch, AdvertPublish, AuthClaim, AuthOk, AuthReject,
-    InboxPull, InboxPush, PresenceEvent, PresenceSubscribe, Probe, SessionClose, SessionOpen,
-    WireError, WireType,
+    InboxPull, InboxPush, PresenceEvent, PresenceSubscribe, Probe, RelayData, RelayDataAck,
+    SessionClose, SessionOpen, WireError, WireType,
 };
+
+/// Select-over-two helper for the control loop's inbound/outbound fan-in.
+enum Either<T, U> {
+    Inbound(T),
+    Outbound(U),
+}
 
 /// Max distinct targets one client may subscribe to (spec §5.3 bounds —
 /// never a RAM bomb).
@@ -154,6 +160,12 @@ pub struct RelayServer {
     relay_static: x25519_dalek::StaticSecret,
     /// Presence subscription registry (spec §8.2).
     presence: tokio::sync::Mutex<PresenceRegistry>,
+    /// Outbound relay-data senders, keyed by connected client fingerprint.
+    /// Lets one paired client's `control_loop` deliver `RelayData` frames
+    /// straight into the other end's connection task (live forwarding,
+    /// spec §5.2 — the "dumb byte forwarder"). Bounded: an entry is added
+    /// at connect and removed at disconnect.
+    conns: tokio::sync::Mutex<HashMap<Fingerprint, tokio::sync::mpsc::UnboundedSender<RelayData>>>,
 }
 
 impl RelayServer {
@@ -174,6 +186,7 @@ impl RelayServer {
             ingress: tokio::sync::Mutex::new(crate::gate::IngressGate::new(5, 12)?),
             relay_static,
             presence: tokio::sync::Mutex::new(PresenceRegistry::default()),
+            conns: tokio::sync::Mutex::new(HashMap::new()),
         })
     }
 
@@ -258,6 +271,10 @@ impl RelayServer {
             );
             rx
         };
+        // Live relay-data: register this connection's outbound sender so a
+        // paired peer's control_loop can deliver frames straight here.
+        let (outbound_tx, outbound_rx) = tokio::sync::mpsc::unbounded_channel::<RelayData>();
+        self.conns.lock().await.insert(fp, outbound_tx);
         let token = self.state.issue_token(&fp).await;
         conn.send_frame(
             WireType::AuthOk.to_u8(),
@@ -267,7 +284,11 @@ impl RelayServer {
         )
         .await?;
 
-        let result = self.control_loop(&mut conn, &fp, presence_rx).await;
+        let result = self
+            .control_loop(&mut conn, &fp, presence_rx, outbound_rx)
+            .await;
+        // Tear down: drop the outbound sender, deregister, notify offline.
+        self.conns.lock().await.remove(&fp);
         self.state.deregister(&fp).await;
         // Presence: notify subscribers of the offline transition, then
         // drop the client's subscriptions and sender (spec §8.2).
@@ -381,14 +402,18 @@ impl RelayServer {
     /// safe (partial frames stay buffered), so the timeout costs nothing.
     const PRESENCE_PUSH_LATENCY: std::time::Duration = std::time::Duration::from_millis(250);
 
-    /// The authenticated control loop. Selects between inbound frames and
-    /// presence pushes via a bounded-latency drain: events are pushed to
-    /// the client within `PRESENCE_PUSH_LATENCY` of arrival.
+    /// The authenticated control loop. Selects between inbound frames,
+    /// presence pushes, and outbound relayed data via a bounded-latency
+    /// drain: events/data are pushed to the client within
+    /// `PRESENCE_PUSH_LATENCY` of arrival. Inbound frames drive CONTROL
+    /// handling; `RelayData` frames received inbound are forwarded to the
+    /// paired peer's connection task (the "dumb byte forwarder").
     async fn control_loop(
         &self,
         conn: &mut Box<dyn FrameConn>,
         fp: &Fingerprint,
         mut presence_rx: tokio::sync::mpsc::UnboundedReceiver<PresenceEvent>,
+        mut outbound_rx: tokio::sync::mpsc::UnboundedReceiver<RelayData>,
     ) -> Result<()> {
         loop {
             // Presence push: drain all pending events first. Subscription
@@ -397,124 +422,200 @@ impl RelayServer {
                 conn.send_frame(WireType::PresenceEvent.to_u8(), &encode_payload(&event)?)
                     .await?;
             }
-            // Inbound frame, with a deadline so queued presence events get
-            // out even when the client is idle.
-            let frame = tokio::time::timeout(Self::PRESENCE_PUSH_LATENCY, conn.recv_frame()).await;
-            let (tag, body) = match frame {
-                Ok(res) => res?,
-                Err(_elapsed) => continue,
-            };
-            let Some(wt) = WireType::from_u8(tag) else {
-                self.send_error(conn, "bad_type", "unknown wire type")
+            // Outbound relay data: drain all pending frames for this
+            // connection (delivered from a paired peer's control_loop).
+            while let Ok(data) = outbound_rx.try_recv() {
+                conn.send_frame(WireType::RelayData.to_u8(), &encode_payload(&data)?)
                     .await?;
+            }
+            // Inbound frame OR next outbound relay frame, with a deadline so
+            // queued presence events / data get out even when idle.
+            let next = tokio::select! {
+                frame = conn.recv_frame() => Some(Either::Inbound(frame)),
+                data = outbound_rx.recv() => {
+                    if let Some(data) = data {
+                        Some(Either::Outbound(data))
+                    } else {
+                        None // peer channel closed — re-loop to drain presence
+                    }
+                }
+                _ = tokio::time::sleep(Self::PRESENCE_PUSH_LATENCY) => None,
+            };
+            let Some(work) = next else {
+                // Outbound channel closed (peer gone) — keep serving inbound.
                 continue;
             };
-            match wt {
-                WireType::SessionOpen => {
-                    let open: SessionOpen = decode_payload(&body)?;
-                    let target = Fingerprint(open.target_fp);
-                    match self.state.open_pair(&self.eviction, fp, &target).await {
-                        Ok(pair_id) => {
+            // Presence push interleaving: a slow inbound frame must not stall
+            // presence; re-loop to drain presence before handling the frame.
+            match work {
+                Either::Outbound(data) => {
+                    conn.send_frame(WireType::RelayData.to_u8(), &encode_payload(&data)?)
+                        .await?;
+                    continue;
+                }
+                Either::Inbound(frame) => {
+                    let (tag, body) = frame?;
+                    let Some(wt) = WireType::from_u8(tag) else {
+                        self.send_error(conn, "bad_type", "unknown wire type")
+                            .await?;
+                        continue;
+                    };
+                    match wt {
+                        WireType::SessionOpen => {
+                            let open: SessionOpen = decode_payload(&body)?;
+                            let target = Fingerprint(open.target_fp);
+                            match self.state.open_pair(&self.eviction, fp, &target).await {
+                                Ok(pair_id) => {
+                                    conn.send_frame(
+                                        WireType::SessionOpen.to_u8(),
+                                        &encode_payload(&SessionClose { pair_id })?,
+                                    )
+                                    .await?;
+                                }
+                                Err(e) => {
+                                    self.send_error(conn, "session_open", &e.to_string())
+                                        .await?;
+                                }
+                            }
+                        }
+                        WireType::SessionClose => {
+                            let close: SessionClose = decode_payload(&body)?;
+                            self.state.close_pair(close.pair_id).await;
+                        }
+                        WireType::InboxPush => {
+                            let push: InboxPush = decode_payload(&body)?;
+                            let target = Fingerprint(push.target_fp);
+                            match self
+                                .state
+                                .inbox_push(&self.eviction, fp, &target, push.frame)
+                                .await
+                            {
+                                Ok(ForwardOutcome::Buffered) => {}
+                                Ok(ForwardOutcome::TargetOffline) => {
+                                    self.send_error(conn, "target_offline", &target.to_hex())
+                                        .await?;
+                                }
+                                Err(e) => {
+                                    self.send_error(conn, "inbox_push", &e.to_string()).await?;
+                                }
+                            }
+                        }
+                        WireType::InboxPull => {
+                            let _pull: InboxPull = decode_payload(&body)?;
+                            let frames = self.state.inbox_pull(fp).await;
+                            // Frames ride as a single JSON payload (bounded by caps).
                             conn.send_frame(
-                                WireType::SessionOpen.to_u8(),
-                                &encode_payload(&SessionClose { pair_id })?,
+                                WireType::InboxPull.to_u8(),
+                                &encode_payload(&InboxPullResponse { frames })?,
                             )
                             .await?;
                         }
-                        Err(e) => {
-                            self.send_error(conn, "session_open", &e.to_string())
-                                .await?;
-                        }
-                    }
-                }
-                WireType::SessionClose => {
-                    let close: SessionClose = decode_payload(&body)?;
-                    self.state.close_pair(close.pair_id).await;
-                }
-                WireType::InboxPush => {
-                    let push: InboxPush = decode_payload(&body)?;
-                    let target = Fingerprint(push.target_fp);
-                    match self
-                        .state
-                        .inbox_push(&self.eviction, fp, &target, push.frame)
-                        .await
-                    {
-                        Ok(ForwardOutcome::Buffered) => {}
-                        Ok(ForwardOutcome::TargetOffline) => {
-                            self.send_error(conn, "target_offline", &target.to_hex())
-                                .await?;
-                        }
-                        Err(e) => {
-                            self.send_error(conn, "inbox_push", &e.to_string()).await?;
-                        }
-                    }
-                }
-                WireType::InboxPull => {
-                    let _pull: InboxPull = decode_payload(&body)?;
-                    let frames = self.state.inbox_pull(fp).await;
-                    // Frames ride as a single JSON payload (bounded by caps).
-                    conn.send_frame(
-                        WireType::InboxPull.to_u8(),
-                        &encode_payload(&InboxPullResponse { frames })?,
-                    )
-                    .await?;
-                }
-                WireType::Probe => {
-                    let probe: Probe = decode_payload(&body)?;
-                    let target = Fingerprint(probe.target_fp);
-                    let online = self.state.is_online(&target).await;
-                    conn.send_frame(
-                        WireType::Probe.to_u8(),
-                        &encode_payload(&ProbeResponse { online })?,
-                    )
-                    .await?;
-                }
-                WireType::AdvertPublish => {
-                    let pub_msg: AdvertPublish = decode_payload(&body)?;
-                    if let Err(e) = self.state.advert_publish(fp, pub_msg.advert).await {
-                        self.send_error(conn, "advert_publish", &e.to_string())
-                            .await?;
-                    }
-                }
-                WireType::AdvertFetch => {
-                    let fetch: AdvertFetch = decode_payload(&body)?;
-                    let target = Fingerprint(fetch.target_fp);
-                    let advert = self.state.advert_fetch(&target).await;
-                    conn.send_frame(
-                        WireType::AdvertFetch.to_u8(),
-                        &encode_payload(&AdvertFetchResponse { advert })?,
-                    )
-                    .await?;
-                }
-                WireType::PresenceSubscribe => {
-                    let sub: PresenceSubscribe = decode_payload(&body)?;
-                    let target = Fingerprint(sub.target_fp);
-                    // Lock scope ends before touching state — no nesting.
-                    let sub_res = self.presence.lock().await.subscribe(&target, fp);
-                    match sub_res {
-                        Ok(()) => {
-                            // Immediate state push: the subscriber never
-                            // waits for the next transition to learn the
-                            // current situation.
+                        WireType::Probe => {
+                            let probe: Probe = decode_payload(&body)?;
+                            let target = Fingerprint(probe.target_fp);
                             let online = self.state.is_online(&target).await;
                             conn.send_frame(
-                                WireType::PresenceEvent.to_u8(),
-                                &encode_payload(&PresenceEvent {
-                                    target_fp: sub.target_fp,
-                                    online,
-                                })?,
+                                WireType::Probe.to_u8(),
+                                &encode_payload(&ProbeResponse { online })?,
                             )
                             .await?;
                         }
-                        Err(e) => {
-                            self.send_error(conn, "presence_subscribe", &e.to_string())
+                        WireType::AdvertPublish => {
+                            let pub_msg: AdvertPublish = decode_payload(&body)?;
+                            if let Err(e) = self.state.advert_publish(fp, pub_msg.advert).await {
+                                self.send_error(conn, "advert_publish", &e.to_string())
+                                    .await?;
+                            }
+                        }
+                        WireType::AdvertFetch => {
+                            let fetch: AdvertFetch = decode_payload(&body)?;
+                            let target = Fingerprint(fetch.target_fp);
+                            let advert = self.state.advert_fetch(&target).await;
+                            conn.send_frame(
+                                WireType::AdvertFetch.to_u8(),
+                                &encode_payload(&AdvertFetchResponse { advert })?,
+                            )
+                            .await?;
+                        }
+                        WireType::PresenceSubscribe => {
+                            let sub: PresenceSubscribe = decode_payload(&body)?;
+                            let target = Fingerprint(sub.target_fp);
+                            // Lock scope ends before touching state — no nesting.
+                            let sub_res = self.presence.lock().await.subscribe(&target, fp);
+                            match sub_res {
+                                Ok(()) => {
+                                    // Immediate state push: the subscriber never
+                                    // waits for the next transition to learn the
+                                    // current situation.
+                                    let online = self.state.is_online(&target).await;
+                                    conn.send_frame(
+                                        WireType::PresenceEvent.to_u8(),
+                                        &encode_payload(&PresenceEvent {
+                                            target_fp: sub.target_fp,
+                                            online,
+                                        })?,
+                                    )
+                                    .await?;
+                                }
+                                Err(e) => {
+                                    self.send_error(conn, "presence_subscribe", &e.to_string())
+                                        .await?;
+                                }
+                            }
+                        }
+                        WireType::RelayData => {
+                            // Live relayed application data. Forward verbatim to the
+                            // paired peer's connection task. Zero-trust: the sender
+                            // must be one of the pair's two endpoints, and the pair
+                            // must exist (looked up by id).
+                            let msg: RelayData = match decode_payload(&body) {
+                                Ok(m) => m,
+                                Err(e) => {
+                                    self.send_error(conn, "relay_data", &e.to_string()).await?;
+                                    continue;
+                                }
+                            };
+                            if msg.frame.len() > self.state.max_frame_size() {
+                                self.send_error(
+                                    conn,
+                                    "relay_data",
+                                    &format!("frame exceeds {} bytes", self.state.max_frame_size()),
+                                )
+                                .await?;
+                                continue;
+                            }
+                            let pair = self.state.lookup_pair(msg.pair_id).await;
+                            let Some(pair) = pair else {
+                                self.send_error(conn, "relay_data", "unknown pair_id")
+                                    .await?;
+                                continue;
+                            };
+                            // Sender must be an endpoint; forward to the other end.
+                            let peer = if pair.from == *fp {
+                                pair.to
+                            } else if pair.to == *fp {
+                                pair.from
+                            } else {
+                                self.send_error(conn, "relay_data", "not a member of pair")
+                                    .await?;
+                                continue;
+                            };
+                            let delivered = {
+                                let conns = self.conns.lock().await;
+                                conns.get(&peer).map(|tx| tx.send(msg)).is_some()
+                            };
+                            if !delivered {
+                                // Peer disconnected mid-session: surface as an error
+                                // so the sender can fall back to inbox / reconnect.
+                                self.send_error(conn, "relay_data", "peer not connected")
+                                    .await?;
+                            }
+                        }
+                        other => {
+                            self.send_error(conn, "bad_type", &format!("frame {other:?}"))
                                 .await?;
                         }
                     }
-                }
-                other => {
-                    self.send_error(conn, "bad_type", &format!("frame {other:?}"))
-                        .await?;
                 }
             }
         }
@@ -812,6 +913,98 @@ mod tests {
         .unwrap();
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         assert_eq!(server.state().active_pair_count().await, 0);
+    }
+
+    /// Live relay: a `RelayData` frame from one paired client is copied
+    /// verbatim to the other end (the "dumb byte forwarder", spec §5.2).
+    #[tokio::test]
+    async fn relay_live_data_forwards_between_paired_clients() {
+        let (server, addr) = server_with_two_identities().await;
+        let mut alice = authenticated_client_with_seed(&server, &addr, client_seed())
+            .await
+            .unwrap();
+        let mut bob = authenticated_client_with_seed(&server, &addr, watcher_seed())
+            .await
+            .unwrap();
+        let alice_fp = Fingerprint::from_seed_bytes(&client_seed());
+        let bob_fp = Fingerprint::from_seed_bytes(&watcher_seed());
+        tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+
+        // Alice opens a pair to Bob.
+        alice
+            .send_frame(
+                WireType::SessionOpen.to_u8(),
+                &encode_payload(&SessionOpen {
+                    target_fp: bob_fp.0,
+                })
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+        let (tag, body) = alice.recv_frame().await.unwrap();
+        assert_eq!(tag, WireType::SessionOpen.to_u8());
+        let open_ack: SessionClose = decode_payload(&body).unwrap();
+        let pair_id = open_ack.pair_id;
+        assert!(pair_id > 0);
+        tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+
+        // Alice sends live data on the pair; Bob must receive it verbatim.
+        // (bob may have a queued PresenceEvent for alice's online; drain it.)
+        let payload = b"hello relayed world".to_vec();
+        alice
+            .send_frame(
+                WireType::RelayData.to_u8(),
+                &encode_payload(&RelayData {
+                    pair_id,
+                    seq: 1,
+                    frame: payload.clone(),
+                })
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        // Find the RelayData frame among whatever Bob receives.
+        let mut got: Option<Vec<u8>> = None;
+        for _ in 0..10 {
+            let (t, b) = bob.recv_frame().await.unwrap();
+            if t == WireType::RelayData.to_u8() {
+                let d: RelayData = decode_payload(&b).unwrap();
+                assert_eq!(d.pair_id, pair_id);
+                assert_eq!(d.seq, 1);
+                got = Some(d.frame);
+                break;
+            }
+            // Otherwise it's a PresenceEvent (alice came online) — ignore.
+        }
+        assert_eq!(got, Some(payload));
+
+        // Frame size cap: oversize RelayData is rejected with an error.
+        let big = vec![0xAB; server.state().max_frame_size() + 1];
+        alice
+            .send_frame(
+                WireType::RelayData.to_u8(),
+                &encode_payload(&RelayData {
+                    pair_id,
+                    seq: 2,
+                    frame: big,
+                })
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+        let mut rejected = false;
+        for _ in 0..5 {
+            let (t, b) = alice.recv_frame().await.unwrap();
+            if t == WireType::Error.to_u8() {
+                let e: WireError = decode_payload(&b).unwrap();
+                assert_eq!(e.code, "relay_data");
+                rejected = true;
+                break;
+            }
+        }
+        assert!(rejected, "oversize RelayData should be rejected");
+        let _ = (alice_fp, bob_fp);
     }
 
     #[tokio::test]

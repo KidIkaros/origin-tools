@@ -55,6 +55,13 @@ pub enum WireType {
     PresenceSubscribe = 0x4B,
     /// Presence change notification (relay → client, push).
     PresenceEvent = 0x4C,
+    /// Live relayed application data between a paired session's two ends.
+    /// Payload: `RelayData { pair_id, seq, frame }` — opaque bytes copied
+    /// verbatim to the paired peer (relay never decrypts them).
+    RelayData = 0x4D,
+    /// Flow-control ack for a relayed frame (relay → receiver). Carries the
+    /// `seq` so a sender can bound in-flight frames if it wants to.
+    RelayDataAck = 0x4E,
     /// Generic error frame.
     Error = 0xF0,
 }
@@ -79,6 +86,8 @@ impl WireType {
             0x4A => Self::MuxFrame,
             0x4B => Self::PresenceSubscribe,
             0x4C => Self::PresenceEvent,
+            0x4D => Self::RelayData,
+            0x4E => Self::RelayDataAck,
             0xF0 => Self::Error,
             _ => return None,
         })
@@ -220,6 +229,28 @@ pub struct PresenceEvent {
     pub target_fp: [u8; 32],
     /// True = registered (came online), false = deregistered.
     pub online: bool,
+}
+
+/// Live relayed application data between a paired session's two ends.
+///
+/// The relay copies `frame` verbatim to the peer at the other end of
+/// `pair_id` and never inspects or decrypts it. `seq` lets a sender bound
+/// in-flight frames against the receiver's `RelayDataAck` (best-effort).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RelayData {
+    /// The forwarding pair this frame belongs to (issued by `SessionOpen`).
+    pub pair_id: u64,
+    /// Monotonic per-sender sequence, for optional flow control.
+    pub seq: u64,
+    /// The opaque (encrypted) application bytes.
+    pub frame: Vec<u8>,
+}
+
+/// Flow-control ack for a relayed frame (relay → receiver → sender).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RelayDataAck {
+    pub pair_id: u64,
+    pub seq: u64,
 }
 
 /// Serialize a CONTROL/ERROR payload to JSON bytes (bounded by frame cap).

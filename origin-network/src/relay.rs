@@ -204,6 +204,17 @@ impl RelayState {
         Ok(id)
     }
 
+    /// Look up an active forwarding pair by id (for live DATA relay).
+    pub async fn lookup_pair(&self, pair_id: u64) -> Option<ForwardPair> {
+        self.inner
+            .lock()
+            .await
+            .forwarding
+            .iter()
+            .find(|p| p.id == pair_id)
+            .cloned()
+    }
+
     /// Close a forwarding pair by id; both sides would be notified by
     /// the server layer.
     pub async fn close_pair(&self, pair_id: u64) -> Option<ForwardPair> {
@@ -354,6 +365,11 @@ impl RelayState {
     }
     pub fn inbox_ttl_secs(&self) -> u64 {
         self.inbox_ttl.as_secs()
+    }
+    /// Relay frame size cap (spec §5.3) — the max bytes a single relayed
+    /// DATA / inbox frame may carry.
+    pub fn max_frame_size(&self) -> usize {
+        self.max_frame_size
     }
 }
 
