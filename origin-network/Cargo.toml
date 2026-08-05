@@ -21,6 +21,10 @@ thiserror = "2"
 zeroize = { version = "1", features = ["derive"] }
 x25519-dalek = { version = "2", features = ["static_secrets"] }
 ed25519-dalek.workspace = true
+landlock = "0.4"
+quinn = { version = "0.11", optional = true }
+rcgen = { version = "0.14.8", optional = true }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std"], optional = true }
 
 [dev-dependencies]
 tempfile = "3"
@@ -28,3 +32,9 @@ tempfile = "3"
 [[bin]]
 name = "origin-relay"
 path = "src/bin/relay_main.rs"
+
+[features]
+# QUIC transport (spec phase 2): quinn + self-signed rustls certs.
+# Noise IK runs ABOVE QUIC — TLS here is transport obfuscation and
+# migration support, NOT the trust anchor (spec §7).
+quic = ["dep:quinn", "dep:rcgen", "dep:rustls"]

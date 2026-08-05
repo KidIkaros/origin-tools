@@ -51,6 +51,10 @@ pub enum WireType {
     AdvertFetch = 0x49,
     /// Multiplexed stream frame: `[4B stream id][inner channel frame]`.
     MuxFrame = 0x4A,
+    /// Subscribe to presence changes for a target fingerprint (client → relay).
+    PresenceSubscribe = 0x4B,
+    /// Presence change notification (relay → client, push).
+    PresenceEvent = 0x4C,
     /// Generic error frame.
     Error = 0xF0,
 }
@@ -73,6 +77,8 @@ impl WireType {
             0x48 => Self::AdvertPublish,
             0x49 => Self::AdvertFetch,
             0x4A => Self::MuxFrame,
+            0x4B => Self::PresenceSubscribe,
+            0x4C => Self::PresenceEvent,
             0xF0 => Self::Error,
             _ => return None,
         })
@@ -199,6 +205,23 @@ pub struct WireError {
     pub detail: String,
 }
 
+/// Subscribe to presence changes for a target fingerprint (spec §8.2).
+/// Subscription-based, not polling: the relay pushes `PresenceEvent`
+/// frames whenever the target registers or deregisters.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PresenceSubscribe {
+    pub target_fp: [u8; 32],
+}
+
+/// Presence change notification pushed by the relay to subscribers.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PresenceEvent {
+    /// The peer whose presence changed.
+    pub target_fp: [u8; 32],
+    /// True = registered (came online), false = deregistered.
+    pub online: bool,
+}
+
 /// Serialize a CONTROL/ERROR payload to JSON bytes (bounded by frame cap).
 pub fn encode_payload<T: Serialize>(v: &T) -> Result<Vec<u8>> {
     serde_json::to_vec(v).map_err(|e| NetworkError::Codec(e.to_string()))
@@ -227,6 +250,8 @@ mod tests {
             WireType::AdvertPublish,
             WireType::AdvertFetch,
             WireType::MuxFrame,
+            WireType::PresenceSubscribe,
+            WireType::PresenceEvent,
             WireType::Error,
         ] {
             assert_eq!(WireType::from_u8(t.to_u8()), Some(t), "{t:?}");

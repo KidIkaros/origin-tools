@@ -46,6 +46,11 @@ enum Commands {
         /// inbound claim is rejected as unknown.
         #[arg(long)]
         allowlist: Option<String>,
+        /// Disable the Landlock filesystem sandbox (spec §5.5). On by
+        /// default on Linux kernels with Landlock; degrades to a
+        /// warning automatically where the kernel lacks support.
+        #[arg(long)]
+        no_sandbox: bool,
     },
     /// Add a fingerprint to the eviction set.
     Evict {
@@ -137,7 +142,8 @@ async fn main() {
             home,
             max_forwardings,
             allowlist,
-        } => serve(listen, home, max_forwardings, allowlist).await,
+            no_sandbox,
+        } => serve(listen, home, max_forwardings, allowlist, no_sandbox).await,
         Commands::Evict { fingerprint, home } => {
             let fp = parse_fp(&fingerprint);
             let home = expand_home(&home);
@@ -207,6 +213,7 @@ async fn serve(
     home: String,
     max_forwardings: usize,
     allowlist: Option<String>,
+    no_sandbox: bool,
 ) -> Result<(), String> {
     let home = expand_home(&home);
     let seed = load_or_create_seed(&home)?;
@@ -233,6 +240,25 @@ async fn serve(
         transport.local_addr().unwrap()
     );
     println!("max_forwardings={max_forwardings} allowlist={allowlist_count}");
+
+    // Landlock privilege drop (spec §5.5): the relay parses hostile
+    // traffic; after bind + state load it needs only its home dir.
+    // Best-effort: kernels without Landlock log a warning and run on.
+    if no_sandbox {
+        println!("sandbox: disabled (--no-sandbox)");
+    } else {
+        match origin_network::sandbox::restrict_to_home(&home) {
+            Ok(origin_network::sandbox::SandboxStatus::Enforced) => {
+                println!("sandbox: landlock enforced (home only)");
+            }
+            Ok(origin_network::sandbox::SandboxStatus::NotEnforced(reason)) => {
+                eprintln!("warning: landlock not enforced: {reason}");
+            }
+            Err(e) => {
+                eprintln!("warning: sandbox setup failed: {e}");
+            }
+        }
+    }
 
     // Periodic eviction persistence (evict/pardon save immediately;
     // this covers in-process revocations made via future admin frames).

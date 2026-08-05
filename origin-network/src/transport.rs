@@ -34,6 +34,10 @@ pub const DEFAULT_STREAM_MTU: u16 = 32 * 1024;
 pub enum TransportAddr {
     /// TCP socket address.
     Tcp(SocketAddr),
+    /// UDP socket address (NAT-traversed / punched connections).
+    Udp(SocketAddr),
+    /// QUIC socket address (feature-gated transport, spec phase 2).
+    Quic(SocketAddr),
     /// Loopback in-memory pipe (tests, local IPC).
     Memory(String),
 }
@@ -42,6 +46,8 @@ impl fmt::Display for TransportAddr {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Tcp(a) => write!(f, "tcp://{a}"),
+            Self::Udp(a) => write!(f, "udp://{a}"),
+            Self::Quic(a) => write!(f, "quic://{a}"),
             Self::Memory(id) => write!(f, "mem://{id}"),
         }
     }

@@ -11,6 +11,7 @@
 //! known static key IS the authentication. Token-binding: the relay
 //! resolves `from` ONLY from the session token.
 
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use crate::address::Fingerprint;
@@ -24,8 +25,118 @@ use crate::session::PeerResolver;
 use crate::transport::{FrameConn, TcpTransport, Transport, TransportAddr};
 use crate::wire::{
     decode_payload, encode_payload, AdvertFetch, AdvertPublish, AuthClaim, AuthOk, AuthReject,
-    InboxPull, InboxPush, Probe, SessionClose, SessionOpen, WireError, WireType,
+    InboxPull, InboxPush, PresenceEvent, PresenceSubscribe, Probe, SessionClose, SessionOpen,
+    WireError, WireType,
 };
+
+/// Max distinct targets one client may subscribe to (spec §5.3 bounds —
+/// never a RAM bomb).
+const MAX_SUBSCRIPTIONS_PER_CLIENT: usize = 64;
+/// Max subscribers one target may have (spec §5.3 bounds).
+const MAX_SUBSCRIBERS_PER_TARGET: usize = 256;
+
+/// Presence subscription registry (spec §8.2). Subscription-based, not
+/// polling: the relay pushes `PresenceEvent` frames to every subscriber
+/// of a target whenever that target registers or deregisters.
+///
+/// Bounded both ways: per-client subscription cap and per-target
+/// subscriber cap. Cleanup is explicit on disconnect (`remove_client`).
+#[derive(Default)]
+struct PresenceRegistry {
+    /// target → (subscriber fp → that connection's presence sender).
+    by_target: HashMap<
+        Fingerprint,
+        HashMap<Fingerprint, tokio::sync::mpsc::UnboundedSender<PresenceEvent>>,
+    >,
+    /// subscriber → targets (disconnect cleanup + per-client cap).
+    by_client: HashMap<Fingerprint, HashSet<Fingerprint>>,
+    /// One sender per connected client, registered at connect time.
+    senders: HashMap<Fingerprint, tokio::sync::mpsc::UnboundedSender<PresenceEvent>>,
+}
+
+impl PresenceRegistry {
+    /// Register a client's presence sender (called once at connect time).
+    /// Returns the matching receiver for that connection's push loop.
+    fn register_client(
+        &mut self,
+        client: &Fingerprint,
+    ) -> tokio::sync::mpsc::UnboundedReceiver<PresenceEvent> {
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        self.senders.insert(*client, tx);
+        rx
+    }
+
+    /// Add `client` to `target`'s subscriber set.
+    fn subscribe(&mut self, target: &Fingerprint, client: &Fingerprint) -> Result<()> {
+        let client_targets = self.by_client.entry(*client).or_default();
+        if client_targets.len() >= MAX_SUBSCRIPTIONS_PER_CLIENT && !client_targets.contains(target)
+        {
+            return Err(NetworkError::RelayFull(format!(
+                "subscription cap reached ({MAX_SUBSCRIPTIONS_PER_CLIENT})"
+            )));
+        }
+        let subs = self.by_target.entry(*target).or_default();
+        if subs.len() >= MAX_SUBSCRIBERS_PER_TARGET && !subs.contains_key(client) {
+            return Err(NetworkError::RelayFull(format!(
+                "subscriber cap reached for target ({MAX_SUBSCRIBERS_PER_TARGET})"
+            )));
+        }
+        let Some(tx) = self.senders.get(client).cloned() else {
+            return Err(NetworkError::Auth(
+                "presence subscribe before sender registration".into(),
+            ));
+        };
+        // Re-subscribing is idempotent: replace is a no-op for the set.
+        client_targets.insert(*target);
+        subs.insert(*client, tx);
+        Ok(())
+    }
+
+    /// Fan out a presence event to all of a target's subscribers.
+    /// Closed channels (dead connections) are pruned lazily. Returns the
+    /// number of subscribers actually notified.
+    fn notify(&mut self, target: &Fingerprint, event: PresenceEvent) -> usize {
+        let Some(subs) = self.by_target.get_mut(target) else {
+            return 0;
+        };
+        let mut delivered = 0;
+        let mut dead = Vec::new();
+        for (client, tx) in subs.iter() {
+            if tx.send(event.clone()).is_ok() {
+                delivered += 1;
+            } else {
+                dead.push(*client);
+            }
+        }
+        for d in dead {
+            subs.remove(&d);
+            if let Some(targets) = self.by_client.get_mut(&d) {
+                targets.remove(target);
+            }
+        }
+        delivered
+    }
+
+    /// Drop all of a client's subscriptions (disconnect cleanup).
+    fn remove_client(&mut self, client: &Fingerprint) {
+        self.senders.remove(client);
+        if let Some(targets) = self.by_client.remove(client) {
+            for t in targets {
+                if let Some(subs) = self.by_target.get_mut(&t) {
+                    subs.remove(client);
+                    if subs.is_empty() {
+                        self.by_target.remove(&t);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Total live (target, subscriber) pairs.
+    fn total_subscriptions(&self) -> usize {
+        self.by_target.values().map(|m| m.len()).sum()
+    }
+}
 
 /// Relay server: serves authenticated sessions over TCP.
 pub struct RelayServer {
@@ -41,6 +152,8 @@ pub struct RelayServer {
     ingress: tokio::sync::Mutex<crate::gate::IngressGate>,
     /// Relay's own static key for Noise IK (X25519 secret bytes).
     relay_static: x25519_dalek::StaticSecret,
+    /// Presence subscription registry (spec §8.2).
+    presence: tokio::sync::Mutex<PresenceRegistry>,
 }
 
 impl RelayServer {
@@ -60,6 +173,7 @@ impl RelayServer {
             // Default: 5 handshake attempts per minute per source (spec §5.3).
             ingress: tokio::sync::Mutex::new(crate::gate::IngressGate::new(5, 12)?),
             relay_static,
+            presence: tokio::sync::Mutex::new(PresenceRegistry::default()),
         })
     }
 
@@ -84,6 +198,7 @@ impl RelayServer {
             "online": self.state.online_count().await,
             "active_pairs": self.state.active_pair_count().await,
             "eviction_entries": self.eviction.len().await,
+            "presence_subscriptions": self.presence.lock().await.total_subscriptions(),
             "caps": {
                 "max_forwardings": self.state.max_forwardings(),
                 "max_inbox_messages": self.state.max_inbox_messages(),
@@ -129,6 +244,20 @@ impl RelayServer {
         let fp = self.authenticate(&mut conn).await?;
         // Eviction checked inside register.
         self.state.register(&self.eviction, &fp).await?;
+        // Presence: register this client's push channel and notify
+        // subscribers that the peer came online (spec §8.2).
+        let presence_rx = {
+            let mut presence = self.presence.lock().await;
+            let rx = presence.register_client(&fp);
+            presence.notify(
+                &fp,
+                PresenceEvent {
+                    target_fp: fp.0,
+                    online: true,
+                },
+            );
+            rx
+        };
         let token = self.state.issue_token(&fp).await;
         conn.send_frame(
             WireType::AuthOk.to_u8(),
@@ -138,8 +267,21 @@ impl RelayServer {
         )
         .await?;
 
-        let result = self.control_loop(&mut conn, &fp).await;
+        let result = self.control_loop(&mut conn, &fp, presence_rx).await;
         self.state.deregister(&fp).await;
+        // Presence: notify subscribers of the offline transition, then
+        // drop the client's subscriptions and sender (spec §8.2).
+        {
+            let mut presence = self.presence.lock().await;
+            presence.notify(
+                &fp,
+                PresenceEvent {
+                    target_fp: fp.0,
+                    online: false,
+                },
+            );
+            presence.remove_client(&fp);
+        }
         result
     }
 
@@ -234,10 +376,34 @@ impl RelayServer {
         .await
     }
 
-    /// The authenticated control loop.
-    async fn control_loop(&self, conn: &mut Box<dyn FrameConn>, fp: &Fingerprint) -> Result<()> {
+    /// Presence push latency bound (spec §8.2): the control loop drains
+    /// pending events at least this often. `recv_frame` is cancellation-
+    /// safe (partial frames stay buffered), so the timeout costs nothing.
+    const PRESENCE_PUSH_LATENCY: std::time::Duration = std::time::Duration::from_millis(250);
+
+    /// The authenticated control loop. Selects between inbound frames and
+    /// presence pushes via a bounded-latency drain: events are pushed to
+    /// the client within `PRESENCE_PUSH_LATENCY` of arrival.
+    async fn control_loop(
+        &self,
+        conn: &mut Box<dyn FrameConn>,
+        fp: &Fingerprint,
+        mut presence_rx: tokio::sync::mpsc::UnboundedReceiver<PresenceEvent>,
+    ) -> Result<()> {
         loop {
-            let (tag, body) = conn.recv_frame().await?;
+            // Presence push: drain all pending events first. Subscription
+            // caps bound the queue size, so this cannot starve frames.
+            while let Ok(event) = presence_rx.try_recv() {
+                conn.send_frame(WireType::PresenceEvent.to_u8(), &encode_payload(&event)?)
+                    .await?;
+            }
+            // Inbound frame, with a deadline so queued presence events get
+            // out even when the client is idle.
+            let frame = tokio::time::timeout(Self::PRESENCE_PUSH_LATENCY, conn.recv_frame()).await;
+            let (tag, body) = match frame {
+                Ok(res) => res?,
+                Err(_elapsed) => continue,
+            };
             let Some(wt) = WireType::from_u8(tag) else {
                 self.send_error(conn, "bad_type", "unknown wire type")
                     .await?;
@@ -320,6 +486,32 @@ impl RelayServer {
                     )
                     .await?;
                 }
+                WireType::PresenceSubscribe => {
+                    let sub: PresenceSubscribe = decode_payload(&body)?;
+                    let target = Fingerprint(sub.target_fp);
+                    // Lock scope ends before touching state — no nesting.
+                    let sub_res = self.presence.lock().await.subscribe(&target, fp);
+                    match sub_res {
+                        Ok(()) => {
+                            // Immediate state push: the subscriber never
+                            // waits for the next transition to learn the
+                            // current situation.
+                            let online = self.state.is_online(&target).await;
+                            conn.send_frame(
+                                WireType::PresenceEvent.to_u8(),
+                                &encode_payload(&PresenceEvent {
+                                    target_fp: sub.target_fp,
+                                    online,
+                                })?,
+                            )
+                            .await?;
+                        }
+                        Err(e) => {
+                            self.send_error(conn, "presence_subscribe", &e.to_string())
+                                .await?;
+                        }
+                    }
+                }
                 other => {
                     self.send_error(conn, "bad_type", &format!("frame {other:?}"))
                         .await?;
@@ -395,11 +587,20 @@ mod tests {
         server: &Arc<RelayServer>,
         addr: &crate::transport::TransportAddr,
     ) -> Result<Box<dyn FrameConn>> {
+        authenticated_client_with_seed(server, addr, client_seed()).await
+    }
+
+    /// Parameterized variant — different seeds = different identities.
+    async fn authenticated_client_with_seed(
+        server: &Arc<RelayServer>,
+        addr: &crate::transport::TransportAddr,
+        seed: [u8; 32],
+    ) -> Result<Box<dyn FrameConn>> {
         let tc = TcpTransport::connector();
         let mut conn = tc.connect(addr).await?;
 
         // Drive the client side of Noise IK.
-        let secret = crate::identity::derive_transport_secret(&client_seed(), 0)?;
+        let secret = crate::identity::derive_transport_secret(&seed, 0)?;
         let relay_pk = crate::identity::transport_public_key(
             &crate::identity::derive_transport_secret(&relay_seed(), 0)?,
         );
@@ -431,7 +632,7 @@ mod tests {
         // AUTH claim.
         let transcript = crate::session::transcript_pub(&m1, &m2, &m3);
         let relay_fp = Fingerprint::from_seed_bytes(&relay_seed());
-        let claim = crate::identity::sign_auth_claim(&client_seed(), 0, &relay_fp, &transcript)?;
+        let claim = crate::identity::sign_auth_claim(&seed, 0, &relay_fp, &transcript)?;
         conn.send_frame(
             WireType::AuthClaim.to_u8(),
             &encode_payload(&claim).unwrap(),
@@ -823,6 +1024,298 @@ mod tests {
         assert_eq!(tag, WireType::AuthReject.to_u8());
         let rej: AuthReject = decode_payload(&body).unwrap();
         assert_eq!(rej.reason, "evicted");
+    }
+
+    // ── PresenceRegistry unit tests ─────────────────────────────────────
+
+    fn fp_of(byte: u8) -> Fingerprint {
+        Fingerprint([byte; 32])
+    }
+
+    #[test]
+    fn presence_registry_subscribe_notify_delivers() {
+        let mut reg = PresenceRegistry::default();
+        let sub_a = fp_of(0xA1);
+        let sub_b = fp_of(0xB2);
+        let target = fp_of(0xC3);
+        let mut _rx_a = reg.register_client(&sub_a);
+        let mut _rx_b = reg.register_client(&sub_b);
+        reg.subscribe(&target, &sub_a).unwrap();
+        reg.subscribe(&target, &sub_b).unwrap();
+        assert_eq!(reg.total_subscriptions(), 2);
+
+        let n = reg.notify(
+            &target,
+            PresenceEvent {
+                target_fp: target.0,
+                online: true,
+            },
+        );
+        assert_eq!(n, 2);
+        // Both receivers got the event.
+        let evt = _rx_a.try_recv().unwrap();
+        assert!(evt.online);
+        assert_eq!(evt.target_fp, target.0);
+        assert!(_rx_b.try_recv().is_ok());
+    }
+
+    #[test]
+    fn presence_registry_re_subscribe_idempotent() {
+        let mut reg = PresenceRegistry::default();
+        let sub = fp_of(0xA1);
+        let target = fp_of(0xC3);
+        let mut _rx = reg.register_client(&sub);
+        reg.subscribe(&target, &sub).unwrap();
+        reg.subscribe(&target, &sub).unwrap();
+        assert_eq!(reg.total_subscriptions(), 1);
+        // Notify once → exactly one delivery (no duplicates).
+        reg.notify(
+            &target,
+            PresenceEvent {
+                target_fp: target.0,
+                online: false,
+            },
+        );
+        assert!(_rx.try_recv().is_ok());
+        assert!(_rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn presence_registry_notify_prunes_dead_receivers() {
+        let mut reg = PresenceRegistry::default();
+        let sub = fp_of(0xA1);
+        let target = fp_of(0xC3);
+        let rx = reg.register_client(&sub);
+        reg.subscribe(&target, &sub).unwrap();
+        drop(rx); // connection gone
+
+        let n = reg.notify(
+            &target,
+            PresenceEvent {
+                target_fp: target.0,
+                online: true,
+            },
+        );
+        assert_eq!(n, 0);
+        assert_eq!(reg.total_subscriptions(), 0);
+    }
+
+    #[test]
+    fn presence_registry_notify_unknown_target_zero() {
+        let mut reg = PresenceRegistry::default();
+        let n = reg.notify(
+            &fp_of(0x99),
+            PresenceEvent {
+                target_fp: [0x99; 32],
+                online: true,
+            },
+        );
+        assert_eq!(n, 0);
+    }
+
+    #[test]
+    fn presence_registry_remove_client_cleans_all() {
+        let mut reg = PresenceRegistry::default();
+        let sub = fp_of(0xA1);
+        let t1 = fp_of(0xC3);
+        let t2 = fp_of(0xC4);
+        let _rx = reg.register_client(&sub);
+        reg.subscribe(&t1, &sub).unwrap();
+        reg.subscribe(&t2, &sub).unwrap();
+        assert_eq!(reg.total_subscriptions(), 2);
+        reg.remove_client(&sub);
+        assert_eq!(reg.total_subscriptions(), 0);
+        // Re-subscribe after removal requires re-registration.
+        let err = reg.subscribe(&t1, &sub).unwrap_err();
+        assert!(matches!(err, NetworkError::Auth(_)));
+    }
+
+    #[test]
+    fn presence_registry_per_client_cap_enforced() {
+        let mut reg = PresenceRegistry::default();
+        let sub = fp_of(0xA1);
+        let _rx = reg.register_client(&sub);
+        for i in 0..MAX_SUBSCRIPTIONS_PER_CLIENT {
+            reg.subscribe(&fp_of(i as u8), &sub).unwrap();
+        }
+        // One more distinct target → cap.
+        let err = reg.subscribe(&fp_of(0xFE), &sub).unwrap_err();
+        assert!(matches!(err, NetworkError::RelayFull(_)));
+        // Re-subscribing an existing target stays allowed.
+        reg.subscribe(&fp_of(0x01), &sub).unwrap();
+        assert_eq!(reg.total_subscriptions(), MAX_SUBSCRIPTIONS_PER_CLIENT);
+    }
+
+    #[test]
+    fn presence_registry_per_target_cap_enforced() {
+        let mut reg = PresenceRegistry::default();
+        let target = fp_of(0xC3);
+        // 0..255 as the first byte, plus 0x7F variants via second byte.
+        for i in 0..MAX_SUBSCRIBERS_PER_TARGET {
+            let mut bytes = [0u8; 32];
+            bytes[0] = (i % 256) as u8;
+            bytes[1] = (i / 256) as u8;
+            let sub = Fingerprint(bytes);
+            let _rx = reg.register_client(&sub);
+            reg.subscribe(&target, &sub).unwrap();
+        }
+        let mut overflow = [0u8; 32];
+        overflow[0] = 0xFF;
+        overflow[1] = 0xFF;
+        let extra = Fingerprint(overflow);
+        let _rx = reg.register_client(&extra);
+        let err = reg.subscribe(&target, &extra).unwrap_err();
+        assert!(matches!(err, NetworkError::RelayFull(_)));
+    }
+
+    // ── Presence end-to-end tests ───────────────────────────────────────
+
+    fn watcher_seed() -> [u8; 32] {
+        [0xDD; 32]
+    }
+
+    /// A server whose resolver knows both the default client and the
+    /// watcher identity (presence tests need two real identities).
+    async fn server_with_two_identities() -> (Arc<RelayServer>, crate::transport::TransportAddr) {
+        let mut resolver = StaticResolver::new();
+        resolver.add(PeerKeys::from_seed(&client_seed(), 0).unwrap());
+        resolver.add(PeerKeys::from_seed(&watcher_seed(), 0).unwrap());
+        let server = Arc::new(
+            RelayServer::new(
+                RelayState::new(DEFAULT_MAX_FORWARDINGS),
+                EvictionSet::new(),
+                Arc::new(resolver),
+                relay_seed(),
+            )
+            .unwrap(),
+        );
+        let listener = TcpTransport::listen(([127, 0, 0, 1], 0).into())
+            .await
+            .unwrap();
+        let addr = listener.local_addr().unwrap();
+        let serve_server = Arc::clone(&server);
+        tokio::spawn(async move {
+            let _ = serve_server.serve(listener).await;
+        });
+        (server, addr)
+    }
+
+    #[tokio::test]
+    async fn presence_subscribe_pushes_current_then_transitions() {
+        let (_server, addr) = server_with_two_identities().await;
+        let target_fp = Fingerprint::from_seed_bytes(&client_seed());
+
+        // Watcher connects first, subscribes to the (offline) target.
+        let mut watcher = authenticated_client_with_seed(&_server, &addr, watcher_seed())
+            .await
+            .unwrap();
+        watcher
+            .send_frame(
+                WireType::PresenceSubscribe.to_u8(),
+                &encode_payload(&PresenceSubscribe {
+                    target_fp: target_fp.0,
+                })
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+        // Immediate state push: target is offline.
+        let (tag, body) = watcher.recv_frame().await.unwrap();
+        assert_eq!(tag, WireType::PresenceEvent.to_u8());
+        let evt: PresenceEvent = decode_payload(&body).unwrap();
+        assert_eq!(evt.target_fp, target_fp.0);
+        assert!(!evt.online);
+
+        // Target connects → watcher receives online transition.
+        let target = authenticated_client(&_server, &addr).await.unwrap();
+        let (tag, body) =
+            tokio::time::timeout(std::time::Duration::from_secs(2), watcher.recv_frame())
+                .await
+                .expect("online push within latency bound")
+                .unwrap();
+        assert_eq!(tag, WireType::PresenceEvent.to_u8());
+        let evt: PresenceEvent = decode_payload(&body).unwrap();
+        assert!(evt.online);
+
+        // Target drops → watcher receives offline transition.
+        drop(target);
+        let (tag, body) =
+            tokio::time::timeout(std::time::Duration::from_secs(2), watcher.recv_frame())
+                .await
+                .expect("offline push within latency bound")
+                .unwrap();
+        assert_eq!(tag, WireType::PresenceEvent.to_u8());
+        let evt: PresenceEvent = decode_payload(&body).unwrap();
+        assert!(!evt.online);
+    }
+
+    #[tokio::test]
+    async fn presence_subscribe_online_target_reports_online() {
+        let (_server, addr) = server_with_two_identities().await;
+        let target_fp = Fingerprint::from_seed_bytes(&client_seed());
+
+        // Target connects FIRST.
+        let _target = authenticated_client(&_server, &addr).await.unwrap();
+
+        // Watcher subscribes → immediate state push says online.
+        let mut watcher = authenticated_client_with_seed(&_server, &addr, watcher_seed())
+            .await
+            .unwrap();
+        watcher
+            .send_frame(
+                WireType::PresenceSubscribe.to_u8(),
+                &encode_payload(&PresenceSubscribe {
+                    target_fp: target_fp.0,
+                })
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+        let (tag, body) = watcher.recv_frame().await.unwrap();
+        assert_eq!(tag, WireType::PresenceEvent.to_u8());
+        let evt: PresenceEvent = decode_payload(&body).unwrap();
+        assert!(evt.online);
+    }
+
+    #[tokio::test]
+    async fn presence_subscription_cap_over_wire() {
+        let (_server, addr) = server_with_two_identities().await;
+        let mut watcher = authenticated_client_with_seed(&_server, &addr, watcher_seed())
+            .await
+            .unwrap();
+
+        for i in 0..MAX_SUBSCRIPTIONS_PER_CLIENT {
+            watcher
+                .send_frame(
+                    WireType::PresenceSubscribe.to_u8(),
+                    &encode_payload(&PresenceSubscribe {
+                        target_fp: [i as u8; 32],
+                    })
+                    .unwrap(),
+                )
+                .await
+                .unwrap();
+            // Each subscribe answers with an immediate state push.
+            let (tag, _body) = watcher.recv_frame().await.unwrap();
+            assert_eq!(tag, WireType::PresenceEvent.to_u8());
+        }
+
+        // One past the cap → error frame, not a presence event.
+        watcher
+            .send_frame(
+                WireType::PresenceSubscribe.to_u8(),
+                &encode_payload(&PresenceSubscribe {
+                    target_fp: [0xEE; 32],
+                })
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+        let (tag, body) = watcher.recv_frame().await.unwrap();
+        assert_eq!(tag, WireType::Error.to_u8());
+        let err: WireError = decode_payload(&body).unwrap();
+        assert_eq!(err.code, "presence_subscribe");
+        assert!(err.detail.contains("cap"));
     }
 
     #[tokio::test]

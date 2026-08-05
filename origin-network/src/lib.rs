@@ -16,14 +16,20 @@
 //! 5. Policy over assumption: topology, buffering, trust are axes apps set
 
 pub mod address;
+pub mod client;
 pub mod error;
 pub mod gate;
 pub mod identity;
+pub mod nat;
+#[cfg(feature = "quic")]
+pub mod quic;
 pub mod relay;
 pub mod relay_server;
 pub mod replay;
+pub mod sandbox;
 pub mod session;
 pub mod transport;
+pub mod udp;
 pub mod wire;
 
 pub use address::{Fingerprint, OriginAddress, ServicePort};
@@ -32,6 +38,10 @@ pub use gate::{CookieChallenge, CookieGate, IngressGate, PowGate, PowProof, Toke
 pub use identity::{
     derive_transport_secret, sign_auth_claim, transport_public_key, verify_auth_claim, PeerKeys,
     PROTOCOL_VERSION, TRANSPORT_KEY_DOMAIN,
+};
+pub use nat::{
+    connect_p2p, dial_direct, discover_public_address, fresh_punch_socket, hole_punch,
+    same_subnet_24, PeerAddrs, DEFAULT_STUN_SERVER, PUNCH_PROBE,
 };
 pub use relay::{EvictionSet, ForwardOutcome, ForwardPair, RelayState};
 pub use relay_server::RelayServer;

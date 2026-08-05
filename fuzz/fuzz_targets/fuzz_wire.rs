@@ -17,7 +17,8 @@ use libfuzzer_sys::fuzz_target;
 use origin_network::relay_server::ProbeResponse;
 use origin_network::wire::{
     decode_payload, decode_wire, encode_wire, AdvertFetch, AdvertPublish, AuthClaim, AuthOk,
-    AuthReject, InboxPull, InboxPush, Probe, SessionClose, SessionOpen, WireError, WireType,
+    AuthReject, InboxPull, InboxPush, PresenceEvent, PresenceSubscribe, Probe, SessionClose,
+    SessionOpen, WireError, WireType,
 };
 
 fuzz_target!(|data: &[u8]| {
@@ -63,4 +64,6 @@ fuzz_target!(|data: &[u8]| {
     let _ = decode_payload::<AuthClaim>(&payload);
     let _ = decode_payload::<AuthOk>(&payload);
     let _ = decode_payload::<AuthReject>(&payload);
+    let _ = decode_payload::<PresenceSubscribe>(&payload);
+    let _ = decode_payload::<PresenceEvent>(&payload);
 });
