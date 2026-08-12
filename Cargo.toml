@@ -16,6 +16,7 @@ members = [
     "origin-attest",
     "origin-secrets",
     "origin-network",
+    "origin-archive",
     "origin-cross-tests",
 ]
 exclude = ["fuzz"]
@@ -34,7 +35,7 @@ authors = ["Origin SDK Contributors"]
 # [patch.crates-io] section at the bottom of this file:
 #   [patch.crates-io]
 #   origin-crypto-sdk = { path = "../origin-crypto-sdk" }
-origin-crypto-sdk = "=0.7.1-rc.4"
+origin-crypto-sdk = "=0.7.1-rc.5"
 origin-common = { path = "origin-common" }
 origin-identity = { path = "origin-identity" }
 origin-pass = { path = "origin-pass" }
@@ -49,6 +50,7 @@ origin-channel = { path = "origin-channel" }
 origin-provenance = { path = "origin-provenance" }
 origin-attest = { path = "origin-attest" }
 origin-network = { path = "origin-network" }
+origin-archive = { path = "origin-archive" }
 # Async runtime — origin-network is the workspace's first async crate.
 # Async-native internals + blocking facade (spec REV 3 §6.5).
 tokio = { version = "1", features = ["rt", "rt-multi-thread", "net", "io-util", "sync", "time", "macros"] }

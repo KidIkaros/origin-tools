@@ -57,6 +57,8 @@ enum Tool {
     Channel(origin_channel::cli::Cli),
     /// File provenance (stamps, manifests, watermarks, verification)
     Provenance(origin_provenance::cli::Cli),
+    /// Atomic compress-then-encrypt archives (zstd + ChaCha20-BLAKE3)
+    Archive(origin_archive::cli::Cli),
     /// Health-check your ~/.origin setup
     Doctor,
 }
@@ -76,6 +78,7 @@ fn main() {
         Tool::Schnorr(sub) => origin_schnorr::commands::dispatch(sub),
         Tool::Channel(sub) => origin_channel::commands::dispatch(sub),
         Tool::Provenance(sub) => origin_provenance::commands::dispatch(sub),
+        Tool::Archive(sub) => origin_archive::commands::dispatch(sub),
         Tool::Doctor => doctor::run(),
     };
 
