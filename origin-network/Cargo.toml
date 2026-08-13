@@ -11,7 +11,7 @@ origin-common = { path = "../origin-common" }
 origin-channel = { path = "../origin-channel" }
 origin-attest = { path = "../origin-attest" }
 origin-crypto-sdk.workspace = true
-tokio.workspace = true
+tokio = { workspace = true, features = ["signal"] }
 async-trait.workspace = true
 serde.workspace = true
 serde_json.workspace = true

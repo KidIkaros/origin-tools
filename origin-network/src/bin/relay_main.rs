@@ -9,6 +9,7 @@
 //! Usage:
 //!   origin-relay serve --listen 127.0.0.1:7331 --home ~/.origin/relay
 //!   origin-relay evict <hex-fingerprint> --home ~/.origin/relay
+//!   origin-relay pardon <hex-fingerprint> --home ~/.origin/relay
 //!   origin-relay status --home ~/.origin/relay
 
 use std::path::PathBuf;
@@ -46,6 +47,10 @@ enum Commands {
         /// inbound claim is rejected as unknown.
         #[arg(long)]
         allowlist: Option<String>,
+        /// Optional external address to advertise (NAT dial-back for peers
+        /// connecting back through their own traversal).
+        #[arg(long)]
+        external_addr: Option<String>,
         /// Disable the Landlock filesystem sandbox (spec §5.5). On by
         /// default on Linux kernels with Landlock; degrades to a
         /// warning automatically where the kernel lacks support.
@@ -65,7 +70,7 @@ enum Commands {
         #[arg(long, default_value = "~/.origin/relay")]
         home: String,
     },
-    /// Show eviction set size.
+    /// Show eviction set size and stats.
     Status {
         #[arg(long, default_value = "~/.origin/relay")]
         home: String,
@@ -132,7 +137,7 @@ fn parse_fp(s: &str) -> Result<origin_network::Fingerprint, String> {
     origin_network::Fingerprint::from_hex(s).map_err(|e| e.to_string())
 }
 
-#[tokio::main]
+#[tokio::main(flavor = "multi_thread", worker_threads = 4)]
 async fn main() {
     let cli = Cli::parse();
 
@@ -142,8 +147,9 @@ async fn main() {
             home,
             max_forwardings,
             allowlist,
+            external_addr,
             no_sandbox,
-        } => serve(listen, home, max_forwardings, allowlist, no_sandbox).await,
+        } => serve(listen, home, max_forwardings, allowlist, external_addr, no_sandbox).await,
         Commands::Evict { fingerprint, home } => {
             let fp = parse_fp(&fingerprint);
             let home = expand_home(&home);
@@ -194,7 +200,11 @@ async fn main() {
             let home = expand_home(&home);
             match EvictionSet::load(&eviction_path(&home)).await {
                 Ok(ev) => {
-                    println!("eviction set: {} entries", ev.len().await);
+                    let count = ev.len().await;
+                    println!("eviction set: {count} entries");
+                    if count > 0 {
+                        println!("  (revoked peers cannot register)");
+                    }
                     Ok(())
                 }
                 Err(e) => Err(e.to_string()),
@@ -213,6 +223,7 @@ async fn serve(
     home: String,
     max_forwardings: usize,
     allowlist: Option<String>,
+    external_addr: Option<String>,
     no_sandbox: bool,
 ) -> Result<(), String> {
     let home = expand_home(&home);
@@ -227,18 +238,26 @@ async fn serve(
         allowlist_count = load_allowlist(&path, &mut resolver)?;
     }
     let resolver = Arc::new(resolver);
-    let server =
-        Arc::new(RelayServer::new(state, eviction, resolver, seed).map_err(|e| e.to_string())?);
+    let server = Arc::new(
+        RelayServer::new(state, eviction, resolver, seed)
+            .map_err(|e| e.to_string())?,
+    );
 
-    let addr: std::net::SocketAddr = listen.parse().map_err(|e| format!("bad listen: {e}"))?;
+    let addr: std::net::SocketAddr = listen
+        .parse()
+        .map_err(|e| format!("bad listen: {e}"))?;
     let transport = TcpTransport::listen(addr)
         .await
         .map_err(|e| e.to_string())?;
+
     println!(
         "origin-relay {} listening on {}",
         server.fingerprint().to_hex(),
         transport.local_addr().unwrap()
     );
+    if let Some(ext) = &external_addr {
+        println!("  external: {ext}");
+    }
     println!("max_forwardings={max_forwardings} allowlist={allowlist_count}");
 
     // Landlock privilege drop (spec §5.5): the relay parses hostile
@@ -264,7 +283,7 @@ async fn serve(
     // this covers in-process revocations made via future admin frames).
     let save_server = Arc::clone(&server);
     let save_path = eviction_path(&home);
-    tokio::spawn(async move {
+    let persist = tokio::spawn(async move {
         let mut interval = tokio::time::interval(std::time::Duration::from_secs(60));
         loop {
             interval.tick().await;
@@ -272,5 +291,95 @@ async fn serve(
         }
     });
 
-    server.serve(transport).await.map_err(|e| e.to_string())
+    // Background cleanup of expired inbox frames.
+    let cleanup_server = Arc::clone(&server);
+    let ttl = std::time::Duration::from_secs(server.state().inbox_ttl_secs());
+    let cleaner = tokio::spawn(async move {
+        let mut interval = tokio::time::interval(ttl / 2);
+        loop {
+            interval.tick().await;
+            let n = cleanup_server.state().cleanup_expired().await;
+            if n > 0 {
+                println!("cleanup: purged {n} expired inbox frame(s)");
+            }
+        }
+    });
+
+    // Run the server's accept loop with graceful shutdown.
+    // On Unix, we select between the serve loop and a signal wait.
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{signal, SignalKind};
+
+        let shutdown_ev = server.eviction().clone();
+        let shutdown_save = eviction_path(&home);
+        let shutdown_signal = async move {
+            let mut sigterm = signal(SignalKind::terminate())
+                .expect("SIGTERM handler");
+            let mut sigint = signal(SignalKind::interrupt())
+                .expect("SIGINT handler");
+            tokio::select! {
+                _ = sigterm.recv() => {
+                    println!("\nsignal: SIGTERM — shutting down");
+                }
+                _ = sigint.recv() => {
+                    println!("\nsignal: SIGINT — shutting down");
+                }
+            }
+            // Persist final eviction state.
+            if let Err(e) = shutdown_ev.save(&shutdown_save).await {
+                eprintln!("warning: final eviction save failed: {e}");
+            }
+            println!("origin-relay stopped");
+        };
+
+        tokio::select! {
+            result = server.serve(transport) => {
+                match result {
+                    Ok(()) => Ok(()),
+                    Err(e) => {
+                        persist.abort();
+                        cleaner.abort();
+                        Err(e.to_string())
+                    }
+                }
+            }
+            _ = shutdown_signal => {
+                persist.abort();
+                cleaner.abort();
+                Ok(())
+            }
+        }
+    }
+
+    #[cfg(not(unix))]
+    {
+        let shutdown_ev = server.eviction().clone();
+        let shutdown_save = eviction_path(&home);
+        let shutdown_signal = async move {
+            tokio::signal::ctrl_c().await.expect("ctrl_c handler");
+            if let Err(e) = shutdown_ev.save(&shutdown_save).await {
+                eprintln!("warning: final eviction save failed: {e}");
+            }
+            println!("origin-relay stopped");
+        };
+
+        tokio::select! {
+            result = server.serve(transport) => {
+                match result {
+                    Ok(()) => Ok(()),
+                    Err(e) => {
+                        persist.abort();
+                        cleaner.abort();
+                        Err(e.to_string())
+                    }
+                }
+            }
+            _ = shutdown_signal => {
+                persist.abort();
+                cleaner.abort();
+                Ok(())
+            }
+        }
+    }
 }
