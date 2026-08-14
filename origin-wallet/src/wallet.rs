@@ -146,13 +146,17 @@ impl Wallet {
         let mut accounts = Vec::new();
         for acc_data in &state.accounts {
             let address = Address::from_bech32(&acc_data.address_bech32)?;
-            accounts.push(Account::new(
+            let mut account = Account::new(
                 acc_data.name.clone(),
                 acc_data.index,
                 acc_data.ed25519_sk.clone(),
                 acc_data.falcon_sk.clone(),
                 address,
-            ));
+            );
+            // Restore balance and nonce from saved data
+            account.set_balance(acc_data.balance);
+            account.set_nonce(acc_data.nonce);
+            accounts.push(account);
         }
 
         // 7. Reconstruct MMR from history roots
@@ -195,8 +199,8 @@ impl Wallet {
             .map(|acc| AccountData {
                 name: acc.name().to_string(),
                 index: acc.index(),
-                ed25519_sk: acc.ed25519_pk().map(|pk| pk.to_vec()).unwrap_or_default(),
-                falcon_sk: Vec::new(), // TODO: Store falcon key
+                ed25519_sk: acc.ed25519_sk().to_vec(),
+                falcon_sk: acc.falcon_sk().to_vec(),
                 address_bech32: acc.address().to_bech32().unwrap_or_default(),
                 balance: acc.balance(),
                 nonce: acc.nonce(),
@@ -220,7 +224,7 @@ impl Wallet {
     }
 
     /// Derive an account at the given index.
-    pub fn derive_account(&self, index: u32) -> Result<Account> {
+    pub fn derive_account(&mut self, index: u32) -> Result<Account> {
         // Check if account already exists
         if let Some(acc) = self.accounts.iter().find(|a| a.index() == index) {
             return Ok(acc.clone());
@@ -245,7 +249,7 @@ impl Wallet {
         let mut seed_array = [0u8; 32];
         seed_array.copy_from_slice(&falcon_seed);
 
-        let (falcon_pk, falcon_sk) = origin_crypto_sdk::pqc::falcon1024::generate_keypair_from_seed(&seed_array)
+        let (_falcon_pk, falcon_sk) = origin_crypto_sdk::pqc::falcon1024::generate_keypair_from_seed(&seed_array)
             .map_err(|e| WalletError::KeyDerivation(e.to_string()))?;
 
         // Generate address from Ed25519 public key
@@ -280,6 +284,10 @@ impl Wallet {
             address,
             stealth_master,
         );
+
+        // Add account to wallet
+        self.accounts.push(account.clone());
+        self.metadata.modified_at = chrono::Utc::now().timestamp() as u64;
 
         Ok(account)
     }
@@ -321,6 +329,58 @@ impl Wallet {
     /// Get transaction history size.
     pub fn transaction_count(&self) -> u64 {
         self.history.leaf_count
+    }
+
+    /// Update account balance.
+    pub fn update_balance(&mut self, account_index: u32, new_balance: u64) -> Result<()> {
+        let account = self
+            .accounts
+            .iter_mut()
+            .find(|a| a.index() == account_index)
+            .ok_or_else(|| WalletError::AccountNotFound(format!("Account {}", account_index)))?;
+
+        account.set_balance(new_balance);
+        self.metadata.modified_at = chrono::Utc::now().timestamp() as u64;
+        Ok(())
+    }
+
+    /// Get account balance.
+    pub fn get_balance(&self, account_index: u32) -> Result<u64> {
+        let account = self
+            .accounts
+            .iter()
+            .find(|a| a.index() == account_index)
+            .ok_or_else(|| WalletError::AccountNotFound(format!("Account {}", account_index)))?;
+
+        Ok(account.balance())
+    }
+
+    /// Get total wallet balance across all accounts.
+    pub fn total_balance(&self) -> u64 {
+        self.accounts.iter().map(|a| a.balance()).sum()
+    }
+
+    /// Generate a transaction proof for a specific leaf in the MMR.
+    pub fn prove_transaction(&self, leaf_index: u64) -> Result<origin_proof::mmr::MembershipProof> {
+        if leaf_index >= self.history.leaf_count {
+            return Err(WalletError::Transaction(format!(
+                "Leaf index {} out of range ({} leaves)",
+                leaf_index, self.history.leaf_count
+            )));
+        }
+
+        self.history
+            .prove(leaf_index)
+            .map_err(|e| WalletError::Transaction(e))
+    }
+
+    /// Verify a transaction proof against the current MMR root.
+    pub fn verify_transaction_proof(
+        &self,
+        proof: &origin_proof::mmr::MembershipProof,
+    ) -> Result<bool> {
+        let root = self.history.root();
+        Ok(self.history.verify_proof(proof, &root))
     }
 }
 
@@ -377,10 +437,126 @@ mod tests {
 
     #[test]
     fn test_account_derivation() {
-        let wallet = Wallet::create("test-passphrase").unwrap();
+        let mut wallet = Wallet::create("test-passphrase").unwrap();
         let account = wallet.derive_account(0).unwrap();
 
         assert_eq!(account.index(), 0);
         assert!(!account.address().to_bech32().unwrap().is_empty());
+    }
+
+    #[test]
+    fn test_balance_tracking() {
+        let mut wallet = Wallet::create("test-passphrase").unwrap();
+        wallet.derive_account(0).unwrap();
+
+        // Initial balance should be 0
+        assert_eq!(wallet.get_balance(0).unwrap(), 0);
+        assert_eq!(wallet.total_balance(), 0);
+
+        // Update balance
+        wallet.update_balance(0, 1000).unwrap();
+        assert_eq!(wallet.get_balance(0).unwrap(), 1000);
+        assert_eq!(wallet.total_balance(), 1000);
+
+        // Update again
+        wallet.update_balance(0, 2500).unwrap();
+        assert_eq!(wallet.get_balance(0).unwrap(), 2500);
+        assert_eq!(wallet.total_balance(), 2500);
+    }
+
+    #[test]
+    fn test_multi_account_balance() {
+        let mut wallet = Wallet::create("test-passphrase").unwrap();
+
+        // Create multiple accounts
+        wallet.derive_account(0).unwrap();
+        wallet.derive_account(1).unwrap();
+        wallet.derive_account(2).unwrap();
+
+        // Set different balances
+        wallet.update_balance(0, 1000).unwrap();
+        wallet.update_balance(1, 2000).unwrap();
+        wallet.update_balance(2, 3000).unwrap();
+
+        // Total should be sum of all
+        assert_eq!(wallet.total_balance(), 6000);
+    }
+
+    #[test]
+    fn test_balance_persistence() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("wallet.dat");
+
+        // Create wallet with balance
+        let mut wallet = Wallet::create("test-passphrase").unwrap();
+        wallet.derive_account(0).unwrap();
+        wallet.update_balance(0, 12345).unwrap();
+        wallet.save(&path, "test-passphrase").unwrap();
+
+        // Load and verify balance persists
+        let loaded = Wallet::open(&path, "test-passphrase").unwrap();
+        assert_eq!(loaded.get_balance(0).unwrap(), 12345);
+        assert_eq!(loaded.total_balance(), 12345);
+    }
+
+    #[test]
+    fn test_balance_nonexistent_account() {
+        let mut wallet = Wallet::create("test-passphrase").unwrap();
+
+        // Try to update non-existent account
+        let result = wallet.update_balance(999, 1000);
+        assert!(result.is_err());
+
+        // Try to get balance of non-existent account
+        let result = wallet.get_balance(999);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_transaction_history() {
+        let mut wallet = Wallet::create("test-passphrase").unwrap();
+        let account = wallet.derive_account(0).unwrap();
+
+        // Initial history should be empty
+        assert_eq!(wallet.transaction_count(), 0);
+
+        // Create and add transactions
+        for i in 0..10 {
+            let from = account.address().clone();
+            let to = account.address().clone();
+            let tx = crate::transaction::Transaction::new(&from, &to, 100 * (i + 1), 10, i as u64);
+            wallet.add_transaction(&tx).unwrap();
+        }
+
+        // History should have 10 transactions
+        assert_eq!(wallet.transaction_count(), 10);
+    }
+
+    #[test]
+    fn test_transaction_proof() {
+        let mut wallet = Wallet::create("test-passphrase").unwrap();
+        let account = wallet.derive_account(0).unwrap();
+
+        // Add a transaction
+        let from = account.address().clone();
+        let to = account.address().clone();
+        let tx = crate::transaction::Transaction::new(&from, &to, 1000, 10, 0);
+        wallet.add_transaction(&tx).unwrap();
+
+        // Generate proof
+        let proof = wallet.prove_transaction(0).unwrap();
+
+        // Verify proof
+        let valid = wallet.verify_transaction_proof(&proof).unwrap();
+        assert!(valid);
+    }
+
+    #[test]
+    fn test_transaction_proof_invalid_index() {
+        let wallet = Wallet::create("test-passphrase").unwrap();
+
+        // Try to prove non-existent leaf
+        let result = wallet.prove_transaction(0);
+        assert!(result.is_err());
     }
 }

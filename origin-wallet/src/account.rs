@@ -114,6 +114,11 @@ impl Account {
         self.balance = balance;
     }
 
+    /// Set nonce.
+    pub fn set_nonce(&mut self, nonce: u64) {
+        self.nonce = nonce;
+    }
+
     /// Increment nonce.
     pub fn increment_nonce(&mut self) {
         self.nonce += 1;
@@ -144,6 +149,16 @@ impl Account {
                 .map_err(|_| WalletError::KeyDerivation("Invalid Ed25519 key length".into()))?,
         );
         Ok(*sk.verifying_key().as_bytes())
+    }
+
+    /// Get Ed25519 secret key bytes.
+    pub fn ed25519_sk(&self) -> &[u8] {
+        &self.ed25519_sk
+    }
+
+    /// Get Falcon-1024 secret key bytes.
+    pub fn falcon_sk(&self) -> &[u8] {
+        &self.falcon_sk
     }
 
     /// Generate a stealth address for one-time payments.
