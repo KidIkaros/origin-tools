@@ -415,4 +415,65 @@ mod tests {
         // Size should be > 0
         assert!(size > 0);
     }
+
+    #[test]
+    fn test_stealth_address_generation() {
+        let wallet = create_test_wallet();
+        let account = wallet.derive_account(0).unwrap();
+
+        // Check that stealth support is enabled
+        assert!(account.has_stealth_support());
+
+        // Generate stealth addresses at different indices
+        let stealth0 = account.generate_stealth_address(0).unwrap();
+        let stealth1 = account.generate_stealth_address(1).unwrap();
+        let stealth2 = account.generate_stealth_address(2).unwrap();
+
+        // Each stealth address should be unique
+        assert_ne!(stealth0.address, stealth1.address);
+        assert_ne!(stealth1.address, stealth2.address);
+        assert_ne!(stealth0.address, stealth2.address);
+
+        // Each stealth address should have different keys
+        assert_ne!(stealth0.spending_secret, stealth1.spending_secret);
+        assert_ne!(stealth0.viewing_secret, stealth1.viewing_secret);
+        assert_ne!(stealth0.ephemeral_secret, stealth1.ephemeral_secret);
+
+        // Indices should match
+        assert_eq!(stealth0.index, 0);
+        assert_eq!(stealth1.index, 1);
+        assert_eq!(stealth2.index, 2);
+    }
+
+    #[test]
+    fn test_stealth_address_deterministic() {
+        let wallet = create_test_wallet();
+        let account = wallet.derive_account(0).unwrap();
+
+        // Generate same stealth address twice
+        let stealth1 = account.generate_stealth_address(5).unwrap();
+        let stealth2 = account.generate_stealth_address(5).unwrap();
+
+        // Should be identical
+        assert_eq!(stealth1.address, stealth2.address);
+        assert_eq!(stealth1.spending_secret, stealth2.spending_secret);
+        assert_eq!(stealth1.viewing_secret, stealth2.viewing_secret);
+        assert_eq!(stealth1.ephemeral_secret, stealth2.ephemeral_secret);
+    }
+
+    #[test]
+    fn test_stealth_address_is_valid() {
+        let wallet = create_test_wallet();
+        let account = wallet.derive_account(0).unwrap();
+
+        let stealth = account.generate_stealth_address(0).unwrap();
+
+        // Address should be valid Bech32
+        let addr_str = stealth.address.to_bech32().unwrap();
+        assert!(addr_str.starts_with("origin1"));
+
+        // Address should be decodable
+        let decoded = crate::address::Address::from_bech32(&addr_str).unwrap();
+        assert_eq!(decoded.hash(), stealth.address.hash());
+    }
 }

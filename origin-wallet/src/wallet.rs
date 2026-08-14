@@ -258,16 +258,28 @@ impl Wallet {
         let address =
             Address::from_ed25519(&ed_sk.verifying_key(), AddressType::Bech32, Network::Mainnet);
 
-        let account = Account::new(
+        // Derive stealth master keys for this account
+        let stealth_domain = format!("wallet:account:{}:stealth", index);
+        let stealth_seed = self
+            .seed_handle
+            .derive_key(&stealth_domain, "stealth-master", 32)
+            .ok_or_else(|| WalletError::KeyDerivation("Stealth seed derivation failed".into()))?;
+
+        let mut stealth_seed_array = [0u8; 32];
+        stealth_seed_array.copy_from_slice(&stealth_seed);
+        let stealth_handle = origin_crypto_sdk::seed::SeedHandle::new(&stealth_seed_array, None);
+
+        let stealth_master = origin_crypto_sdk::stealth::kdf::derive_stealth_master(&stealth_handle)
+            .map_err(|e| WalletError::KeyDerivation(e.to_string()))?;
+
+        let account = Account::with_stealth(
             format!("Account {}", index),
             index,
             ed_key,
             falcon_sk.as_bytes().to_vec(),
             address,
+            stealth_master,
         );
-
-        // Store the Falcon public key for verification
-        // For now, we'll need to add this to the Account struct later
 
         Ok(account)
     }

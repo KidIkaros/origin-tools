@@ -6,6 +6,21 @@ use crate::address::{Address, AddressType, Network};
 use crate::error::{Result, WalletError};
 use origin_crypto_sdk::signing::hybrid::Ed25519Falcon1024;
 
+/// Stealth address keys derived for a specific index.
+#[derive(Debug, Clone)]
+pub struct StealthAddress {
+    /// Viewing secret for this address
+    pub viewing_secret: [u8; 32],
+    /// Spending secret for this address
+    pub spending_secret: [u8; 32],
+    /// Ephemeral secret for this address
+    pub ephemeral_secret: [u8; 32],
+    /// The derived address
+    pub address: Address,
+    /// Index used for derivation
+    pub index: u64,
+}
+
 /// An account in the wallet.
 #[derive(Debug, Clone)]
 pub struct Account {
@@ -23,6 +38,8 @@ pub struct Account {
     balance: u64,
     /// Transaction nonce
     nonce: u64,
+    /// Stealth master keys (viewing, spending, ephemeral)
+    stealth_master: Option<origin_crypto_sdk::stealth::kdf::StealthMasterKeys>,
 }
 
 impl Account {
@@ -42,6 +59,28 @@ impl Account {
             address,
             balance: 0,
             nonce: 0,
+            stealth_master: None,
+        }
+    }
+
+    /// Create a new account with stealth master keys.
+    pub fn with_stealth(
+        name: String,
+        index: u32,
+        ed25519_sk: Vec<u8>,
+        falcon_sk: Vec<u8>,
+        address: Address,
+        stealth_master: origin_crypto_sdk::stealth::kdf::StealthMasterKeys,
+    ) -> Self {
+        Self {
+            name,
+            index,
+            ed25519_sk,
+            falcon_sk,
+            address,
+            balance: 0,
+            nonce: 0,
+            stealth_master: Some(stealth_master),
         }
     }
 
@@ -105,6 +144,42 @@ impl Account {
                 .map_err(|_| WalletError::KeyDerivation("Invalid Ed25519 key length".into()))?,
         );
         Ok(*sk.verifying_key().as_bytes())
+    }
+
+    /// Generate a stealth address for one-time payments.
+    ///
+    /// Each call with a different index produces a unique address that can only
+    /// be spent by the holder of the spending secret.
+    pub fn generate_stealth_address(&self, index: u64) -> Result<StealthAddress> {
+        let master = self
+            .stealth_master
+            .as_ref()
+            .ok_or_else(|| WalletError::KeyDerivation("Stealth master keys not initialized".into()))?;
+
+        // Derive stealth keys at the given index
+        let keys = origin_crypto_sdk::stealth::kdf::derive_stealth_at_index(master, index)
+            .map_err(|e| WalletError::KeyDerivation(e.to_string()))?;
+
+        // Generate address from spending secret
+        let spending_sk = ed25519_dalek::SigningKey::from_bytes(&keys.spending_secret);
+        let address = Address::from_ed25519(
+            &spending_sk.verifying_key(),
+            AddressType::Bech32,
+            Network::Mainnet,
+        );
+
+        Ok(StealthAddress {
+            viewing_secret: keys.viewing_secret,
+            spending_secret: keys.spending_secret,
+            ephemeral_secret: keys.ephemeral_secret,
+            address,
+            index,
+        })
+    }
+
+    /// Check if stealth address generation is available.
+    pub fn has_stealth_support(&self) -> bool {
+        self.stealth_master.is_some()
     }
 }
 
