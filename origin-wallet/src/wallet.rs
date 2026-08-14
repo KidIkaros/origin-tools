@@ -36,6 +36,12 @@ impl WalletMetadata {
     }
 }
 
+impl Default for WalletMetadata {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 /// Wallet state for serialization.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 struct WalletState {
@@ -156,27 +162,29 @@ impl Wallet {
         );
 
         // 6. Reconstruct accounts
-        let mut accounts = Vec::new();
-        for acc_data in &state.accounts {
-            let address = Address::from_bech32(&acc_data.address_bech32)?;
-            let mut account = Account::new(
-                acc_data.name.clone(),
-                acc_data.index,
-                acc_data.ed25519_sk.clone(),
-                acc_data.falcon_sk.clone(),
-                address,
-            );
-            // Restore balance and nonce from saved data
-            account.set_balance(acc_data.balance);
-            account.set_nonce(acc_data.nonce);
-            accounts.push(account);
-        }
+        let accounts: Vec<Account> = state
+            .accounts
+            .iter()
+            .map(|acc_data| {
+                let address = Address::from_bech32(&acc_data.address_bech32)?;
+                let mut account = Account::new(
+                    acc_data.name.clone(),
+                    acc_data.index,
+                    acc_data.ed25519_sk.clone(),
+                    acc_data.falcon_sk.clone(),
+                    address,
+                );
+                account.set_balance(acc_data.balance);
+                account.set_nonce(acc_data.nonce);
+                Ok(account)
+            })
+            .collect::<Result<Vec<Account>>>()?;
 
         // 7. Reconstruct MMR from history roots
         let mut history = MmrState::new();
-        for root in &state.history_roots {
+        state.history_roots.iter().for_each(|root| {
             history.append_hash(*root);
-        }
+        });
 
         Ok(Self {
             seed_handle,
@@ -244,7 +252,7 @@ impl Wallet {
         }
 
         // Derive Ed25519 key using HKDF with domain separation
-        let domain = format!("wallet:account:{}", index);
+        let domain = format!("wallet:account:{index}");
 
         // Derive Ed25519 key (32 bytes)
         let ed_key = self
@@ -276,7 +284,7 @@ impl Wallet {
             Address::from_ed25519(&ed_sk.verifying_key(), AddressType::Bech32, Network::Mainnet);
 
         // Derive stealth master keys for this account
-        let stealth_domain = format!("wallet:account:{}:stealth", index);
+        let stealth_domain = format!("wallet:account:{index}:stealth");
         let stealth_seed = self
             .seed_handle
             .derive_key(&stealth_domain, "stealth-master", 32)
@@ -290,7 +298,7 @@ impl Wallet {
             .map_err(|e| WalletError::KeyDerivation(e.to_string()))?;
 
         let account = Account::with_stealth(
-            format!("Account {}", index),
+            format!("Account {index}"),
             index,
             ed_key,
             falcon_sk.as_bytes().to_vec(),
@@ -321,8 +329,8 @@ impl Wallet {
     }
 
     /// Set wallet name.
-    pub fn set_name(&mut self, name: &str) {
-        self.metadata.name = name.to_string();
+    pub fn set_name(&mut self, name: impl Into<String>) {
+        self.metadata.name = name.into();
         self.metadata.modified_at = chrono::Utc::now().timestamp() as u64;
     }
 
@@ -384,7 +392,7 @@ impl Wallet {
 
         self.history
             .prove(leaf_index)
-            .map_err(|e| WalletError::Transaction(e))
+            .map_err(WalletError::Transaction)
     }
 
     /// Verify a transaction proof against the current MMR root.
@@ -544,25 +552,6 @@ impl Wallet {
             history: MmrState::new(),
             metadata: WalletMetadata::new(),
         })
-    }
-
-    /// Derive a shard-specific encryption key.
-    fn derive_shard_key(&self, shard_index: u32) -> Result<[u8; 32]> {
-        let seed_bytes = self
-            .seed_handle
-            .as_bytes()
-            .ok_or(WalletError::SeedExpired)?;
-
-        // HKDF with shard-specific info
-        let mut key = [0u8; 32];
-        let hk = hkdf::Hkdf::<sha2::Sha256>::new(Some(seed_bytes), b"origin-wallet-shard");
-        hk.expand(
-            format!("shard-{}", shard_index).as_bytes(),
-            &mut key,
-        )
-        .map_err(|e| WalletError::KeyDerivation(e.to_string()))?;
-
-        Ok(key)
     }
 }
 
@@ -793,19 +782,5 @@ mod tests {
 
         // First 32 bytes should match (phrase only encodes 32 bytes)
         assert_eq!(&original_seed[..32], &restored_seed[..32]);
-    }
-
-    #[test]
-    fn test_derive_shard_key_deterministic() {
-        let wallet = Wallet::create("test-passphrase").unwrap();
-
-        // Same index should produce same key
-        let key1 = wallet.derive_shard_key(0).unwrap();
-        let key2 = wallet.derive_shard_key(0).unwrap();
-        assert_eq!(key1, key2);
-
-        // Different indices should produce different keys
-        let key3 = wallet.derive_shard_key(1).unwrap();
-        assert_ne!(key1, key3);
     }
 }

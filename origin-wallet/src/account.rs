@@ -45,14 +45,14 @@ pub struct Account {
 impl Account {
     /// Create a new account.
     pub fn new(
-        name: String,
+        name: impl Into<String>,
         index: u32,
         ed25519_sk: Vec<u8>,
         falcon_sk: Vec<u8>,
         address: Address,
     ) -> Self {
         Self {
-            name,
+            name: name.into(),
             index,
             ed25519_sk,
             falcon_sk,
@@ -65,7 +65,7 @@ impl Account {
 
     /// Create a new account with stealth master keys.
     pub fn with_stealth(
-        name: String,
+        name: impl Into<String>,
         index: u32,
         ed25519_sk: Vec<u8>,
         falcon_sk: Vec<u8>,
@@ -73,7 +73,7 @@ impl Account {
         stealth_master: origin_crypto_sdk::stealth::kdf::StealthMasterKeys,
     ) -> Self {
         Self {
-            name,
+            name: name.into(),
             index,
             ed25519_sk,
             falcon_sk,

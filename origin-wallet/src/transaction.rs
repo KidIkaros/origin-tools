@@ -63,8 +63,8 @@ impl Transaction {
         let mut data = Vec::new();
 
         // Serialize fields deterministically
-        data.extend_from_slice(&self.from.to_bech32().unwrap_or_default().as_bytes());
-        data.extend_from_slice(&self.to.to_bech32().unwrap_or_default().as_bytes());
+        data.extend_from_slice(self.from.to_bech32().unwrap_or_default().as_bytes());
+        data.extend_from_slice(self.to.to_bech32().unwrap_or_default().as_bytes());
         data.extend_from_slice(&self.amount.to_le_bytes());
         data.extend_from_slice(&self.fee.to_le_bytes());
         data.extend_from_slice(&self.nonce.to_le_bytes());
@@ -233,7 +233,9 @@ mod tests {
     }
 
     fn create_test_wallet() -> Wallet {
-        Wallet::create("test-passphrase").unwrap()
+        let mut wallet = Wallet::create("test-passphrase").unwrap();
+        wallet.derive_account(0).unwrap();
+        wallet
     }
 
     #[test]
@@ -287,7 +289,7 @@ mod tests {
     #[test]
     fn test_transaction_hybrid_signing() {
         let wallet = create_test_wallet();
-        let account = wallet.derive_account(0).unwrap();
+        let account = wallet.accounts().first().unwrap();
 
         let from = account.address().clone();
         let to = dummy_address();
@@ -308,7 +310,7 @@ mod tests {
     #[test]
     fn test_transaction_verification() {
         let wallet = create_test_wallet();
-        let account = wallet.derive_account(0).unwrap();
+        let account = wallet.accounts().first().unwrap();
 
         let from = account.address().clone();
         let to = dummy_address();
@@ -317,7 +319,7 @@ mod tests {
         tx.sign(&account).unwrap();
 
         // Get public keys
-        let ed_pk = account.ed25519_pk().unwrap();
+        let _ed_pk = account.ed25519_pk().unwrap();
         // For now, we'll test that verification doesn't panic
         // Full verification requires the Falcon public key which we don't store yet
     }
@@ -419,7 +421,7 @@ mod tests {
     #[test]
     fn test_stealth_address_generation() {
         let wallet = create_test_wallet();
-        let account = wallet.derive_account(0).unwrap();
+        let account = wallet.accounts().first().unwrap();
 
         // Check that stealth support is enabled
         assert!(account.has_stealth_support());
@@ -448,7 +450,7 @@ mod tests {
     #[test]
     fn test_stealth_address_deterministic() {
         let wallet = create_test_wallet();
-        let account = wallet.derive_account(0).unwrap();
+        let account = wallet.accounts().first().unwrap();
 
         // Generate same stealth address twice
         let stealth1 = account.generate_stealth_address(5).unwrap();
@@ -464,7 +466,7 @@ mod tests {
     #[test]
     fn test_stealth_address_is_valid() {
         let wallet = create_test_wallet();
-        let account = wallet.derive_account(0).unwrap();
+        let account = wallet.accounts().first().unwrap();
 
         let stealth = account.generate_stealth_address(0).unwrap();
 
