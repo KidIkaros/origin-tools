@@ -226,7 +226,7 @@ impl Wallet {
             return Ok(acc.clone());
         }
 
-        // Derive keys using HKDF with domain separation
+        // Derive Ed25519 key using HKDF with domain separation
         let domain = format!("wallet:account:{}", index);
 
         // Derive Ed25519 key (32 bytes)
@@ -235,11 +235,18 @@ impl Wallet {
             .derive_key(&domain, "ed25519", 32)
             .ok_or_else(|| WalletError::KeyDerivation("Ed25519 derivation failed".into()))?;
 
-        // Derive Falcon-1024 key (1280 bytes)
-        let falcon_key = self
+        // Generate Falcon-1024 keypair from seed
+        // We derive a 32-byte seed for Falcon key generation
+        let falcon_seed = self
             .seed_handle
-            .derive_key(&domain, "falcon1024", 1280)
-            .ok_or_else(|| WalletError::KeyDerivation("Falcon derivation failed".into()))?;
+            .derive_key(&domain, "falcon-seed", 32)
+            .ok_or_else(|| WalletError::KeyDerivation("Falcon seed derivation failed".into()))?;
+
+        let mut seed_array = [0u8; 32];
+        seed_array.copy_from_slice(&falcon_seed);
+
+        let (falcon_pk, falcon_sk) = origin_crypto_sdk::pqc::falcon1024::generate_keypair_from_seed(&seed_array)
+            .map_err(|e| WalletError::KeyDerivation(e.to_string()))?;
 
         // Generate address from Ed25519 public key
         let ed_sk = ed25519_dalek::SigningKey::from_bytes(
@@ -255,9 +262,12 @@ impl Wallet {
             format!("Account {}", index),
             index,
             ed_key,
-            falcon_key,
+            falcon_sk.as_bytes().to_vec(),
             address,
         );
+
+        // Store the Falcon public key for verification
+        // For now, we'll need to add this to the Account struct later
 
         Ok(account)
     }

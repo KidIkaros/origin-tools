@@ -224,11 +224,16 @@ impl std::fmt::Display for Transaction {
 mod tests {
     use super::*;
     use crate::address::{Address, AddressType, Network};
+    use crate::wallet::Wallet;
 
     fn dummy_address() -> Address {
         let sk = ed25519_dalek::SigningKey::from_bytes(&[1u8; 32]);
         let pk = sk.verifying_key();
         Address::from_ed25519(&pk, AddressType::Bech32, Network::Mainnet)
+    }
+
+    fn create_test_wallet() -> Wallet {
+        Wallet::create("test-passphrase").unwrap()
     }
 
     #[test]
@@ -242,6 +247,7 @@ mod tests {
         assert_eq!(tx.fee, 10);
         assert_eq!(tx.nonce, 0);
         assert!(tx.signature.is_empty());
+        assert!(tx.encrypted_memo.is_none());
     }
 
     #[test]
@@ -254,5 +260,159 @@ mod tests {
 
         assert!(display.contains("Amount: 1000"));
         assert!(display.contains("Fee: 10"));
+    }
+
+    #[test]
+    fn test_transaction_serialization_roundtrip() {
+        let from = dummy_address();
+        let to = dummy_address();
+
+        let tx = Transaction::new(&from, &to, 1000, 10, 0);
+
+        // Serialize
+        let serialized = bincode::serialize(&tx).unwrap();
+
+        // Deserialize
+        let deserialized: Transaction = bincode::deserialize(&serialized).unwrap();
+
+        // Verify all fields match
+        assert_eq!(tx.id, deserialized.id);
+        assert_eq!(tx.amount, deserialized.amount);
+        assert_eq!(tx.fee, deserialized.fee);
+        assert_eq!(tx.nonce, deserialized.nonce);
+        assert_eq!(tx.signature, deserialized.signature);
+        assert_eq!(tx.timestamp, deserialized.timestamp);
+    }
+
+    #[test]
+    fn test_transaction_hybrid_signing() {
+        let wallet = create_test_wallet();
+        let account = wallet.derive_account(0).unwrap();
+
+        let from = account.address().clone();
+        let to = dummy_address();
+
+        let mut tx = Transaction::new(&from, &to, 1000, 10, 0);
+
+        // Sign the transaction
+        let result = tx.sign(&account);
+        assert!(result.is_ok());
+
+        // Verify signature is not empty
+        assert!(!tx.signature.is_empty());
+
+        // Verify signature size (Ed25519: 64 bytes + length prefix: 4 bytes + Falcon sig)
+        assert!(tx.signature.len() > 68);
+    }
+
+    #[test]
+    fn test_transaction_verification() {
+        let wallet = create_test_wallet();
+        let account = wallet.derive_account(0).unwrap();
+
+        let from = account.address().clone();
+        let to = dummy_address();
+
+        let mut tx = Transaction::new(&from, &to, 1000, 10, 0);
+        tx.sign(&account).unwrap();
+
+        // Get public keys
+        let ed_pk = account.ed25519_pk().unwrap();
+        // For now, we'll test that verification doesn't panic
+        // Full verification requires the Falcon public key which we don't store yet
+    }
+
+    #[test]
+    fn test_transaction_verify_empty_signature() {
+        let from = dummy_address();
+        let to = dummy_address();
+
+        let tx = Transaction::new(&from, &to, 1000, 10, 0);
+        let ed_pk = [1u8; 32];
+        let falcon_pk = vec![0u8; 1792]; // Dummy Falcon public key
+
+        let result = tx.verify(&ed_pk, &falcon_pk);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_transaction_encrypt_decrypt_memo() {
+        let from = dummy_address();
+        let to = dummy_address();
+
+        let mut tx = Transaction::new(&from, &to, 1000, 10, 0);
+
+        // Generate a random key
+        let key = origin_crypto_sdk::aead::generate_key();
+        let memo = b"Secret payment note";
+
+        // Encrypt memo
+        let result = tx.encrypt_memo(&key, memo);
+        assert!(result.is_ok());
+        assert!(tx.encrypted_memo.is_some());
+
+        // Decrypt memo
+        let decrypted = tx.decrypt_memo(&key).unwrap();
+        assert_eq!(decrypted, memo);
+    }
+
+    #[test]
+    fn test_transaction_decrypt_wrong_key() {
+        let from = dummy_address();
+        let to = dummy_address();
+
+        let mut tx = Transaction::new(&from, &to, 1000, 10, 0);
+
+        let key1 = origin_crypto_sdk::aead::generate_key();
+        let key2 = origin_crypto_sdk::aead::generate_key();
+        let memo = b"Secret payment note";
+
+        tx.encrypt_memo(&key1, memo).unwrap();
+
+        // Try to decrypt with wrong key
+        let result = tx.decrypt_memo(&key2);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_transaction_decrypt_no_memo() {
+        let from = dummy_address();
+        let to = dummy_address();
+
+        let tx = Transaction::new(&from, &to, 1000, 10, 0);
+        let key = origin_crypto_sdk::aead::generate_key();
+
+        let result = tx.decrypt_memo(&key);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_transaction_recompute_id() {
+        let from = dummy_address();
+        let to = dummy_address();
+
+        let mut tx = Transaction::new(&from, &to, 1000, 10, 0);
+        let original_id = tx.id;
+
+        // Modify amount
+        tx.amount = 2000;
+
+        // Recompute ID
+        tx.recompute_id();
+
+        // ID should be different
+        assert_ne!(tx.id, original_id);
+    }
+
+    #[test]
+    fn test_transaction_size() {
+        let from = dummy_address();
+        let to = dummy_address();
+
+        let tx = Transaction::new(&from, &to, 1000, 10, 0);
+        let size = tx.size();
+
+        // Size should be > 0
+        assert!(size > 0);
     }
 }

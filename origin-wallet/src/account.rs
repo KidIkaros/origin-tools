@@ -15,7 +15,7 @@ pub struct Account {
     index: u32,
     /// Ed25519 signing key (32 bytes)
     ed25519_sk: Vec<u8>,
-    /// Falcon-1024 signing key (1280 bytes)
+    /// Falcon-1024 signing key (2305 bytes)
     falcon_sk: Vec<u8>,
     /// Derived address
     address: Address,
