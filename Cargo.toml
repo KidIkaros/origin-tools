@@ -18,6 +18,7 @@ members = [
     "origin-network",
     "origin-archive",
     "origin-cross-tests",
+    "origin-wallet",
 ]
 exclude = ["fuzz"]
 resolver = "2"
