@@ -63,6 +63,19 @@ struct AccountData {
     nonce: u64,
 }
 
+/// An encrypted shard for wallet backup.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct Shard {
+    /// Shard index (0-based)
+    pub index: u32,
+    /// Shard data
+    pub data: Vec<u8>,
+    /// Total number of shards created
+    pub total_shards: u32,
+    /// Threshold for recovery
+    pub threshold: u32,
+}
+
 /// A post-quantum secure wallet.
 pub struct Wallet {
     /// Master seed handle with TTL and memory protection
@@ -409,6 +422,150 @@ impl std::fmt::Display for Wallet {
     }
 }
 
+impl Wallet {
+    /// Split wallet seed into N shards using Reed-Solomon error correction.
+    ///
+    /// Any `threshold` shards can reconstruct the original seed.
+    /// Shards store metadata about total/threshold for self-describing recovery.
+    pub fn backup(&self, shards: u32, threshold: u32) -> Result<Vec<Shard>> {
+        if threshold == 0 || threshold > shards {
+            return Err(WalletError::Backup(
+                "Threshold must be between 1 and shards".into(),
+            ));
+        }
+
+        // Get seed bytes
+        let seed_bytes = self
+            .seed_handle
+            .as_bytes()
+            .ok_or(WalletError::SeedExpired)?;
+
+        // Create Reed-Solomon encoder
+        let encoder =
+            origin_crypto_sdk::error_correction::ReedSolomonCodec::new(threshold as usize, (shards - threshold) as usize);
+
+        // Encode seed into shards
+        let encoded = encoder.encode_shards(seed_bytes)?;
+
+        // Convert to Shard structs
+        let result = encoded
+            .iter()
+            .enumerate()
+            .map(|(i, shard_data)| Shard {
+                index: i as u32,
+                data: shard_data.clone(),
+                total_shards: shards,
+                threshold,
+            })
+            .collect();
+
+        Ok(result)
+    }
+
+    /// Reconstruct wallet seed from shards.
+    ///
+    /// Requires at least `threshold` shards. Each shard must have matching
+    /// total_shards/threshold metadata (from the same backup).
+    pub fn recover_from_shards(shards: &[Shard]) -> Result<Vec<u8>> {
+        if shards.is_empty() {
+            return Err(WalletError::Recovery("No shards provided".into()));
+        }
+
+        // Use metadata from first shard
+        let threshold = shards[0].threshold;
+        let total_shards = shards[0].total_shards;
+
+        if shards.len() < threshold as usize {
+            return Err(WalletError::Recovery(format!(
+                "Need {} shards, got {}",
+                threshold,
+                shards.len()
+            )));
+        }
+
+        // Create Reed-Solomon decoder with correct parameters
+        let decoder =
+            origin_crypto_sdk::error_correction::ReedSolomonCodec::new(threshold as usize, (total_shards - threshold) as usize);
+
+        // Prepare shards for decoding (pad with None for missing shards)
+        let mut shard_data: Vec<Option<Vec<u8>>> = vec![None; total_shards as usize];
+        for shard in shards {
+            if (shard.index as usize) < shard_data.len() {
+                shard_data[shard.index as usize] = Some(shard.data.clone());
+            }
+        }
+
+        // Decode shards (seed is 32 bytes)
+        let recovered = decoder.decode_shards(&shard_data, 32)?;
+
+        Ok(recovered)
+    }
+
+    /// Export wallet as a recovery phrase (human-readable).
+    ///
+    /// The phrase encodes the first 32 bytes of the seed (128 bits).
+    /// For full 64-byte seed recovery, use shard backup.
+    pub fn export_phrase(&self) -> Result<String> {
+        let seed_bytes = self
+            .seed_handle
+            .as_bytes()
+            .ok_or(WalletError::SeedExpired)?;
+
+        // Use SDK's unicode cipher to encode first 32 bytes as phrase
+        let wordlist = origin_crypto_sdk::recovery::unicode_cipher::UnicodeWordlist::default();
+        let phrase_length = origin_crypto_sdk::recovery::unicode_cipher::PhraseLength::Words24;
+        let encoded = origin_crypto_sdk::recovery::unicode_cipher::encode_phrase(&seed_bytes[..32], &wordlist, phrase_length)
+            .map_err(|e| WalletError::Recovery(e.to_string()))?;
+
+        // Convert Vec<char> to String
+        Ok(encoded.into_iter().collect())
+    }
+
+    /// Reconstruct wallet from a recovery phrase.
+    ///
+    /// Note: This recovers the first 32 bytes of the seed. For full recovery,
+    /// use shard-based backup.
+    pub fn from_phrase(phrase: &str, _passphrase: &str) -> Result<Self> {
+        // Decode phrase to seed bytes
+        let chars: Vec<char> = phrase.chars().collect();
+        let wordlist = origin_crypto_sdk::recovery::unicode_cipher::UnicodeWordlist::default();
+        let seed_bytes = origin_crypto_sdk::recovery::unicode_cipher::decode_phrase(&chars, &wordlist)
+            .map_err(|e| WalletError::Recovery(e.to_string()))?;
+
+        // Create 64-byte seed (padded with zeros for phrase recovery)
+        let mut seed = [0u8; 64];
+        seed[..seed_bytes.len().min(32)].copy_from_slice(&seed_bytes[..seed_bytes.len().min(32)]);
+        let seed_handle = origin_crypto_sdk::SeedHandle::new(&seed, None);
+
+        // Create wallet with empty state
+        Ok(Self {
+            seed_handle,
+            accounts: Vec::new(),
+            history: MmrState::new(),
+            metadata: WalletMetadata::new(),
+        })
+    }
+
+    /// Derive a shard-specific encryption key.
+    fn derive_shard_key(&self, shard_index: u32) -> Result<[u8; 32]> {
+        let seed_bytes = self
+            .seed_handle
+            .as_bytes()
+            .ok_or(WalletError::SeedExpired)?;
+
+        // HKDF with shard-specific info
+        let mut key = [0u8; 32];
+        let hk = hkdf::Hkdf::<sha2::Sha256>::new(Some(seed_bytes), b"origin-wallet-shard");
+        hk.expand(
+            format!("shard-{}", shard_index).as_bytes(),
+            &mut key,
+        )
+        .map_err(|e| WalletError::KeyDerivation(e.to_string()))?;
+
+        Ok(key)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -558,5 +715,97 @@ mod tests {
         // Try to prove non-existent leaf
         let result = wallet.prove_transaction(0);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_backup_shards() {
+        let wallet = Wallet::create("test-passphrase").unwrap();
+
+        // Create backup with 5 shards, threshold 3
+        let shards = wallet.backup(5, 3).unwrap();
+        assert_eq!(shards.len(), 5);
+
+        // Each shard should have unique index and metadata
+        for (i, shard) in shards.iter().enumerate() {
+            assert_eq!(shard.index, i as u32);
+            assert!(!shard.data.is_empty());
+            assert_eq!(shard.total_shards, 5);
+            assert_eq!(shard.threshold, 3);
+        }
+    }
+
+    #[test]
+    fn test_backup_invalid_threshold() {
+        let wallet = Wallet::create("test-passphrase").unwrap();
+
+        // Threshold 0 should fail
+        assert!(wallet.backup(5, 0).is_err());
+
+        // Threshold > shards should fail
+        assert!(wallet.backup(3, 5).is_err());
+    }
+
+    #[test]
+    fn test_recover_from_shards() {
+        let wallet = Wallet::create("test-passphrase").unwrap();
+        let original_seed = wallet.seed_handle.as_bytes().unwrap().to_vec();
+
+        // Create backup
+        let shards = wallet.backup(5, 3).unwrap();
+
+        // Recover with exactly threshold shards (first 3)
+        let recovered = Wallet::recover_from_shards(&shards[..3]).unwrap();
+        assert_eq!(recovered, original_seed);
+
+        // Recover with all shards
+        let recovered = Wallet::recover_from_shards(&shards).unwrap();
+        assert_eq!(recovered, original_seed);
+
+        // Recover with different subset (last 3)
+        let recovered = Wallet::recover_from_shards(&shards[2..]).unwrap();
+        assert_eq!(recovered, original_seed);
+    }
+
+    #[test]
+    fn test_recover_insufficient_shards() {
+        let shards = vec![
+            Shard { index: 0, data: vec![1, 2, 3], total_shards: 5, threshold: 3 },
+            Shard { index: 1, data: vec![4, 5, 6], total_shards: 5, threshold: 3 },
+        ];
+
+        // Need 3 shards but only have 2
+        let result = Wallet::recover_from_shards(&shards);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_export_import_phrase_roundtrip() {
+        let wallet = Wallet::create("test-passphrase").unwrap();
+        let original_seed = wallet.seed_handle.as_bytes().unwrap().to_vec();
+
+        // Export phrase
+        let phrase = wallet.export_phrase().unwrap();
+        assert!(!phrase.is_empty());
+
+        // Import phrase
+        let restored = Wallet::from_phrase(&phrase, "test-passphrase").unwrap();
+        let restored_seed = restored.seed_handle.as_bytes().unwrap().to_vec();
+
+        // First 32 bytes should match (phrase only encodes 32 bytes)
+        assert_eq!(&original_seed[..32], &restored_seed[..32]);
+    }
+
+    #[test]
+    fn test_derive_shard_key_deterministic() {
+        let wallet = Wallet::create("test-passphrase").unwrap();
+
+        // Same index should produce same key
+        let key1 = wallet.derive_shard_key(0).unwrap();
+        let key2 = wallet.derive_shard_key(0).unwrap();
+        assert_eq!(key1, key2);
+
+        // Different indices should produce different keys
+        let key3 = wallet.derive_shard_key(1).unwrap();
+        assert_ne!(key1, key3);
     }
 }

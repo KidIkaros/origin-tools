@@ -40,7 +40,7 @@ pub use account::Account;
 pub use address::{Address, AddressType, Network};
 pub use error::{Result, WalletError};
 pub use transaction::Transaction;
-pub use wallet::Wallet;
+pub use wallet::{Shard, Wallet};
 
 // Version information
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
