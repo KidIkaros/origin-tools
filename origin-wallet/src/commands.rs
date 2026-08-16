@@ -732,7 +732,13 @@ fn cmd_discover(
         println!("  #{} {}", i + 1, hit.service);
         println!("     payment : {}", hit.payment);
         println!("     profile : {}", hit.profile);
-        println!("     cosine  : {:.3}   trust: {:.3}", hit.cosine, hit.trust);
+        println!(
+            "     cosine  : {:.3}   trust: {:.3}   score: {:.3}",
+            hit.cosine,
+            hit.trust,
+            hit.score
+        );
+        println!("               (score = cosine × trust — the ranking key)");
     }
 
     if let Some(room) = room {
