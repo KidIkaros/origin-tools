@@ -83,6 +83,13 @@ mesh: it gossips heartbeats, syncs registries, and carries payments,
 discovery, and mail. There is no separate daemon — the node lives for the
 duration of each command.
 
+> **Automation**: every command accepts `--passphrase <p>` to skip the
+> interactive prompt (`rpassword` reads the TTY, so scripts and spawned
+> processes can't pipe it). Use it only where the passphrase can't be
+> observed — process lists and shell history are visible to local users.
+> The wallet file itself stays encrypted; the flag only supplies the
+> unlock key.
+
 ### Pay on the native rail
 
 ```bash

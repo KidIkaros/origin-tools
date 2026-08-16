@@ -1,8 +1,10 @@
 # Stoa Mesh API coverage — origin-wallet
 
-Status: **audited 2026-08-16** against stoa `a419f0c`. This is the
-definitive map of what the wallet's network surface (`network.rs`) exposes
-from the full `stoa::Mesh` API — and the deliberate gaps.
+Status: **audited 2026-08-16** against stoa `a419f0c` (re-audited
+2026-08-16: the Mesh API is unchanged — this round touched only stoa
+tests/docs). This is the definitive map of what the wallet's network
+surface (`network.rs`) exposes from the full `stoa::Mesh` API — and the
+deliberate gaps.
 
 ## Exposed
 
@@ -43,8 +45,6 @@ CLI deliberately does not surface them:
 - **Raw DHT / rendezvous** — `put`, `get`, `register`, `query`,
   `resolve_relay_hint`. Used *inside* discovery and relay logic; no
   command-line JSON spelunking.
-- **Relay abuse control** — `relay_evict`, `relay_pardon`, `relay_stats`.
-  The relay operator's moderation surface; no CLI yet (see below).
 - **Pulse / liveness** — `pulse`, `pulse_live`, `pulse_stale`. Consumed
   as metrics in `network status`; the registry itself is node-internal.
 - **Registry sync control** — `sync_registries`, `set_sync_interval`.
@@ -85,3 +85,29 @@ Also added: a global `--passphrase` flag for non-interactive use
 `origin-wallet relay serve` binary is spawned as a child process and a
 wallet pays through it — the payee ingests the receipt with no direct
 payer→payee link, then the channel settles with time-boxed finality.
+
+## Re-audit (2026-08-16) — surface is complete for the human layer
+
+Re-checked against the full `stoa::Mesh` API: nothing new landed in stoa
+since `a419f0c` (the fuzz campaign and the eviction-teardown test are
+stoa-side, no API change), and the wallet exposes every human-facing
+capability. The remaining not-exposed rows are all deliberate: the
+agent-economy decision core (endorsements, disputes, reputation, spent
+claims), raw DHT/rendezvous plumbing, and multi-rail pay.
+
+**Next additions (in priority order):**
+
+1. **`network sync`** — bind the node and force `sync_registries` on
+   demand. Today the 60 s sync cadence (SPEC §6.2) is the delivery path
+   for `pay --relay` receipts and inbound mail; a manual "pull now"
+   command closes the latency gap for a human waiting on a payment
+   that's already on the relay. Cheap: one command wrapping the existing
+   `sync_registries` call, no new stoa API.
+2. **Multi-rail pay** (`pay_stealth` / `pay_service` over the test-rail
+   x402/ACP paths) — the only remaining product-shaped gap, and it is
+   deliberately deferred: routing a wallet `pay` over HTTP rails needs
+   credential handling the CLI doesn't have yet. Pull when standing-
+   network rails exist.
+3. **Nothing further** — endorsements/disputes/reputation stay in stoa
+   (they run inside the node, ingesting gossip); surfacing them as CLI
+   commands would invite mistakes a wallet user can't audit.
