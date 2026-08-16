@@ -1458,10 +1458,14 @@ dependencies = [
 name = "origin-canary"
 version = "0.1.0"
 dependencies = [
+ "clap",
+ "ed25519-dalek",
  "hex",
  "origin-crypto-sdk",
+ "rpassword",
  "serde",
  "serde_json",
+ "tempfile",
 ]
 
 [[package]]
