@@ -55,6 +55,12 @@ struct Cli {
     /// Wallet file path (default: wallet.dat)
     #[arg(short, long, global = true, default_value = "wallet.dat")]
     file: PathBuf,
+
+    /// Passphrase on the command line (non-interactive use: scripts, CI,
+    /// tests). Omitted from shell history where possible; prefer the
+    /// interactive prompt when a human is at the terminal.
+    #[arg(short, long, global = true, hide_env_values = true)]
+    passphrase: Option<String>,
 }
 
 #[derive(Subcommand)]
@@ -121,11 +127,17 @@ enum Commands {
     /// wallet's Stoa node, connect to the counterparty, open a channel,
     /// stream the payment, and record it in the wallet's MMR history.
     /// With --relay, pay through the relay instead of dialing the
-    /// counterparty directly (A→relay→C).
+    /// counterparty directly (A→relay→C). With --service, pay a
+    /// discovered service's published payment address (the "call this
+    /// provider" action).
     Pay {
         /// Counterparty MeshId (64 hex chars)
         #[arg(long)]
-        to: String,
+        to: Option<String>,
+        /// A discovered service's MeshId — resolves its signed record
+        /// (local cache or DHT) and pays its payment address
+        #[arg(long)]
+        service: Option<String>,
         /// Amount in the smallest unit
         #[arg(long)]
         amount: u64,
@@ -147,6 +159,20 @@ enum Commands {
         memo: Option<String>,
     },
 
+    /// Settle a channel toward a counterparty (SPEC §10.3 — time-boxed
+    /// finality): record the total paid out as an ENTRY_SETTLE. The
+    /// peer's symmetric settle is the double-entry leg; finality is 60 s
+    /// with no counter-evidence.
+    Settle {
+        /// Counterparty MeshId (64 hex chars)
+        #[arg(long)]
+        to: String,
+        /// The counterparty node's dial address (host:port), optional —
+        /// for the gossip + sync delivery of the settle entry
+        #[arg(long)]
+        peer_addr: Option<SocketAddr>,
+    },
+
     /// Stoa network operations (the embedded P2P node, INTEGRATION.md §4)
     Network {
         #[command(subcommand)]
@@ -161,16 +187,12 @@ enum Commands {
         from: Option<String>,
     },
 
-    /// Opt this wallet's node into serving as a circuit relay
-    /// (INTEGRATION.md step 5 — "help the network", off by default).
-    /// Serves until Ctrl-C.
+    /// Relay operations: serve circuits (the "help the network" toggle),
+    /// or manage the relay's abuse-control state — stats, evictions,
+    /// pardons (RELAY.md §9).
     Relay {
-        /// Stealth-PoW difficulty for the relay's cookie gate (RELAY.md §9)
-        #[arg(long, default_value_t = 16)]
-        difficulty: u32,
-        /// STUN server for punch-candidate refresh (host:port)
-        #[arg(long, default_value = "stun.l.google.com:19302")]
-        stun_server: String,
+        #[command(subcommand)]
+        command: RelayCommands,
     },
 
     /// Discover services on the mesh, ranked by semantic fit × trust
@@ -212,6 +234,42 @@ enum Commands {
     Chat {
         #[command(subcommand)]
         command: ChatCommands,
+    },
+}
+
+#[derive(Subcommand)]
+enum RelayCommands {
+    /// Opt this wallet's node into serving as a circuit relay
+    /// (INTEGRATION.md step 5 — "help the network", off by default).
+    /// Serves until Ctrl-C.
+    Serve {
+        /// Stealth-PoW difficulty for the relay's cookie gate (RELAY.md §9)
+        #[arg(long, default_value_t = 16)]
+        difficulty: u32,
+        /// STUN server for punch-candidate refresh (host:port)
+        #[arg(long, default_value = "stun.l.google.com:19302")]
+        stun_server: String,
+        /// Bind address (default: an ephemeral port on all interfaces —
+        /// pin one for automation/tests so the port is known in advance)
+        #[arg(long, default_value = "0.0.0.0:0")]
+        addr: std::net::SocketAddr,
+    },
+    /// Show the relay's abuse-control state: live circuits, validated
+    /// clients, eviction set size, challenges issued (RELAY.md §9).
+    Stats,
+    /// Evict a client: revoke its circuits and refuse future opens.
+    /// Persists across restarts.
+    Evict {
+        /// The client's MeshId (64 hex chars)
+        #[arg(long)]
+        peer: String,
+    },
+    /// Pardon a client: remove it from the eviction set (and clear its
+    /// strikes). Persists across restarts.
+    Pardon {
+        /// The client's MeshId (64 hex chars)
+        #[arg(long)]
+        peer: String,
     },
 }
 

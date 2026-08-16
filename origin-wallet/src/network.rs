@@ -659,6 +659,106 @@ pub async fn serve_relay(
     Ok(mesh)
 }
 
+/// Pay a *discovered service* (INTEGRATION.md §5 — the "call this
+/// provider" action): bind this wallet's node, resolve the service's
+/// signed record (local cache or DHT fetch), pay its payment address on
+/// the native rail, and record the receipt in the wallet's MMR history.
+/// Returns `(receipt entry, service record)`.
+pub async fn pay_service(
+    wallet: &mut Wallet,
+    service: stoa::MeshId,
+    peer_addr: Option<SocketAddr>,
+    amount: u64,
+    memo: Vec<u8>,
+) -> Result<(stoa::ledger::LedgerEntry, stoa::ServiceRecord)> {
+    let node_keys = wallet.stoa_node_keys()?;
+    let bind_addr = "0.0.0.0:0"
+        .parse()
+        .map_err(|e: std::net::AddrParseError| WalletError::Network(e.to_string()))?;
+    let (mesh, _) = stoa::Mesh::bind(node_keys.clone(), bind_addr)?;
+
+    if let Some(addr) = peer_addr {
+        let _ = mesh.connect(service, addr).await;
+    }
+    let record = mesh
+        .lookup_service(service)
+        .await
+        .ok_or_else(|| WalletError::Network(format!("no service record for {service} (has it published one?)")))?;
+
+    // Pay the service's payment address on the native rail. The service's
+    // own node (or a relay it hops through) ingests the receipt via
+    // gossip + registry sync — the same delivery as `pay_native`.
+    mesh.open_channel(record.payment, amount.max(1), memo.clone())
+        .await
+        .map_err(|e| WalletError::Network(format!("open channel to {service} failed: {e}")))?;
+    let entry = mesh
+        .stream_payment(record.payment, amount, memo)
+        .await
+        .map_err(|e| WalletError::Network(format!("stream payment to {service} failed: {e}")))?;
+
+    // Record the payment in the wallet's MMR history (recipient = the
+    // service's payment address hash).
+    let sender = Address::from_ed25519(
+        &ed25519_dalek::VerifyingKey::from_bytes(&node_keys.public_keys().0)
+            .map_err(|e| WalletError::KeyDerivation(e.to_string()))?,
+        AddressType::Bech32,
+        Network::Mainnet,
+    );
+    let digest = Sha256::digest(record.payment.as_bytes());
+    let mut to_hash = [0u8; 20];
+    to_hash.copy_from_slice(&digest[..20]);
+    let recipient = Address::from_hash(to_hash, AddressType::Bech32, Network::Mainnet);
+    let tx = Transaction::new(&sender, &recipient, amount, 0, wallet.transaction_count());
+    wallet.add_transaction(&tx)?;
+
+    let _ = mesh.shutdown().await;
+    Ok((entry, record))
+}
+
+/// Settle this wallet's channel toward `counterparty` (SPEC §10.3 —
+/// time-boxed finality): bind, `settle_channel`, and return the signed
+/// `ENTRY_SETTLE` recording the total paid out. The peer's symmetric
+/// settle is the double-entry leg; finality is 60 s with no
+/// counter-evidence.
+pub async fn settle_channel_with(
+    wallet: &Wallet,
+    counterparty: stoa::MeshId,
+    peer_addr: Option<SocketAddr>,
+) -> Result<stoa::ledger::LedgerEntry> {
+    let node_keys = wallet.stoa_node_keys()?;
+    let bind_addr = "0.0.0.0:0"
+        .parse()
+        .map_err(|e: std::net::AddrParseError| WalletError::Network(e.to_string()))?;
+    let (mesh, _) = stoa::Mesh::bind(node_keys, bind_addr)?;
+    if let Some(addr) = peer_addr {
+        let _ = mesh.connect(counterparty, addr).await;
+    }
+    let entry = mesh
+        .settle_channel(counterparty)
+        .await
+        .map_err(|e| WalletError::Network(format!("settle with {counterparty} failed: {e}")))?;
+    let _ = mesh.shutdown().await;
+    Ok(entry)
+}
+
+/// Bind the wallet's node with the relay role *loaded* (its persisted
+/// cookie/eviction state restored from the store) but not advertised —
+/// the shape behind `relay stats` / `relay evict` / `relay pardon`. The
+/// relay serves no circuits here and publishes no hint; the command
+/// mutates state and shuts down (persisting it).
+pub async fn relay_admin(wallet: &Wallet) -> Result<stoa::Mesh> {
+    let node_keys = wallet.stoa_node_keys()?;
+    let bind_addr = "127.0.0.1:0"
+        .parse()
+        .map_err(|e: std::net::AddrParseError| WalletError::Network(e.to_string()))?;
+    let (mesh, _) = stoa::Mesh::bind(node_keys, bind_addr)?;
+    let config = stoa::relay::RelayConfig::default();
+    mesh.serve_relay_with(config)
+        .await
+        .map_err(|e| WalletError::Network(format!("load relay state failed: {e}")))?;
+    Ok(mesh)
+}
+
 /// Fetch a peer's signed service record by MeshId (INTEGRATION.md §5 —
 /// DHT address resolution), caching it in the node for discovery.
 pub async fn lookup_service(
@@ -787,6 +887,174 @@ mod tests {
 
         payee_mesh.shutdown().await.expect("payee shutdown");
         relay_mesh.shutdown().await.expect("relay shutdown");
+    }
+
+    #[tokio::test]
+    async fn relay_admin_evicts_pardons_and_persists() {
+        // The relay operator surface: `relay_admin` loads the relay's
+        // persisted state (no circuits served, no hint published), and
+        // evict/pardon mutate it — surviving a restart through the store.
+        let wallet = Wallet::create("relay-admin-pass").unwrap();
+
+        // The client to evict (a fresh identity).
+        let client_keys = stoa::NodeKeys::generate().unwrap();
+        let client_id = *client_keys.mesh_id();
+
+        // Evict through the admin handle.
+        {
+            let mesh = relay_admin(&wallet).await.expect("admin bind");
+            let removed = mesh.relay_evict(client_id).await.expect("evict");
+            assert_eq!(removed, 0, "no live circuits to revoke (not serving)");
+            let stats = mesh.relay_stats().await;
+            assert_eq!(stats.evicted, 1, "client on the eviction set");
+            mesh.shutdown().await.expect("shutdown persists eviction");
+        }
+
+        // A fresh admin handle (what `relay evict` would be re-run as —
+        // and what a relay restart does) reloads the eviction set: the
+        // client is still evicted. The relay now refuses it.
+        {
+            let mesh = relay_admin(&wallet).await.expect("admin re-bind");
+            let stats = mesh.relay_stats().await;
+            assert_eq!(stats.evicted, 1, "eviction survives the admin handle");
+            mesh.shutdown().await.expect("shutdown");
+        }
+
+        // Pardon: removed from the eviction set, persisted again.
+        {
+            let mesh = relay_admin(&wallet).await.expect("admin re-bind");
+            mesh.relay_pardon(client_id).await.expect("pardon");
+            let stats = mesh.relay_stats().await;
+            assert_eq!(stats.evicted, 0, "pardon clears the eviction set");
+            mesh.shutdown().await.expect("shutdown persists pardon");
+        }
+        {
+            let mesh = relay_admin(&wallet).await.expect("admin re-bind");
+            assert_eq!(mesh.relay_stats().await.evicted, 0, "pardon survives restart");
+            mesh.shutdown().await.expect("shutdown");
+        }
+    }
+
+    #[tokio::test]
+    async fn wallet_pays_service_resolving_its_published_record() {
+        // The "call this provider" action: A pays a discovered service's
+        // *payment address* (resolved from its signed DHT record), not a
+        // hard-coded MeshId.
+        let mut payer = Wallet::create("payer-pass").unwrap();
+
+        // The service: a node that has published a signed ServiceRecord
+        // (its payment address may differ from its identity — here they
+        // coincide for simplicity; the record is the resolution step).
+        let service_keys = stoa::NodeKeys::generate().unwrap();
+        let service_id = *service_keys.mesh_id();
+        let (service_mesh, service_addr) =
+            stoa::Mesh::bind(service_keys.clone(), "127.0.0.1:0".parse().unwrap()).unwrap();
+        let record = stoa::ServiceRecord::sign(
+            &service_keys,
+            service_id,
+            "reliable inference provider".into(),
+            vec!["stoa:cap:inference".into()],
+            stoa::store::unix_now(),
+        )
+        .expect("sign record");
+        service_mesh
+            .publish_service(record.clone())
+            .await
+            .expect("publish service");
+
+        let (entry, got) = pay_service(
+            &mut payer,
+            service_id,
+            Some(service_addr),
+            555,
+            b"call the provider".to_vec(),
+        )
+        .await
+        .expect("pay service");
+
+        assert_eq!(entry.amount, 555);
+        assert_eq!(entry.counterparty, service_id, "paid the service's payment address");
+        assert_eq!(got.service, service_id, "resolved the service record");
+        assert_eq!(got.profile, "reliable inference provider");
+        assert_eq!(payer.transaction_count(), 1, "receipt recorded in the MMR history");
+
+        // The service's node ingests the receipt via gossip.
+        tokio::time::timeout(std::time::Duration::from_secs(30), async {
+            loop {
+                if !service_mesh.ledger_snapshot().await.is_empty() {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("service never ingested the receipt");
+        assert_eq!(service_mesh.ledger_snapshot().await[0].amount, 555);
+    }
+
+    #[tokio::test]
+    async fn wallet_settles_channel_with_timeboxed_finality() {
+        // SPEC §10.3 via the wallet surface: A opens a channel, streams
+        // payments, then settles. The settle entry records the total paid
+        // out, and finality is time-boxed (DISPUTE_WINDOW_SECS) — not
+        // eternal.
+        let mut payer = Wallet::create("payer-pass").unwrap();
+        let payee_keys = stoa::NodeKeys::generate().unwrap();
+        let payee_id = *payee_keys.mesh_id();
+        let (payee_mesh, payee_addr) =
+            stoa::Mesh::bind(payee_keys, "127.0.0.1:0".parse().unwrap()).unwrap();
+
+        // A opens + streams directly (the pay path), then settles.
+        let (mesh, _) = stoa::Mesh::bind(
+            payer.stoa_node_keys().unwrap().clone(),
+            "127.0.0.1:0".parse().unwrap(),
+        )
+        .unwrap();
+        mesh.connect(payee_id, payee_addr).await.expect("connect");
+        mesh.open_channel(payee_id, 10_000, b"line".to_vec())
+            .await
+            .expect("open");
+        mesh.stream_payment(payee_id, 1200, b"work".to_vec())
+            .await
+            .expect("pay");
+        mesh.shutdown().await.expect("shutdown");
+
+        // settle_channel_with binds fresh (what the CLI does) and signs
+        // the ENTRY_SETTLE for the total paid out.
+        let settle = settle_channel_with(&payer, payee_id, Some(payee_addr))
+            .await
+            .expect("settle");
+        assert_eq!(settle.counterparty, payee_id);
+        assert_eq!(settle.amount, 1200, "settle records the total paid out");
+
+        // Time-boxed finality: the settled channel view is final only
+        // after the dispute window passes.
+        let view = {
+            let (mesh, _) = stoa::Mesh::bind(
+                payer.stoa_node_keys().unwrap().clone(),
+                "127.0.0.1:0".parse().unwrap(),
+            )
+            .unwrap();
+            let v = mesh.channel_state(payee_id).await.expect("channel");
+            mesh.shutdown().await.expect("shutdown");
+            v
+        };
+        assert_eq!(view.state, stoa::channel::ChannelState::Settled { total: 1200, ts: settle.ts });
+        assert!(!view.final_at(settle.ts), "not final at settlement time");
+        assert!(
+            view.final_at(settle.ts + stoa::DISPUTE_WINDOW_SECS),
+            "final after the dispute window"
+        );
+
+        // A settled channel rejects further payments.
+        let (mesh, _) = stoa::Mesh::bind(
+            payer.stoa_node_keys().unwrap().clone(),
+            "127.0.0.1:0".parse().unwrap(),
+        )
+        .unwrap();
+        mesh.connect(payee_id, payee_addr).await.expect("connect");
+        assert!(mesh.stream_payment(payee_id, 1, b"after-settle".to_vec()).await.is_err());
+        mesh.shutdown().await.expect("shutdown");
     }
 
     #[tokio::test]

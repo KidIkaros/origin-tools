@@ -16,6 +16,9 @@ from the full `stoa::Mesh` API — and the deliberate gaps.
 | Chat | `subscribe`, `publish` | `chat send` (direct / relayed / upgraded tiers), `chat repl` (long-lived node), `chat listen` |
 | Discovery | `discover`, `discover_in_room`, `lookup_service` | `discover --query [--room --point --peer-addr --save]` |
 | Trust | `trust_scores` (indirectly, through discovery ranking) | `discover` ranks by cosine × trust |
+| Relay ops | `relay_evict`, `relay_pardon`, `relay_stats` | `relay stats` / `relay evict` / `relay pardon` (abuse-control state, persisted across restarts — tested) |
+| Service pay | `lookup_service`, `open_channel`, `stream_payment` | `pay --service <id>` (resolve a discovered service's record, pay its payment address — tested) |
+| Settle | `settle_channel`, `channel_state` | `settle --to <id>` (time-boxed finality, SPEC §10.3 — tested) |
 | Ops | `metrics`, `run_punch_refresh` | `network status` (mesh degree, pulse liveness, sync lag, gossip drop), `network doctor` (full SPEC §13 under the wallet identity) |
 | Contacts | — | `contact add/list`, `discover --save` (top hit → contact in one step) |
 
@@ -57,16 +60,28 @@ CLI deliberately does not surface them:
    refreshed by the existing punch-refresh loop). Test asserts the hint
    resolves with the right `(relay, addr)`.
 
-## Recommended next CLI additions (priority order)
+## Closed since the audit (2026-08-16)
+
+The three priority additions recommended in the audit are all shipped:
 
 1. **`relay stats` / `relay evict` / `relay pardon`** — the R4 abuse
-   surface (cookie strikes, eviction) currently has no operator view;
-   a relay operator serving circuits from a wallet should be able to see
-   who's burning circuits and revoke them.
-2. **`pay_service`** — "call this provider": the `discover` → `pay` flow
-   currently needs a manual MeshId copy; `discover --save` then `pay
-   --to <contact>` closes the loop.
-3. **`settle`** — a wallet that has streamed payments has no CLI to
-   settle the channel (time-boxed finality, SPEC §10.3). The evidence
-   settles on both sides automatically, but the operator-facing
-   `settle_channel` call is missing.
+   surface now has an operator view. `relay serve` gained a `--addr`
+   flag (pin the port for automation); the management commands bind
+   with the relay role *loaded* (state restored, no circuits served,
+   no hint published), act, and shut down (persisting). Tested:
+   eviction survives the admin handle, pardon clears it, both persist.
+2. **`pay --service <id>`** — "call this provider": resolves the
+   service's signed record (local cache or DHT) and pays its payment
+   address in one command. Tested end-to-end (receipt ingests on the
+   service's node).
+3. **`settle --to <id>`** — the operator-facing `settle_channel` call:
+   records the total paid out as an `ENTRY_SETTLE` with time-boxed
+   finality (SPEC §10.3). Tested (settled view not final until the
+   dispute window passes; further payments rejected).
+
+Also added: a global `--passphrase` flag for non-interactive use
+(scripts/CI/tests — `rpassword` reads the TTY otherwise), and the
+**two-process e2e** (`tests/e2e_relayed_pay.rs`): the real
+`origin-wallet relay serve` binary is spawned as a child process and a
+wallet pays through it — the payee ingests the receipt with no direct
+payer→payee link, then the channel settles with time-boxed finality.

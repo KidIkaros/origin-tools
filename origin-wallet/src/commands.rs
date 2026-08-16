@@ -5,8 +5,18 @@
 use origin_wallet::{Shard, Wallet};
 use std::path::Path;
 
+/// The passphrase given on the command line (`--passphrase`), for
+/// non-interactive use (scripts, CI, tests). When set, every
+/// `prompt_passphrase` returns it instead of reading the TTY.
+static CLI_PASSPHRASE: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
+
 /// Execute a CLI command.
 pub fn execute(cli: super::Cli) -> Result<(), Box<dyn std::error::Error>> {
+    // The global `--passphrase` flag (scripts/CI/tests): record it before
+    // any command runs so every prompt consults it first.
+    if let Some(p) = &cli.passphrase {
+        let _ = CLI_PASSPHRASE.set(Some(p.clone()));
+    }
     match cli.command {
         super::Commands::Create { output } => cmd_create(&output)?,
         super::Commands::Open => cmd_open(&cli.file)?,
@@ -28,12 +38,34 @@ pub fn execute(cli: super::Cli) -> Result<(), Box<dyn std::error::Error>> {
         },
         super::Commands::Pay {
             to,
+            service,
             amount,
             peer_addr,
             relay,
             relay_addr,
             memo,
-        } => cmd_pay(&cli.file, &to, amount, peer_addr, relay, relay_addr, memo)?,
+        } => {
+            let target = match (to, service) {
+                (Some(to), None) => PayTarget::Counterparty(to.parse()?),
+                (None, Some(service)) => PayTarget::Service(service.parse()?),
+                (None, None) => {
+                    return Err("--to (or --service) is required".into())
+                }
+                (Some(_), Some(_)) => {
+                    return Err("--to and --service are mutually exclusive".into())
+                }
+            };
+            cmd_pay(
+                &cli.file,
+                target,
+                amount,
+                peer_addr,
+                relay,
+                relay_addr,
+                memo,
+            )?
+        }
+        super::Commands::Settle { to, peer_addr } => cmd_settle(&cli.file, &to, peer_addr)?,
         super::Commands::Discover {
             query,
             room,
@@ -52,17 +84,31 @@ pub fn execute(cli: super::Cli) -> Result<(), Box<dyn std::error::Error>> {
         },
         super::Commands::Chat { command } => cmd_chat(&cli.file, command)?,
         super::Commands::ChatListen { from } => cmd_chat_listen(&cli.file, from)?,
-        super::Commands::Relay {
-            difficulty,
-            stun_server,
-        } => cmd_relay(&cli.file, difficulty, &stun_server)?,
+        super::Commands::Relay { command } => match command {
+            super::RelayCommands::Serve {
+                difficulty,
+                stun_server,
+                addr,
+            } => cmd_relay_serve(&cli.file, difficulty, &stun_server, addr)?,
+            super::RelayCommands::Stats => cmd_relay_stats(&cli.file)?,
+            super::RelayCommands::Evict { peer } => cmd_relay_evict(&cli.file, &peer)?,
+            super::RelayCommands::Pardon { peer } => cmd_relay_pardon(&cli.file, &peer)?,
+        },
     }
     Ok(())
 }
 
-/// Prompt for passphrase securely.
-fn prompt_passphrase(prompt: &str) -> Result<String, Box<dyn std::error::Error>> {
-    let passphrase = rpassword::prompt_password(prompt)?;
+/// Prompt for passphrase securely — unless `--passphrase` was given on
+/// the command line (scripts/CI/tests), in which case that is returned
+/// without touching the TTY.
+fn prompt_passphrase(_prompt: &str) -> Result<String, Box<dyn std::error::Error>> {
+    if let Some(Some(p)) = CLI_PASSPHRASE.get() {
+        if !p.is_empty() {
+            return Ok(p.clone());
+        }
+    }
+    // The `prompt` is passed to rpassword for the interactive case.
+    let passphrase = rpassword::prompt_password("Enter passphrase: ")?;
     if passphrase.is_empty() {
         return Err("Passphrase cannot be empty".into());
     }
@@ -457,14 +503,21 @@ fn cmd_network_status(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-/// Pay a counterparty on the native rail (INTEGRATION.md step 3): unlock,
-/// bind the node, connect, open a channel, stream the payment, and record
-/// the receipt in the wallet's MMR history (then save the wallet). With
-/// `--relay`/`--relay-addr`, pay through a relay instead of dialing the
-/// counterparty directly (A→relay→C).
+/// The target of a `pay` — a counterparty MeshId, or a discovered
+/// service to resolve and pay.
+enum PayTarget {
+    Counterparty(stoa::MeshId),
+    Service(stoa::MeshId),
+}
+
+/// Pay on the native rail (INTEGRATION.md step 3): unlock, bind the node,
+/// open a channel, stream the payment, and record the receipt in the
+/// wallet's MMR history (then save the wallet). The target is either a
+/// counterparty (dialed directly or through a relay) or a discovered
+/// service (resolved from its signed record).
 fn cmd_pay(
     path: &Path,
-    to: &str,
+    target: PayTarget,
     amount: u64,
     peer_addr: Option<std::net::SocketAddr>,
     relay: Option<String>,
@@ -478,9 +531,35 @@ fn cmd_pay(
     let passphrase = prompt_passphrase("Enter passphrase: ")?;
     let mut wallet = Wallet::open(path, &passphrase)?;
 
-    let to_mesh: stoa::MeshId = to.parse()?;
     let memo_bytes = memo.unwrap_or_default().into_bytes();
     let rt = tokio::runtime::Runtime::new()?;
+
+    // --service mode: resolve the record, pay its payment address.
+    if let PayTarget::Service(service_mesh) = target {
+        println!(
+            "Paying {} units to service {} on the native rail...",
+            amount, service_mesh
+        );
+        let (entry, record) = rt.block_on(origin_wallet::network::pay_service(
+            &mut wallet,
+            service_mesh,
+            peer_addr,
+            amount,
+            memo_bytes,
+        ))?;
+        wallet.save(path, &passphrase)?;
+        println!("\n✓ Service paid");
+        println!("  service   : {} — {}", record.service, record.profile);
+        println!("  paid to   : {}", record.payment);
+        println!("  entry hash: {}", hex::encode(entry.entry_hash()));
+        println!("  amount    : {}", entry.amount);
+        println!("  history   : {} transactions in the wallet MMR", wallet.transaction_count());
+        return Ok(());
+    }
+
+    let PayTarget::Counterparty(to_mesh) = target else {
+        unreachable!()
+    };
 
     let entry = match (relay, relay_addr) {
         // Relayed pay: connect only to the relay; the counterparty is
@@ -531,6 +610,35 @@ fn cmd_pay(
     println!("  amount     : {}", entry.amount);
     println!("  counterparty: {}", entry.counterparty);
     println!("  history    : {} transactions in the wallet MMR", wallet.transaction_count());
+
+    Ok(())
+}
+
+/// Settle a channel toward a counterparty (SPEC §10.3 — time-boxed
+/// finality): unlock, bind, settle, and print the signed ENTRY_SETTLE.
+fn cmd_settle(
+    path: &Path,
+    to: &str,
+    peer_addr: Option<std::net::SocketAddr>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    if !path.exists() {
+        return Err(format!("Wallet file not found: {}", path.display()).into());
+    }
+
+    let passphrase = prompt_passphrase("Enter passphrase: ")?;
+    let wallet = Wallet::open(path, &passphrase)?;
+    let to_mesh: stoa::MeshId = to.parse()?;
+
+    let rt = tokio::runtime::Runtime::new()?;
+    let entry = rt.block_on(origin_wallet::network::settle_channel_with(
+        &wallet, to_mesh, peer_addr,
+    ))?;
+
+    println!("\n✓ Channel settled");
+    println!("  counterparty : {}", entry.counterparty);
+    println!("  total paid   : {}", entry.amount);
+    println!("  settle hash  : {}", hex::encode(entry.entry_hash()));
+    println!("  finality     : {} s with no counter-evidence (SPEC §10.3)", stoa::DISPUTE_WINDOW_SECS);
 
     Ok(())
 }
@@ -792,17 +900,16 @@ fn cmd_chat_repl(
     let rt = tokio::runtime::Runtime::new()?;
     rt.block_on(origin_wallet::network::chat_repl(&wallet, &contacts, peer, peer_addr))?;
     Ok(())
-}
-
-/// Serve this wallet's node as a circuit relay (INTEGRATION.md step 5 —
+}/// Serve this wallet's node as a circuit relay (INTEGRATION.md step 5 —
 /// the "help the network" toggle, off by default): unlock, bind the node
 /// derived from the wallet seed, serve the relay role with the given PoW
 /// difficulty, start the punch-refresh loop, and run until Ctrl-C. The
 /// relay's cookie/eviction state persists under `$STOA_HOME/nodes/<meshid>/`.
-fn cmd_relay(
+fn cmd_relay_serve(
     path: &Path,
     difficulty: u32,
     stun_server: &str,
+    bind_addr: std::net::SocketAddr,
 ) -> Result<(), Box<dyn std::error::Error>> {
     if !path.exists() {
         return Err(format!("Wallet file not found: {}", path.display()).into());
@@ -821,7 +928,7 @@ fn cmd_relay(
         &wallet,
         difficulty,
         stun_addr,
-        "0.0.0.0:0".parse()?,
+        bind_addr,
     ))?;
 
     println!("\n✓ Relay serving (help the network)");
@@ -832,11 +939,79 @@ fn cmd_relay(
     println!("  store   : {}", doctor_home().join("nodes").join(mesh.local_mesh_id().to_string()).display());
     println!("Press Ctrl-C to stop. Peers dial through this node only while it runs.");
 
+
     // Park until interrupted; the mesh handle keeps the actor + loops alive.
     let _mesh = mesh;
     loop {
         std::thread::sleep(std::time::Duration::from_secs(3600));
     }
+}
+
+/// Bind the wallet's node with the relay role loaded (state restored, no
+/// circuits served, no hint published), run `f` against the live mesh, and
+/// shut down cleanly (persisting any relay-state change) — the shared
+/// shape of the relay management commands.
+fn with_relay_mesh(
+    path: &Path,
+    f: impl FnOnce(&stoa::Mesh) -> Result<(), Box<dyn std::error::Error>>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    if !path.exists() {
+        return Err(format!("Wallet file not found: {}", path.display()).into());
+    }
+
+    let passphrase = prompt_passphrase("Enter passphrase: ")?;
+    let wallet = Wallet::open(path, &passphrase)?;
+
+    let rt = tokio::runtime::Runtime::new()?;
+    let mesh = rt.block_on(origin_wallet::network::relay_admin(&wallet))?;
+    let result = f(&mesh);
+    // Shutdown flushes the persisted relay state (the eviction set and
+    // strike tallies survive this command, RELAY.md §9).
+    let _ = rt.block_on(mesh.shutdown());
+    result
+}
+
+/// `relay stats` — the relay operator's abuse-control view (RELAY.md §9):
+/// live circuits, validated clients, eviction set size, challenges issued.
+fn cmd_relay_stats(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
+    with_relay_mesh(path, |mesh| {
+        let rt = tokio::runtime::Handle::current();
+        let stats = rt.block_on(mesh.relay_stats());
+        println!("\nRelay abuse-control state (RELAY.md §9)");
+        println!("  serving          : {}", if stats.enabled { "yes" } else { "no" });
+        println!("  live circuits    : {}", stats.circuits);
+        println!("  validated clients: {}", stats.validated);
+        println!("  eviction set     : {} clients", stats.evicted);
+        println!("  challenges issued: {}", stats.challenges_issued);
+        Ok(())
+    })
+}
+
+/// `relay evict <peer>` — revoke a client's circuits and refuse its
+/// future opens. Persists across restarts.
+fn cmd_relay_evict(path: &Path, peer: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let peer_id: stoa::MeshId = peer.parse()?;
+    with_relay_mesh(path, |mesh| {
+        let rt = tokio::runtime::Handle::current();
+        let removed = rt.block_on(mesh.relay_evict(peer_id))?;
+        println!("\n✓ Evicted {peer_id}");
+        println!("  circuits revoked : {removed}");
+        println!("  (persisted — survives a relay restart, RELAY.md §9)");
+        Ok(())
+    })
+}
+
+/// `relay pardon <peer>` — remove a client from the eviction set (and
+/// clear its strikes). Persists across restarts.
+fn cmd_relay_pardon(path: &Path, peer: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let peer_id: stoa::MeshId = peer.parse()?;
+    with_relay_mesh(path, |mesh| {
+        let rt = tokio::runtime::Handle::current();
+        rt.block_on(mesh.relay_pardon(peer_id))?;
+        println!("\n✓ Pardoned {peer_id}");
+        println!("  (removed from the eviction set — persisted, RELAY.md §9)");
+        Ok(())
+    })
 }
 
 /// `$STOA_HOME` or `~/.stoa` — mirrors `stoa::doctor::stoa_home()` (the

@@ -213,8 +213,44 @@ one step.
 # Opt the wallet's node into serving as a circuit relay (off by default —
 # a wallet is a client first). Runs until Ctrl-C; cookie/eviction state
 # persists under $STOA_HOME/nodes/<meshid>/.
-origin-wallet relay --file wallet.dat --difficulty 16 \
+origin-wallet relay serve --file wallet.dat --difficulty 16 \
     --stun-server stun.l.google.com:19302
+```
+
+### Relay abuse-control (the operator's surface)
+
+```bash
+# Show live circuits, validated clients, eviction set, challenges issued.
+origin-wallet relay stats --file wallet.dat
+
+# Revoke a client's circuits and refuse its opens (persists across restarts).
+origin-wallet relay evict --file wallet.dat --peer <64-hex-meshid>
+
+# Remove a client from the eviction set (persists across restarts).
+origin-wallet relay pardon --file wallet.dat --peer <64-hex-meshid>
+```
+
+These commands bind the wallet's node with the relay role *loaded* (state
+restored from the store, no circuits served, no hint published), act, and
+shut down — the R4 cookie/eviction state (RELAY.md §9) survives each one.
+
+### Pay a discovered service ("call this provider")
+
+```bash
+# Resolve a service's signed record (local cache or DHT) and pay its
+# payment address — the discover → pay loop closed in one command.
+origin-wallet pay --file wallet.dat --service <service-meshid> \
+    --amount 500 --peer-addr 1.2.3.4:8443 --memo "inference run #42"
+```
+
+### Settle a channel (time-boxed finality)
+
+```bash
+# Record the total paid out as an ENTRY_SETTLE; the peer's symmetric
+# settle is the double-entry leg, and finality is 60 s with no
+# counter-evidence (SPEC §10.3).
+origin-wallet settle --file wallet.dat --to <64-hex-meshid> \
+    [--peer-addr 1.2.3.4:8443]
 ```
 
 ### Network doctor
