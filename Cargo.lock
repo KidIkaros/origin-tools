@@ -1455,6 +1455,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "origin-canary"
+version = "0.1.0"
+dependencies = [
+ "hex",
+ "origin-crypto-sdk",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "origin-channel"
 version = "0.4.3"
 dependencies = [
@@ -1574,7 +1584,7 @@ dependencies = [
  "origin-common",
  "origin-crypto-sdk",
  "quinn",
- "rcgen",
+ "rcgen 0.14.8",
  "rustls",
  "serde",
  "serde_json",
@@ -1747,6 +1757,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
+ "stoa",
  "tempfile",
  "thiserror 1.0.69",
  "tokio",
@@ -1875,7 +1886,7 @@ dependencies = [
  "quinn-udp",
  "rustc-hash",
  "rustls",
- "socket2",
+ "socket2 0.6.5",
  "thiserror 2.0.19",
  "tokio",
  "tracing",
@@ -1915,7 +1926,7 @@ dependencies = [
  "cfg_aliases",
  "libc",
  "once_cell",
- "socket2",
+ "socket2 0.6.5",
  "tracing",
  "windows-sys 0.61.2",
 ]
@@ -2013,6 +2024,19 @@ dependencies = [
 
 [[package]]
 name = "rcgen"
+version = "0.13.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "75e669e5202259b5314d1ea5397316ad400819437857b90861765f24c4cf80a2"
+dependencies = [
+ "pem",
+ "ring",
+ "rustls-pki-types",
+ "time",
+ "yasna 0.5.2",
+]
+
+[[package]]
+name = "rcgen"
 version = "0.14.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "57f6d249aad744e274e682777a50283a225a32705394ee6d5fcc01efa25e4055"
@@ -2022,7 +2046,7 @@ dependencies = [
  "rustls-pki-types",
  "time",
  "x509-parser",
- "yasna",
+ "yasna 0.6.0",
 ]
 
 [[package]]
@@ -2454,6 +2478,16 @@ checksum = "0c790de23124f9ab44544d7ac05d60440adc586479ce501c1d6d7da3cd8c9cf5"
 
 [[package]]
 name = "socket2"
+version = "0.5.10"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e22376abed350d73dd1cd119b57ffccad95b4e585a7cda43e286245ce23c0678"
+dependencies = [
+ "libc",
+ "windows-sys 0.52.0",
+]
+
+[[package]]
+name = "socket2"
 version = "0.6.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c3d1e2c7f27f8d4cb10542a02c49005dbd6e93095799d6f3be745fae9f8fedd4"
@@ -2487,6 +2521,24 @@ name = "sponge-cursor"
 version = "0.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3a0219bd7d979d58245a4f41f695e1ac9f8befdffadd7f61f1bae9e39abc6620"
+
+[[package]]
+name = "stoa"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "ed25519-dalek",
+ "hex",
+ "libc",
+ "origin-crypto-sdk",
+ "quinn",
+ "rand 0.8.7",
+ "rcgen 0.13.2",
+ "rustls",
+ "rustls-pki-types",
+ "socket2 0.5.10",
+ "tokio",
+]
 
 [[package]]
 name = "strsim"
@@ -2648,7 +2700,7 @@ dependencies = [
  "mio",
  "pin-project-lite",
  "signal-hook-registry",
- "socket2",
+ "socket2 0.6.5",
  "tokio-macros",
  "windows-sys 0.61.2",
 ]
@@ -3135,6 +3187,15 @@ dependencies = [
  "ring",
  "rusticata-macros",
  "thiserror 2.0.19",
+ "time",
+]
+
+[[package]]
+name = "yasna"
+version = "0.5.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e17bb3549cc1321ae1296b9cdc2698e2b6cb1992adfa19a8c72e5b7a738f44cd"
+dependencies = [
  "time",
 ]
 

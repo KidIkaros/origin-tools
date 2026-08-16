@@ -25,6 +25,11 @@ origin-shard = { workspace = true }
 origin-proof = { workspace = true }
 origin-entropy = { workspace = true }
 
+# Stoa — the pure-P2P agent economy network embedded as a library
+# (INTEGRATION.md §1). The node identity is derived from this wallet's
+# master seed; no separate process or RPC boundary.
+stoa = { path = "../../stoa" }
+
 # External dependencies
 bech32 = "0.11"
 clap = { version = "4", features = ["derive"] }

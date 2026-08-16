@@ -42,17 +42,38 @@ impl Default for WalletMetadata {
     }
 }
 
-/// Wallet state for serialization.
+/// Current on-disk wallet format version.
+///
+/// v2 encrypts the *entire* payload (seed + accounts + history + metadata)
+/// as a single AEAD blob keyed by an Argon2id-stretched passphrase.
+const WALLET_FORMAT_VERSION: u32 = 2;
+
+/// Wallet state for serialization — the on-disk envelope.
+///
+/// Everything sensitive lives inside [`WalletPayload`], which is encrypted
+/// as a single XChaCha20-Poly1305 blob. The envelope carries only the
+/// version, the Argon2id salt, the AEAD nonce, and the ciphertext.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 struct WalletState {
-    /// Encrypted seed (encrypted with passphrase-derived key)
-    encrypted_seed: Vec<u8>,
-    /// Nonce used for encryption
-    nonce: Vec<u8>,
-    /// Accounts
+    /// Format version (must equal [`WALLET_FORMAT_VERSION`])
+    version: u32,
+    /// Random 16-byte Argon2id salt (unique per wallet file)
+    argon2_salt: [u8; 16],
+    /// XChaCha20-Poly1305 nonce
+    nonce: [u8; 24],
+    /// bincode([`WalletPayload`]), AEAD-encrypted with passphrase-derived key
+    ciphertext: Vec<u8>,
+}
+
+/// The plaintext wallet payload, encrypted at rest inside [`WalletState`].
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+struct WalletPayload {
+    /// Master seed
+    seed: Vec<u8>,
+    /// Accounts (includes private keys — encrypted at rest)
     accounts: Vec<AccountData>,
-    /// Transaction history (MMR root hashes)
-    history_roots: Vec<[u8; 32]>,
+    /// Transaction history (full MMR state)
+    history: MmrState,
     /// Metadata
     metadata: WalletMetadata,
 }
@@ -107,8 +128,12 @@ impl Wallet {
 
         // 2. Validate entropy
         let metrics = origin_crypto_sdk::entropy::analyze(&generated.seed);
-        // Note: For testing, we use a lower threshold. In production, use 7.5+
-        let min_entropy = if cfg!(test) { 4.0 } else { 7.5 };
+        // The empirical Shannon entropy of an n-byte sample caps at
+        // log2(n) (all bytes distinct) — for a 32-byte seed that is
+        // exactly 5.0, so a 7.5 threshold is unreachable and would make
+        // `create` fail on every run. 4.5 cleanly separates a random
+        // seed (≈4.7–4.9) from a biased one while remaining achievable.
+        let min_entropy = 4.5;
         if metrics.shannon_entropy < min_entropy {
             return Err(WalletError::InsufficientEntropy {
                 required: min_entropy,
@@ -137,32 +162,37 @@ impl Wallet {
         // 1. Read file
         let data = std::fs::read(path)?;
 
-        // 2. Parse state
+        // 2. Parse envelope
         let state: WalletState = bincode::deserialize(&data)?;
 
-        // 3. Derive encryption key from passphrase
-        let key = derive_key_from_passphrase(passphrase)?;
+        // 3. Reject unknown formats
+        if state.version != WALLET_FORMAT_VERSION {
+            return Err(WalletError::Decryption(format!(
+                "Unsupported wallet format version {}",
+                state.version
+            )));
+        }
 
-        // 4. Decrypt seed
-        let nonce: [u8; 24] = state
-            .nonce
-            .try_into()
-            .map_err(|_| WalletError::Decryption("Invalid nonce".into()))?;
-        let seed_bytes = origin_crypto_sdk::aead::XChaCha20Poly1305::decrypt(
+        // 4. Derive encryption key from passphrase (Argon2id)
+        let key = derive_key_from_passphrase(passphrase, &state.argon2_salt)?;
+
+        // 5. Decrypt the full payload — a wrong passphrase fails AEAD auth here
+        let plaintext = origin_crypto_sdk::aead::XChaCha20Poly1305::decrypt(
             &key,
-            &nonce,
-            &state.encrypted_seed,
+            &state.nonce,
+            &state.ciphertext,
         )?;
+        let payload: WalletPayload = bincode::deserialize(&plaintext)?;
 
-        // 5. Create SeedHandle
+        // 6. Create SeedHandle
         let seed_handle = SeedHandle::with_tier(
-            &seed_bytes,
+            &payload.seed,
             Some(std::time::Duration::from_secs(3600)),
             origin_crypto_sdk::prelude::MemoryTier::Sovereign,
         );
 
-        // 6. Reconstruct accounts
-        let accounts: Vec<Account> = state
+        // 7. Reconstruct accounts
+        let accounts: Vec<Account> = payload
             .accounts
             .iter()
             .map(|acc_data| {
@@ -180,38 +210,34 @@ impl Wallet {
             })
             .collect::<Result<Vec<Account>>>()?;
 
-        // 7. Reconstruct MMR from history roots
-        let mut history = MmrState::new();
-        state.history_roots.iter().for_each(|root| {
-            history.append_hash(*root);
-        });
-
         Ok(Self {
             seed_handle,
             accounts,
-            history,
-            metadata: state.metadata,
+            history: payload.history,
+            metadata: payload.metadata,
         })
     }
 
     /// Save wallet to file.
+    ///
+    /// The entire wallet (seed + account keys + history + metadata) is
+    /// serialized and encrypted as a single AEAD payload, keyed by an
+    /// Argon2id-stretched passphrase. Nothing sensitive is written in
+    /// plaintext.
     pub fn save(&self, path: &Path, passphrase: &str) -> Result<()> {
-        // 1. Derive encryption key from passphrase
-        let key = derive_key_from_passphrase(passphrase)?;
+        // 1. Random Argon2id salt for this file
+        let salt_bytes = origin_crypto_sdk::aead::generate_key(); // 32 random bytes
+        let mut argon2_salt = [0u8; 16];
+        argon2_salt.copy_from_slice(&salt_bytes[..16]);
 
-        // 2. Get seed bytes
+        // 2. Derive encryption key from passphrase (memory-hard KDF)
+        let key = derive_key_from_passphrase(passphrase, &argon2_salt)?;
+
+        // 3. Get seed bytes
         let seed_bytes = self
             .seed_handle
             .as_bytes()
             .ok_or(WalletError::SeedExpired)?;
-
-        // 3. Encrypt seed
-        let nonce = origin_crypto_sdk::aead::generate_nonce();
-        let encrypted_seed = origin_crypto_sdk::aead::XChaCha20Poly1305::encrypt(
-            &key,
-            &nonce,
-            seed_bytes,
-        )?;
 
         // 4. Serialize accounts
         let accounts_data: Vec<AccountData> = self
@@ -228,16 +254,30 @@ impl Wallet {
             })
             .collect();
 
-        // 5. Create state
-        let state = WalletState {
-            encrypted_seed,
-            nonce: nonce.to_vec(),
+        // 5. Build and serialize the plaintext payload
+        let payload = WalletPayload {
+            seed: seed_bytes.to_vec(),
             accounts: accounts_data,
-            history_roots: Vec::new(), // TODO: Store MMR roots
+            history: self.history.clone(),
             metadata: self.metadata.clone(),
         };
+        let plaintext = bincode::serialize(&payload)?;
 
-        // 6. Serialize and write
+        // 6. Encrypt the whole payload
+        let nonce = origin_crypto_sdk::aead::generate_nonce();
+        let ciphertext = origin_crypto_sdk::aead::XChaCha20Poly1305::encrypt(
+            &key,
+            &nonce,
+            &plaintext,
+        )?;
+
+        // 7. Serialize envelope and write
+        let state = WalletState {
+            version: WALLET_FORMAT_VERSION,
+            argon2_salt,
+            nonce,
+            ciphertext,
+        };
         let data = bincode::serialize(&state)?;
         std::fs::write(path, data)?;
 
@@ -381,6 +421,30 @@ impl Wallet {
         self.accounts.iter().map(|a| a.balance()).sum()
     }
 
+    /// Derive this wallet's Stoa node identity (INTEGRATION.md §2).
+    ///
+    /// The node is a pure function of the master seed, domain-separated from
+    /// account keys — so the `MeshId` (and the at-rest store key that lets a
+    /// node re-decrypt its own `$STOA_HOME` state) are stable across unlock
+    /// cycles. This is step 1 of the embedding: prove key derivation is
+    /// stable; binding a `Mesh` comes later.
+    pub fn stoa_node_keys(&self) -> Result<stoa::NodeKeys> {
+        let seed = self
+            .seed_handle
+            .as_bytes()
+            .ok_or(WalletError::SeedExpired)?;
+        if seed.len() != 32 {
+            return Err(WalletError::KeyDerivation(format!(
+                "Stoa node identity requires a 32-byte seed, got {}",
+                seed.len()
+            )));
+        }
+        let mut arr = [0u8; 32];
+        arr.copy_from_slice(seed);
+        stoa::NodeKeys::from_seed(&arr)
+            .map_err(|e| WalletError::KeyDerivation(e.to_string()))
+    }
+
     /// Generate a transaction proof for a specific leaf in the MMR.
     pub fn prove_transaction(&self, leaf_index: u64) -> Result<origin_proof::mmr::MembershipProof> {
         if leaf_index >= self.history.leaf_count {
@@ -405,17 +469,17 @@ impl Wallet {
     }
 }
 
-/// Derive encryption key from passphrase using HKDF.
-fn derive_key_from_passphrase(passphrase: &str) -> Result<[u8; 32]> {
-    let mut key = [0u8; 32];
-    origin_crypto_sdk::kdf::hkdf::hkdf_sha3_256(
+/// Derive encryption key from passphrase using Argon2id.
+///
+/// Argon2id is memory-hard: brute-forcing a weak passphrase costs ~64 MiB and
+/// 4 passes per guess instead of a single fast HKDF evaluation. The salt is
+/// random per file and stored in the envelope so the key can be re-derived.
+fn derive_key_from_passphrase(passphrase: &str, argon2_salt: &[u8; 16]) -> Result<[u8; 32]> {
+    Ok(origin_crypto_sdk::kdf::Argon2id::derive_key(
         passphrase.as_bytes(),
-        Some(b"wallet:state:encryption"),
-        b"origin-wallet-v1",
-        &mut key,
-    )
-    .map_err(|e| WalletError::KeyDerivation(e.to_string()))?;
-    Ok(key)
+        argon2_salt,
+        false,
+    )?)
 }
 
 impl std::fmt::Display for Wallet {
@@ -511,8 +575,11 @@ impl Wallet {
 
     /// Export wallet as a recovery phrase (human-readable).
     ///
-    /// The phrase encodes the first 32 bytes of the seed (128 bits).
-    /// For full 64-byte seed recovery, use shard backup.
+    /// The phrase encodes the full 256-bit (32-byte) seed. Shard backup
+    /// remains available for threshold-based recovery.
+    ///
+    /// Note: the wallet's 32-byte seed is stored encrypted in the wallet
+    /// file; the phrase is a second, independent copy of the same seed.
     pub fn export_phrase(&self) -> Result<String> {
         let seed_bytes = self
             .seed_handle
@@ -529,10 +596,31 @@ impl Wallet {
         Ok(encoded.into_iter().collect())
     }
 
+    /// Reconstruct a wallet from raw seed bytes (e.g. recovered from shards
+    /// or decoded from a recovery phrase).
+    ///
+    /// Accounts are re-derived deterministically from the seed on demand, so
+    /// a recovered wallet reproduces the original account keys exactly.
+    pub fn from_seed(seed: &[u8]) -> Result<Self> {
+        let seed_handle = SeedHandle::with_tier(
+            seed,
+            Some(std::time::Duration::from_secs(3600)),
+            origin_crypto_sdk::prelude::MemoryTier::Sovereign,
+        );
+
+        Ok(Self {
+            seed_handle,
+            accounts: Vec::new(),
+            history: MmrState::new(),
+            metadata: WalletMetadata::new(),
+        })
+    }
+
     /// Reconstruct wallet from a recovery phrase.
     ///
-    /// Note: This recovers the first 32 bytes of the seed. For full recovery,
-    /// use shard-based backup.
+    /// The phrase encodes the full 256-bit seed. The exact decoded bytes are
+    /// used as the seed — no padding — so derived account keys match the
+    /// original wallet.
     pub fn from_phrase(phrase: &str, _passphrase: &str) -> Result<Self> {
         // Decode phrase to seed bytes
         let chars: Vec<char> = phrase.chars().collect();
@@ -540,18 +628,7 @@ impl Wallet {
         let seed_bytes = origin_crypto_sdk::recovery::unicode_cipher::decode_phrase(&chars, &wordlist)
             .map_err(|e| WalletError::Recovery(e.to_string()))?;
 
-        // Create 64-byte seed (padded with zeros for phrase recovery)
-        let mut seed = [0u8; 64];
-        seed[..seed_bytes.len().min(32)].copy_from_slice(&seed_bytes[..seed_bytes.len().min(32)]);
-        let seed_handle = origin_crypto_sdk::SeedHandle::new(&seed, None);
-
-        // Create wallet with empty state
-        Ok(Self {
-            seed_handle,
-            accounts: Vec::new(),
-            history: MmrState::new(),
-            metadata: WalletMetadata::new(),
-        })
+        Self::from_seed(&seed_bytes)
     }
 }
 
@@ -670,7 +747,7 @@ mod tests {
         for i in 0..10 {
             let from = account.address().clone();
             let to = account.address().clone();
-            let tx = crate::transaction::Transaction::new(&from, &to, 100 * (i + 1), 10, i as u64);
+            let tx = crate::transaction::Transaction::new(&from, &to, 100 * (i + 1), 10, i);
             wallet.add_transaction(&tx).unwrap();
         }
 
@@ -780,7 +857,164 @@ mod tests {
         let restored = Wallet::from_phrase(&phrase, "test-passphrase").unwrap();
         let restored_seed = restored.seed_handle.as_bytes().unwrap().to_vec();
 
-        // First 32 bytes should match (phrase only encodes 32 bytes)
-        assert_eq!(&original_seed[..32], &restored_seed[..32]);
+        // Full seed must match exactly (phrase encodes the entire 256-bit seed)
+        assert_eq!(original_seed, restored_seed);
+    }
+
+    #[test]
+    fn test_phrase_recovery_reproduces_account_keys() {
+        let mut wallet = Wallet::create("test-passphrase").unwrap();
+        let account = wallet.derive_account(0).unwrap();
+        let expected_ed = account.ed25519_sk().to_vec();
+        let expected_falcon = account.falcon_sk().to_vec();
+
+        let phrase = wallet.export_phrase().unwrap();
+        let mut restored = Wallet::from_phrase(&phrase, "test-passphrase").unwrap();
+
+        // Re-derive account 0 on the restored wallet — keys must match exactly
+        let restored_account = restored.derive_account(0).unwrap();
+        assert_eq!(expected_ed, restored_account.ed25519_sk().to_vec());
+        assert_eq!(expected_falcon, restored_account.falcon_sk().to_vec());
+        assert_eq!(account.address(), restored_account.address());
+    }
+
+    #[test]
+    fn test_shard_recovery_reproduces_account_keys() {
+        let mut wallet = Wallet::create("test-passphrase").unwrap();
+        let account = wallet.derive_account(0).unwrap();
+        let expected_ed = account.ed25519_sk().to_vec();
+        let expected_falcon = account.falcon_sk().to_vec();
+        let expected_address = account.address().clone();
+
+        let shards = wallet.backup(5, 3).unwrap();
+        let recovered_seed = Wallet::recover_from_shards(&shards[..3]).unwrap();
+        assert_eq!(recovered_seed, wallet.seed_handle.as_bytes().unwrap().to_vec());
+
+        let mut restored = Wallet::from_seed(&recovered_seed).unwrap();
+        let restored_account = restored.derive_account(0).unwrap();
+        assert_eq!(expected_ed, restored_account.ed25519_sk().to_vec());
+        assert_eq!(expected_falcon, restored_account.falcon_sk().to_vec());
+        assert_eq!(expected_address, restored_account.address().clone());
+    }
+
+    #[test]
+    fn test_wallet_file_contains_no_plaintext_keys() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("wallet.dat");
+
+        let mut wallet = Wallet::create("test-passphrase").unwrap();
+        let account = wallet.derive_account(0).unwrap();
+        let ed_sk = account.ed25519_sk().to_vec();
+        let falcon_sk = account.falcon_sk().to_vec();
+        let seed = wallet.seed_handle.as_bytes().unwrap().to_vec();
+
+        wallet.save(&path, "test-passphrase").unwrap();
+        let data = std::fs::read(&path).unwrap();
+
+        // None of the secret material may appear verbatim in the file
+        assert!(!data.windows(ed_sk.len()).any(|w| w == ed_sk.as_slice()));
+        assert!(!data.windows(falcon_sk.len()).any(|w| w == falcon_sk.as_slice()));
+        assert!(!data.windows(seed.len()).any(|w| w == seed.as_slice()));
+    }
+
+    #[test]
+    fn test_open_wrong_passphrase_fails() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("wallet.dat");
+
+        let wallet = Wallet::create("right-passphrase").unwrap();
+        wallet.save(&path, "right-passphrase").unwrap();
+
+        let result = Wallet::open(&path, "wrong-passphrase");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_history_persists_across_save() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("wallet.dat");
+
+        let mut wallet = Wallet::create("test-passphrase").unwrap();
+        let account = wallet.derive_account(0).unwrap();
+        let from = account.address().clone();
+        let to = account.address().clone();
+
+        // Add transactions before saving
+        for i in 0..10 {
+            let tx = crate::transaction::Transaction::new(&from, &to, 100 * (i + 1), 10, i);
+            wallet.add_transaction(&tx).unwrap();
+        }
+        assert_eq!(wallet.transaction_count(), 10);
+
+        wallet.save(&path, "test-passphrase").unwrap();
+
+        // Reload — history must survive
+        let loaded = Wallet::open(&path, "test-passphrase").unwrap();
+        assert_eq!(loaded.transaction_count(), 10);
+
+        // Membership proofs must still verify against the restored MMR
+        let proof = loaded.prove_transaction(3).unwrap();
+        assert!(loaded.verify_transaction_proof(&proof).unwrap());
+    }
+
+    #[test]
+    fn test_stoa_node_identity_stable_across_unlock() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("wallet.dat");
+
+        // Unlock 1: derive the node identity, then lock (save + drop).
+        let wallet = Wallet::create("test-passphrase").unwrap();
+        let first = wallet.stoa_node_keys().unwrap();
+        let first_id = *first.mesh_id();
+        wallet.save(&path, "test-passphrase").unwrap();
+        drop(wallet);
+
+        // Unlock 2: re-open and re-derive — the identity (and store key,
+        // which gates re-decrypting the node's own persisted state) must
+        // be identical, or the node could never read its own $STOA_HOME.
+        let reopened = Wallet::open(&path, "test-passphrase").unwrap();
+        let second = reopened.stoa_node_keys().unwrap();
+        assert_eq!(second.mesh_id(), &first_id);
+        assert_eq!(second.store_key(), first.store_key());
+        assert_eq!(second.public_keys(), first.public_keys());
+    }
+
+    #[test]
+    fn test_stoa_node_identity_differs_per_wallet() {
+        let a = Wallet::create("pass-a").unwrap();
+        let b = Wallet::create("pass-b").unwrap();
+        assert_ne!(
+            a.stoa_node_keys().unwrap().mesh_id(),
+            b.stoa_node_keys().unwrap().mesh_id()
+        );
+    }
+
+    #[tokio::test]
+    async fn test_stoa_node_binds_and_reports_metrics() {
+        // INTEGRATION.md step 2: unlock → derive node keys → bind a Mesh →
+        // read live metrics. The bound node's identity must match the
+        // wallet's derived identity (stable across unlocks), and the
+        // metrics API must round-trip real actor state.
+        let wallet = Wallet::create("test-passphrase").unwrap();
+        let keys = wallet.stoa_node_keys().unwrap();
+        let (mesh, _addr) =
+            stoa::Mesh::bind(keys, "127.0.0.1:0".parse().unwrap()).expect("bind");
+
+        // The bound node is this wallet's node — same MeshId.
+        let again = wallet.stoa_node_keys().unwrap();
+        assert_eq!(mesh.local_mesh_id(), *again.mesh_id());
+
+        // Fresh node: zeroed health signals.
+        let before = mesh.metrics().await;
+        assert_eq!(before.connected_peers, 0);
+        assert_eq!(before.dht_records, 0);
+        assert_eq!(before.sync_lag_secs, u64::MAX, "never synced");
+        assert_eq!(before.gossip_received, 0);
+
+        // A heartbeat lands in the live set; the metrics reflect it.
+        mesh.publish_pulse().await.expect("pulse");
+        let after = mesh.metrics().await;
+        assert!(after.pulse_live >= 1, "self heartbeat counted live");
+        assert_eq!(after.sync_lag_secs, u64::MAX, "still never synced (no peers)");
     }
 }

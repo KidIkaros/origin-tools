@@ -43,6 +43,9 @@ pub enum WalletError {
     #[error("Key derivation failed: {0}")]
     KeyDerivation(String),
 
+    #[error("Stoa network error: {0}")]
+    Network(String),
+
     #[error("Backup error: {0}")]
     Backup(String),
 
@@ -62,5 +65,11 @@ impl From<origin_crypto_sdk::error::CryptoError> for WalletError {
 impl From<bincode::Error> for WalletError {
     fn from(err: bincode::Error) -> Self {
         WalletError::Serialization(err.to_string())
+    }
+}
+
+impl From<stoa::StoaError> for WalletError {
+    fn from(err: stoa::StoaError) -> Self {
+        WalletError::Network(err.to_string())
     }
 }

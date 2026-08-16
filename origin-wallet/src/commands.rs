@@ -20,6 +20,40 @@ pub fn execute(cli: super::Cli) -> Result<(), Box<dyn std::error::Error>> {
         } => cmd_backup(&cli.file, shards, threshold, &output)?,
         super::Commands::Recover { shards, output } => cmd_recover(&shards, &output)?,
         super::Commands::Phrase { command } => cmd_phrase(&cli.file, command)?,
+        super::Commands::Network { command } => match command {
+            super::NetworkCommands::Status => cmd_network_status(&cli.file)?,
+            super::NetworkCommands::Doctor { stun_server } => {
+                cmd_network_doctor(&cli.file, &stun_server)?
+            }
+        },
+        super::Commands::Pay {
+            to,
+            amount,
+            peer_addr,
+            memo,
+        } => cmd_pay(&cli.file, &to, amount, peer_addr, memo)?,
+        super::Commands::Discover {
+            query,
+            room,
+            point,
+            peer_addr,
+            save,
+        } => cmd_discover(&cli.file, &query, room, point, peer_addr, save)?,
+        super::Commands::Contact { command } => cmd_contact(&cli.file, command)?,
+        super::Commands::Mail { command } => match command {
+            super::MailCommands::Send {
+                to,
+                peer_addr,
+                body,
+            } => cmd_mail_send(&to, peer_addr, &body)?,
+            super::MailCommands::Inbox => cmd_mail_inbox(&cli.file)?,
+        },
+        super::Commands::Chat { command } => cmd_chat(&cli.file, command)?,
+        super::Commands::ChatListen { from } => cmd_chat_listen(&cli.file, from)?,
+        super::Commands::Relay {
+            difficulty,
+            stun_server,
+        } => cmd_relay(&cli.file, difficulty, &stun_server)?,
     }
     Ok(())
 }
@@ -278,19 +312,19 @@ fn cmd_recover(shards_dir: &Path, output: &Path) -> Result<(), Box<dyn std::erro
 
     // Recover seed
     println!("Recovering wallet...");
-    let _seed = Wallet::recover_from_shards(&shards)?;
+    let seed = Wallet::recover_from_shards(&shards)?;
 
-    // Create new wallet from recovered seed
+    // Rebuild the wallet from the recovered seed — accounts re-derive
+    // deterministically from it, so the original keys are reproduced.
     let passphrase = confirm_passphrase()?;
     println!("Saving recovered wallet to {}...", output.display());
 
-    // For now, create a new wallet (full recovery would use the seed directly)
-    let wallet = Wallet::create(&passphrase)?;
+    let wallet = Wallet::from_seed(&seed)?;
     wallet.save(output, &passphrase)?;
 
     println!("\n✓ Wallet recovered successfully!");
     println!("  File: {}", output.display());
-    println!("\n⚠ Your original accounts may need to be re-derived.");
+    println!("\n⚠ Re-derive your accounts with: origin-wallet account derive --name <name>");
 
     Ok(())
 }
@@ -344,4 +378,439 @@ fn cmd_phrase(path: &Path, command: super::PhraseCommands) -> Result<(), Box<dyn
             Ok(())
         }
     }
+}
+
+/// Unlock the wallet, bind its Stoa node, and print live mesh metrics
+/// (INTEGRATION.md §4, build-order step 2 — the CLI's "network pane").
+///
+/// The node identity is derived from the wallet seed (`Wallet::stoa_node_keys`),
+/// so the MeshId is stable across unlocks; binding is ephemeral — no
+/// state is written, the actor shuts down when the runtime drops.
+/// `network doctor` — the full stoa doctor (SPEC §13) run under the
+/// wallet's own identity: the §13 probes (transport, store, metrics,
+/// STUN, relayed circuit) report the wallet's MeshId as the identity
+/// under test.
+fn cmd_network_doctor(path: &Path, stun_server: &str) -> Result<(), Box<dyn std::error::Error>> {
+    if !path.exists() {
+        return Err(format!("Wallet file not found: {}", path.display()).into());
+    }
+    let passphrase = prompt_passphrase("Enter passphrase: ")?;
+    let wallet = Wallet::open(path, &passphrase)?;
+    let node_keys = wallet.stoa_node_keys()?;
+
+    println!("Running stoa doctor under the wallet's identity...");
+    let rt = tokio::runtime::Runtime::new()?;
+    rt.block_on(stoa::doctor::run_with_keys(&node_keys, Some(stun_server)))?;
+    Ok(())
+}
+
+fn cmd_network_status(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
+    if !path.exists() {
+        return Err(format!("Wallet file not found: {}", path.display()).into());
+    }
+
+    let passphrase = prompt_passphrase("Enter passphrase: ")?;
+    let wallet = Wallet::open(path, &passphrase)?;
+
+    println!("Deriving Stoa node identity...");
+    let node_keys = wallet.stoa_node_keys()?;
+    let mesh_id = *node_keys.mesh_id();
+
+    let rt = tokio::runtime::Runtime::new()?;
+    rt.block_on(async {
+        let (mesh, addr) = stoa::Mesh::bind(node_keys, "0.0.0.0:0".parse()?)?;
+        // Fire one heartbeat now so the live set is non-empty; the actor
+        // then auto-publishes every ~90 s for as long as it runs.
+        let _ = mesh.publish_pulse().await;
+        let m = mesh.metrics().await;
+
+        println!("\n✓ Stoa node bound (INTEGRATION.md step 2)");
+        println!("  mesh id          : {mesh_id}");
+        println!("  address          : {addr}");
+        println!("  mesh degree      : {}", m.connected_peers);
+        println!("  pulse live/stale : {} / {}", m.pulse_live, m.pulse_stale);
+        println!("  spent conflicts  : {}", m.spent_conflicts);
+        println!("  snowball queries : {}", m.snowball_queries);
+        println!("  dht records      : {}", m.dht_records);
+        println!("  routing table    : {}", m.routing_table_entries);
+        println!(
+            "  sync lag         : {} (u64::MAX = never synced)",
+            if m.sync_lag_secs == u64::MAX {
+                "never".to_string()
+            } else {
+                format!("{} s", m.sync_lag_secs)
+            }
+        );
+        println!(
+            "  gossip recv/drop : {} / {}",
+            m.gossip_received, m.gossip_dropped
+        );
+        println!("  re-syncs fired   : {}", m.resyncs);
+        println!(
+            "\nThe node is offline-only here: connect it to peers (pay/discover/dial) in a later step."
+        );
+        Ok::<(), Box<dyn std::error::Error>>(())
+    })?;
+
+    Ok(())
+}
+
+/// Pay a counterparty on the native rail (INTEGRATION.md step 3): unlock,
+/// bind the node, connect, open a channel, stream the payment, and record
+/// the receipt in the wallet's MMR history (then save the wallet).
+fn cmd_pay(
+    path: &Path,
+    to: &str,
+    amount: u64,
+    peer_addr: std::net::SocketAddr,
+    memo: Option<String>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    if !path.exists() {
+        return Err(format!("Wallet file not found: {}", path.display()).into());
+    }
+
+    let passphrase = prompt_passphrase("Enter passphrase: ")?;
+    let mut wallet = Wallet::open(path, &passphrase)?;
+
+    let to_mesh: stoa::MeshId = to.parse()?;
+    let memo_bytes = memo.unwrap_or_default().into_bytes();
+
+    println!(
+        "Paying {} units to {} at {} on the native rail...",
+        amount, to_mesh, peer_addr
+    );
+    let rt = tokio::runtime::Runtime::new()?;
+    let entry = rt.block_on(origin_wallet::network::pay_native(
+        &mut wallet,
+        to_mesh,
+        peer_addr,
+        amount,
+        memo_bytes,
+    ))?;
+
+    wallet.save(path, &passphrase)?;
+
+    println!("\n✓ Payment recorded");
+    println!("  entry hash : {}", hex::encode(entry.entry_hash()));
+    println!("  amount     : {}", entry.amount);
+    println!("  counterparty: {}", entry.counterparty);
+    println!("  history    : {} transactions in the wallet MMR", wallet.transaction_count());
+
+    Ok(())
+}
+
+/// Discover services on the mesh (INTEGRATION.md step 4): unlock the
+/// wallet, bind its node, optionally dial a peer so DHT lookups reach it,
+/// then print the ranked brief — semantic fit × trust — never the raw
+/// graph. `--room` + `--point` narrow to a rendezvous room's members.
+fn cmd_discover(
+    path: &Path,
+    query: &str,
+    room: Option<String>,
+    point: Option<String>,
+    peer_addr: Option<std::net::SocketAddr>,
+    save: Option<String>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    if !path.exists() {
+        return Err(format!("Wallet file not found: {}", path.display()).into());
+    }
+
+    let passphrase = prompt_passphrase("Enter passphrase: ")?;
+    let wallet = Wallet::open(path, &passphrase)?;
+
+    let point = match point {
+        Some(p) => Some(p.parse::<stoa::MeshId>()?),
+        None => None,
+    };
+
+    println!("Discovering '{}'...", query);
+    let rt = tokio::runtime::Runtime::new()?;
+    let hits = rt.block_on(origin_wallet::network::discover_with(
+        &wallet,
+        query,
+        room.clone(),
+        point,
+        peer_addr,
+    ))?;
+
+    if hits.is_empty() {
+        println!("\nNo services matched '{}'.", query);
+        println!("  Tip: publish a service record from the serving node, or");
+        println!("  dial a peer with --peer-addr so DHT lookups can reach it.");
+        if let Some(label) = save {
+            println!("  --save {label} ignored: no hits to save.");
+        }
+        return Ok(());
+    }
+
+    println!("\nRanked services (cosine × trust):");
+    println!("{:-<72}", "");
+    for (i, hit) in hits.iter().enumerate() {
+        println!("  #{} {}", i + 1, hit.service);
+        println!("     payment : {}", hit.payment);
+        println!("     profile : {}", hit.profile);
+        println!("     cosine  : {:.3}   trust: {:.3}", hit.cosine, hit.trust);
+    }
+
+    if let Some(room) = room {
+        println!("\n  Scoped to room: {room}");
+    }
+
+    // One-step save: write the top-ranked hit into the contacts table
+    // (INTEGRATION.md §5 — a discovered provider becomes a contact).
+    if let Some(label) = save {
+        origin_wallet::network::save_top_contact(path, &hits, &label)?;
+        println!("\n✓ Saved top hit as contact '{label}' → {}", hits[0].service);
+    }
+
+    Ok(())
+}
+
+/// Contacts table commands (INTEGRATION.md §5): a plain JSON sidecar next
+/// to the wallet file — labels map to MeshIds for pay/dial targets.
+fn cmd_contact(
+    path: &Path,
+    command: super::ContactCommands,
+) -> Result<(), Box<dyn std::error::Error>> {
+    match command {
+        super::ContactCommands::Add { label, mesh } => {
+            let mut contacts = origin_wallet::Contacts::load(path)?;
+            contacts.add(&label, &mesh)?;
+            println!("✓ Saved contact '{label}' → {mesh}");
+            println!("  File: {}", contacts.path().display());
+            Ok(())
+        }
+        super::ContactCommands::List => {
+            let contacts = origin_wallet::Contacts::load(path)?;
+            if contacts.entries.is_empty() {
+                println!("No contacts. Add one with: origin-wallet contact add --label <name> --mesh <meshid>");
+                return Ok(());
+            }
+            println!("Contacts ({}):", contacts.entries.len());
+            println!("{:-<72}", "");
+            for (label, mesh) in &contacts.entries {
+                println!("  {label:<24} {mesh}");
+            }
+            Ok(())
+        }
+    }
+}
+
+/// Send a point-to-point mail message on the mesh (INTEGRATION.md step 4
+/// — the rail for anything beyond payments): bind an ephemeral node and
+/// deliver the signed envelope directly to the recipient's node.
+fn cmd_mail_send(
+    to: &str,
+    peer_addr: std::net::SocketAddr,
+    body: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let to_mesh: stoa::MeshId = to.parse()?;
+
+    println!("Sending mail to {to_mesh} at {peer_addr}...");
+    let rt = tokio::runtime::Runtime::new()?;
+    let env = rt.block_on(origin_wallet::network::send_mail(
+        to_mesh,
+        peer_addr,
+        body.as_bytes().to_vec(),
+    ))?;
+
+    println!("\n✓ Mail delivered");
+    println!("  envelope : {}", hex::encode(env.envelope_hash()));
+    println!("  from     : {}", env.from);
+    println!("  ct       : {} bytes (encrypted body)", env.ct.len());
+
+    Ok(())
+}
+
+/// `mail inbox` — bind this wallet's node (same seed → same store, so the
+/// persisted deduped mailbox reloads) and print the decrypted inbox.
+fn cmd_mail_inbox(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
+    if !path.exists() {
+        return Err(format!("Wallet file not found: {}", path.display()).into());
+    }
+
+    let passphrase = prompt_passphrase("Enter passphrase: ")?;
+    let wallet = Wallet::open(path, &passphrase)?;
+
+    println!("Reading inbox...");
+    let rt = tokio::runtime::Runtime::new()?;
+    let inbox = rt.block_on(origin_wallet::network::mail_inbox(&wallet))?;
+
+    if inbox.is_empty() {
+        println!("\nInbox empty. Send mail to this MeshId:");
+        println!("  {}", wallet.stoa_node_keys()?.mesh_id());
+        println!("  Tip: mail arrives when this node is running to ingest it.");
+        return Ok(());
+    }
+
+    println!("\nInbox ({} message{}):", inbox.len(), if inbox.len() == 1 { "" } else { "s" });
+    println!("{:-<72}", "");
+    for m in &inbox {
+        println!("  from : {}", m.from);
+        println!("  seq  : {} (ts {})", m.seq, m.ts);
+        println!("  body : {}", String::from_utf8_lossy(&m.body));
+        println!("{:-<72}", "");
+    }
+    Ok(())
+}
+
+/// The dial-based chat rail (INTEGRATION.md §4): `chat send` opens a
+/// session — relayed L3 pipe (named relay or dial_any's fallback chain,
+/// upgraded to direct when possible) or the addressed topic on a direct
+/// mesh link — and sends one message; `chat listen` subscribes to the
+/// addressed topic and blocks for a message.
+fn cmd_chat(path: &Path, command: super::ChatCommands) -> Result<(), Box<dyn std::error::Error>> {
+    match command {
+        super::ChatCommands::Repl { peer, peer_addr } => cmd_chat_repl(path, peer, peer_addr),
+        super::ChatCommands::Send {
+            to,
+            peer_addr,
+            relay,
+            relay_addr,
+            body,
+            wait_reply,
+        } => {
+            if !path.exists() {
+                return Err(format!("Wallet file not found: {}", path.display()).into());
+            }
+            let passphrase = prompt_passphrase("Enter passphrase: ")?;
+            let wallet = Wallet::open(path, &passphrase)?;
+            let to_mesh: stoa::MeshId = to.parse()?;
+            let relay = match (relay, relay_addr) {
+                (Some(r), Some(a)) => Some((r.parse::<stoa::MeshId>()?, a)),
+                (Some(r), None) => {
+                    return Err(format!("--relay {r} needs --relay-addr <host:port>").into())
+                }
+                (None, Some(_)) => {
+                    return Err("--relay-addr given without --relay <meshid>".into())
+                }
+                (None, None) => None,
+            };
+
+            println!("Chatting to {to_mesh}...");
+            let rt = tokio::runtime::Runtime::new()?;
+            let outcome = rt.block_on(origin_wallet::network::chat_send(
+                &wallet,
+                to_mesh,
+                peer_addr,
+                relay,
+                body.into_bytes(),
+                wait_reply,
+            ))?;
+
+            println!("\n✓ Chat sent over the {}", outcome.tier);
+            match &outcome.reply {
+                Some(r) => println!("  reply : {}", String::from_utf8_lossy(r)),
+                None => println!("  reply : (none)"),
+            }
+            Ok(())
+        }
+    }
+}
+
+/// `chat listen` — subscribe to the addressed topic and block for a
+/// message (60 s), printing sender + body.
+fn cmd_chat_listen(
+    path: &Path,
+    from: Option<String>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    if !path.exists() {
+        return Err(format!("Wallet file not found: {}", path.display()).into());
+    }
+    let passphrase = prompt_passphrase("Enter passphrase: ")?;
+    let wallet = Wallet::open(path, &passphrase)?;
+
+    let peer = match from {
+        Some(p) => Some(p.parse::<stoa::MeshId>()?),
+        None => None,
+    };
+    let rt = tokio::runtime::Runtime::new()?;
+    let msg = rt.block_on(origin_wallet::network::chat_listen(&wallet, peer))?;
+
+    println!("\n✉ chat from {}", msg.from);
+    println!("  {}", String::from_utf8_lossy(&msg.data));
+    Ok(())
+}
+
+/// `chat repl` — one long-lived node, a background listener printing
+/// incoming chat inline, and a prompt loop for `send <meshid|label>
+/// <text…>` (labels resolve via the contacts table), `contacts`,
+/// `whoami`, `help`, `quit`. `peer`/`peer_addr` is the optional way in: a
+/// known node to dial at startup.
+fn cmd_chat_repl(
+    path: &Path,
+    peer: Option<String>,
+    peer_addr: Option<std::net::SocketAddr>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    if !path.exists() {
+        return Err(format!("Wallet file not found: {}", path.display()).into());
+    }
+    let passphrase = prompt_passphrase("Enter passphrase: ")?;
+    let wallet = Wallet::open(path, &passphrase)?;
+    let contacts = origin_wallet::Contacts::load(path)?;
+
+    let peer = match peer {
+        Some(p) => Some(p.parse::<stoa::MeshId>()?),
+        None => None,
+    };
+    let rt = tokio::runtime::Runtime::new()?;
+    rt.block_on(origin_wallet::network::chat_repl(&wallet, &contacts, peer, peer_addr))?;
+    Ok(())
+}
+
+/// Serve this wallet's node as a circuit relay (INTEGRATION.md step 5 —
+/// the "help the network" toggle, off by default): unlock, bind the node
+/// derived from the wallet seed, serve the relay role with the given PoW
+/// difficulty, start the punch-refresh loop, and run until Ctrl-C. The
+/// relay's cookie/eviction state persists under `$STOA_HOME/nodes/<meshid>/`.
+fn cmd_relay(
+    path: &Path,
+    difficulty: u32,
+    stun_server: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    if !path.exists() {
+        return Err(format!("Wallet file not found: {}", path.display()).into());
+    }
+
+    let passphrase = prompt_passphrase("Enter passphrase: ")?;
+    let wallet = Wallet::open(path, &passphrase)?;
+
+    let stun_addr: std::net::SocketAddr = std::net::ToSocketAddrs::to_socket_addrs(stun_server)?
+        .next()
+        .ok_or_else(|| format!("STUN server {stun_server} resolved to nothing"))?;
+
+    println!("Serving as a circuit relay...");
+    let rt = tokio::runtime::Runtime::new()?;
+    let mesh = rt.block_on(origin_wallet::network::serve_relay(
+        &wallet,
+        difficulty,
+        stun_addr,
+        "0.0.0.0:0".parse()?,
+    ))?;
+
+    println!("\n✓ Relay serving (help the network)");
+    println!("  mesh id : {}", mesh.local_mesh_id());
+    println!("  address : {}", mesh.local_addr());
+    println!("  pow     : {difficulty} bits (cookie gate, RELAY.md §9)");
+    println!("  stun    : {stun_server} (punch-candidate refresh)");
+    println!("  store   : {}", doctor_home().join("nodes").join(mesh.local_mesh_id().to_string()).display());
+    println!("Press Ctrl-C to stop. Peers dial through this node only while it runs.");
+
+    // Park until interrupted; the mesh handle keeps the actor + loops alive.
+    let _mesh = mesh;
+    loop {
+        std::thread::sleep(std::time::Duration::from_secs(3600));
+    }
+}
+
+/// `$STOA_HOME` or `~/.stoa` — mirrors `stoa::doctor::stoa_home()` (the
+/// relay state the wallet node persists lives here).
+fn doctor_home() -> std::path::PathBuf {
+    if let Some(home) = std::env::var_os("STOA_HOME") {
+        return std::path::PathBuf::from(home);
+    }
+    std::env::var_os("HOME")
+        .map(std::path::PathBuf::from)
+        .map(|h| h.join(".stoa"))
+        .unwrap_or_else(|| std::path::PathBuf::from(".stoa"))
 }

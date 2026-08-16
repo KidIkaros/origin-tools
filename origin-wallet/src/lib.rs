@@ -31,13 +31,16 @@
 
 pub mod account;
 pub mod address;
+pub mod contacts;
 pub mod error;
+pub mod network;
 pub mod transaction;
 pub mod wallet;
 
 // Re-exports for convenience
 pub use account::Account;
 pub use address::{Address, AddressType, Network};
+pub use contacts::Contacts;
 pub use error::{Result, WalletError};
 pub use transaction::Transaction;
 pub use wallet::{Shard, Wallet};
