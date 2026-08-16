@@ -297,7 +297,7 @@ mod tests {
         let mut tx = Transaction::new(&from, &to, 1000, 10, 0);
 
         // Sign the transaction
-        let result = tx.sign(&account);
+        let result = tx.sign(account);
         assert!(result.is_ok());
 
         // Verify signature is not empty
@@ -316,7 +316,7 @@ mod tests {
         let to = dummy_address();
 
         let mut tx = Transaction::new(&from, &to, 1000, 10, 0);
-        tx.sign(&account).unwrap();
+        tx.sign(account).unwrap();
 
         // Get public keys
         let _ed_pk = account.ed25519_pk().unwrap();

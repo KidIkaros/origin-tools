@@ -152,12 +152,12 @@ impl IdentityStore {
         self.tier
     }
 
-    /// Derive a key with domain separation using HKDF-SHA3-256.
+    /// Derive a key with domain separation using HKDF-BLAKE3.
     pub fn derive_key(&self, domain: &str, len: usize) -> Result<Vec<u8>, String> {
-        use origin_crypto_sdk::hkdf_sha3_256;
+        use origin_crypto_sdk::hkdf_blake3;
 
         let mut output = vec![0u8; len];
-        hkdf_sha3_256(&self.seed, None, domain.as_bytes(), &mut output)
+        hkdf_blake3(&self.seed, None, domain.as_bytes(), &mut output)
             .map_err(|e| format!("HKDF failed: {e}"))?;
         Ok(output)
     }

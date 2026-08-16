@@ -17,7 +17,7 @@ use origin_crypto_sdk::{
     blake3,
     blob::{create_blob, recover_seed},
     compression, hmac_sha3_256,
-    kdf::hkdf::hkdf_sha3_256,
+    kdf::hkdf::hkdf_blake3,
     kdf::Argon2idBuilder,
     pqc::falcon1024,
     sha3_256, sha3_512,
@@ -155,7 +155,7 @@ fn validate_envelope_flags(flags: u8, reserved: u8) -> Result<(), String> {
 
 /// Derive a 32-byte encryption key from the suite identity.
 ///
-/// Uses HKDF-SHA3-256 over the master seed (IKM) with a domain-separation
+/// Uses HKDF-BLAKE3 over the master seed (IKM) with a domain-separation
 /// `info` string so each tool gets a distinct key from the same identity.
 /// This avoids an interactive passphrase prompt entirely when `--identity`
 /// is set.
@@ -168,7 +168,7 @@ fn key_from_identity(domain: &str, passphrase_file: Option<&str>) -> Result<[u8;
     let seed = store.seed_bytes();
 
     let mut okm = [0u8; 32];
-    hkdf_sha3_256(seed, None, domain.as_bytes(), &mut okm)
+    hkdf_blake3(seed, None, domain.as_bytes(), &mut okm)
         .map_err(|e| format!("HKDF key derivation failed: {e}"))?;
     Ok(okm)
 }
@@ -403,7 +403,7 @@ pub fn cmd_decrypt(args: DecryptArgs) -> Result<(), String> {
     let base_nonce: [u8; 24] = envelope[24..48].try_into().unwrap();
 
     // When `--identity` is set the envelope was sealed with a key derived from
-    // the suite identity (HKDF-SHA3-256 over the master seed), not passphrase
+    // the suite identity (HKDF-BLAKE3 over the master seed), not passphrase
     // Argon2id. We reproduce that same key deterministically.
     let key_arr: [u8; 32] = if args.identity {
         key_from_identity("origin-seal::encrypt", args.passphrase_file.as_deref())?
