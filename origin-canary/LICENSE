@@ -209,7 +209,7 @@ IN NO EVENT SHALL ANY CONTRIBUTOR OR MAINTAINER BE LIABLE FOR ANY CLAIM, DAMAGES
 
 **9.3** The Maintainer may publish a **clarification** of an existing term in `NOTICE`, but a clarification: (a) may not impose a new restriction, (b) may not expand the scope of any existing restriction, (c) is not retroactive, and (d) is subject to a 30-day public-comment period before taking effect. A "clarification" that violates (a), (b), or (c) is null and void.
 
-**9.4** This license does not supersede any applicable law. Where the law requires more, the law controls. Where this license requires more and the law allows, this license controls.
+**9.4** This license does not supersede any applicable law. Where the law requires more, the law controls. Where this license requires more and the law allows, this license controls. Nothing in this license limits any mandatory right a consumer has under applicable consumer-protection law, nor a consumer's right to bring proceedings in their local court.
 
 ---
 
@@ -233,7 +233,7 @@ This license is governed by the laws of the jurisdiction specified in the projec
 
 Nothing in this section prevents the parties from agreeing to binding arbitration for a specific dispute.
 
-**12.1 Injunctive relief.** Notwithstanding §12, either party may seek injunctive or other equitable relief in a court of competent jurisdiction to prevent irreparable harm, including but not limited to infringement of the Work. The Maintainer's ability to seek such relief is not conditioned on the parties' agreement to arbitrate, and is not waived by any other provision of this license.
+**12.1 Injunctive relief.** Notwithstanding §12, either party may seek injunctive or other urgent court relief in a court of competent jurisdiction to prevent irreparable harm, including but not limited to infringement of the Work. The Maintainer's ability to seek such relief is not conditioned on the parties' agreement to arbitrate, and is not waived by any other provision of this license.
 
 ---
 
@@ -323,6 +323,12 @@ v1.4.3 closes the three material seams flagged by an `ambiguity-stress-test` (co
 - **§1 "Hosted Service" narrowed.** Now excludes "incidental inclusion of the Work within a larger product whose primary functionality is otherwise unrelated," and captures a distinct, separately-marketed capability — closing the incidental-embedding ambiguity (Scenario 4).
 - **§5.1 DOSP clock anchored.** "First public release date" is now expressly "on or after the OPL adoption date declared in NOTICE"; a Version released before OPL adoption is not subject to DOSP (Scenario 6).
 
-Items from the review are now fully closed; OPL v1.4.3 incorporates the complete legal-skills-review pass.
+**Regional / jurisdictional hardening** (from REGIONAL_REVIEW.md — cross-system scan against German/BGB, EU, and other civil-law systems). Pure clarifications; no substance changed:
+- **§9.4 consumer carve-out.** Added that nothing limits a consumer's mandatory rights under applicable consumer-protection law, nor a consumer's right to proceedings in their local court. Closes the consumer blind spot (regional finding #1; §9.4 already subordinated OPL to applicable law, this makes the consumer point explicit).
+- **§12.1 "equitable relief" → "urgent court relief".** Removes the US-equity-court label artifact that is meaningless in civil-law systems (regional finding #3).
+
+**Advisor guidance (not a license change):** a Maintainer whose Standard Terms are AGB (German standard business terms) should have those terms reviewed for AGB-compliance; OPL's own burden-allocation (§3.3) and liability exclusion (§7/§8) can be challenged as AGB against consumers (regional findings #2/#5). OPL's draft status means a qualified German/EU practitioner should confirm the regional findings before v1.4.3 is published as final.
+
+Items from the review are now fully closed; OPL v1.4.3 incorporates the complete legal-skills-review pass (ambiguity stress-test + 5-clause risk + regional discrepancy scan).
 
 *End of OPL-1.4 draft.*
