@@ -15,10 +15,12 @@
 //!   4. Watermark robustness — the universal strategy on commentless files.
 
 use origin_canary::embed::{run_embed, EmbedConfig};
-use origin_canary::verify::verify_source;
+use origin_canary::verify::{verify_integrity, verify_source, IntegrityStatus};
 use std::fs;
 use std::path::Path;
 use std::process::Command;
+use std::sync::Arc;
+use std::thread;
 
 fn cfg(dir: &Path, n: usize, strategies: Vec<&str>) -> EmbedConfig {
     EmbedConfig {
@@ -332,5 +334,181 @@ fn dead_code_python_preserves_execution() {
         "dead-code embed broke python execution"
     );
     assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "7");
+    let _ = fs::remove_dir_all(&tmp);
+}
+
+// ── Integrity / tamper detection (verify_integrity) ───────────────────────
+
+#[test]
+fn integrity_intact_on_clean_tree() {
+    let tmp = std::env::temp_dir().join(format!("canary_intact_{}", std::process::id()));
+    let _ = fs::remove_dir_all(&tmp);
+    fs::create_dir_all(tmp.join("src")).unwrap();
+    fs::write(tmp.join("src/app.py"), "x = 1\n").unwrap();
+
+    let res = run_embed(cfg(&tmp, 2, vec!["variable.python"])).unwrap();
+    let status = verify_integrity(&tmp, &res.manifest).unwrap();
+    assert_eq!(
+        status,
+        IntegrityStatus::Intact,
+        "clean tree must report Intact"
+    );
+    let _ = fs::remove_dir_all(&tmp);
+}
+
+#[test]
+fn integrity_detects_modified_file() {
+    let tmp = std::env::temp_dir().join(format!("canary_tamper_{}", std::process::id()));
+    let _ = fs::remove_dir_all(&tmp);
+    fs::create_dir_all(tmp.join("src")).unwrap();
+    fs::write(tmp.join("src/app.py"), "x = 1\n").unwrap();
+
+    let res = run_embed(cfg(&tmp, 2, vec!["variable.python"])).unwrap();
+    assert_eq!(
+        verify_integrity(&tmp, &res.manifest).unwrap(),
+        IntegrityStatus::Intact
+    );
+
+    fs::write(tmp.join("src/app.py"), "x = 2  # modified\n").unwrap();
+    let status = verify_integrity(&tmp, &res.manifest).unwrap();
+    assert_eq!(
+        status,
+        IntegrityStatus::Tampered,
+        "modified file must be detected as Tampered"
+    );
+    let _ = fs::remove_dir_all(&tmp);
+}
+
+#[test]
+fn integrity_detects_added_file() {
+    let tmp = std::env::temp_dir().join(format!("canary_added_{}", std::process::id()));
+    let _ = fs::remove_dir_all(&tmp);
+    fs::create_dir_all(tmp.join("src")).unwrap();
+    fs::write(tmp.join("src/app.py"), "x = 1\n").unwrap();
+
+    let res = run_embed(cfg(&tmp, 1, vec!["variable.python"])).unwrap();
+    fs::write(tmp.join("src/extra.py"), "y = 2\n").unwrap();
+    assert_eq!(
+        verify_integrity(&tmp, &res.manifest).unwrap(),
+        IntegrityStatus::Tampered,
+        "added file must be detected as Tampered"
+    );
+    let _ = fs::remove_dir_all(&tmp);
+}
+
+// ── Fuzz: adversarial token / file counts ────────────────────────────────
+
+#[test]
+fn fuzz_many_canaries_many_files_spreads_and_roundtrips() {
+    let tmp = std::env::temp_dir().join(format!("canary_fuzz_{}", std::process::id()));
+    let _ = fs::remove_dir_all(&tmp);
+    fs::create_dir_all(tmp.join("src")).unwrap();
+    for i in 0..50 {
+        fs::write(tmp.join("src").join(format!("m{i}.py")), "v = 1\n").unwrap();
+    }
+    let res = run_embed(cfg(&tmp, 100, vec!["variable.python"])).unwrap();
+    assert_eq!(res.manifest.canary_tokens.len(), 100, "all 100 must embed");
+
+    let matches = verify_source(&tmp, &res.manifest);
+    let found: std::collections::HashSet<usize> = matches.iter().map(|m| m.token_id).collect();
+    assert_eq!(
+        found.len(),
+        100,
+        "every token should be locatable after dense embed"
+    );
+    let _ = fs::remove_dir_all(&tmp);
+}
+
+#[test]
+fn fuzz_unicode_filenames() {
+    let tmp = std::env::temp_dir().join(format!("canary_unifn_{}", std::process::id()));
+    let _ = fs::remove_dir_all(&tmp);
+    fs::create_dir_all(tmp.join("src")).unwrap();
+    let names = ["normal.py", "café_Ærø.py", "spaces in name.py", "日本語.py"];
+    for n in names {
+        fs::write(tmp.join("src").join(n), "x = 1\n").unwrap();
+    }
+    let res = run_embed(cfg(&tmp, 4, vec!["variable.python"])).unwrap();
+    assert_eq!(res.manifest.canary_tokens.len(), 4);
+    assert_eq!(
+        verify_integrity(&tmp, &res.manifest).unwrap(),
+        IntegrityStatus::Intact
+    );
+    let _ = fs::remove_dir_all(&tmp);
+}
+
+// ── Concurrency ───────────────────────────────────────────────────────────
+
+#[test]
+fn concurrent_embed_calls_do_not_interfere() {
+    let n = 8usize;
+    let handles: Vec<_> = (0..n)
+        .map(|t| {
+            thread::spawn(move || {
+                let tmp =
+                    std::env::temp_dir().join(format!("canary_conc_{}_{}", std::process::id(), t));
+                let _ = fs::remove_dir_all(&tmp);
+                fs::create_dir_all(tmp.join("src")).unwrap();
+                fs::write(tmp.join("src/app.py"), "x = 1\n").unwrap();
+                let res = run_embed(cfg(&tmp, 3, vec!["variable.python"]));
+                let ok = res.is_ok() && res.as_ref().unwrap().manifest.canary_tokens.len() == 3;
+                let _ = fs::remove_dir_all(&tmp);
+                ok
+            })
+        })
+        .collect();
+    for h in handles {
+        assert!(h.join().unwrap(), "concurrent embed thread failed");
+    }
+}
+
+// ── Large repo ────────────────────────────────────────────────────────────
+
+#[test]
+fn large_repo_embeds_and_stays_intact() {
+    let tmp = std::env::temp_dir().join(format!("canary_large_{}", std::process::id()));
+    let _ = fs::remove_dir_all(&tmp);
+    fs::create_dir_all(tmp.join("src")).unwrap();
+    for i in 0..500 {
+        fs::write(
+            tmp.join("src").join(format!("f{i}.py")),
+            "# module\nVALUE = 1\n",
+        )
+        .unwrap();
+    }
+    let res = run_embed(cfg(&tmp, 200, vec!["variable.python"])).unwrap();
+    assert_eq!(res.manifest.canary_tokens.len(), 200);
+
+    // Integrity must hold on the unmodified (post-embed) large tree.
+    assert_eq!(
+        verify_integrity(&tmp, &res.manifest).unwrap(),
+        IntegrityStatus::Intact
+    );
+
+    // Determinism: a second embed of the same tree + seed yields the same
+    // token set (file targets stable).
+    let res2 = run_embed(cfg(&tmp, 200, vec!["variable.python"])).unwrap();
+    let targets: Vec<&str> = res
+        .manifest
+        .canary_tokens
+        .iter()
+        .map(|t| t.target_file.as_str())
+        .collect();
+    let targets2: Vec<&str> = res2
+        .manifest
+        .canary_tokens
+        .iter()
+        .map(|t| t.target_file.as_str())
+        .collect();
+    assert_eq!(
+        targets, targets2,
+        "embedding must be deterministic for same seed/tree"
+    );
+
+    // Integrity of the second embed also holds on its own tree.
+    assert_eq!(
+        verify_integrity(&tmp, &res2.manifest).unwrap(),
+        IntegrityStatus::Intact
+    );
     let _ = fs::remove_dir_all(&tmp);
 }

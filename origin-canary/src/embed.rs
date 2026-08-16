@@ -314,7 +314,13 @@ pub fn run_embed(config: EmbedConfig) -> Result<EmbedResult, String> {
 }
 
 /// Compute a BLAKE3 hash of the source tree (sorted file list + contents).
-fn hash_source_tree(source_dir: &Path) -> Result<String, String> {
+/// Hash the entire source tree (sorted file names + contents) into a single
+/// BLAKE3 hex string. Deterministic for a given tree; any change to any file
+/// (content or name) changes the result. This is the integrity anchor recorded
+/// in `CanaryManifest::source_tree_hash`.
+///
+/// Made public so `verify::verify_integrity` can recompute and compare it.
+pub fn hash_source_tree(source_dir: &Path) -> Result<String, String> {
     let mut hasher = blake3::Hasher::new();
 
     let mut files: Vec<PathBuf> = Vec::new();

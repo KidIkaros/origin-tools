@@ -4,9 +4,40 @@
 
 //! Canary verification — scan suspect code for embedded canary tokens.
 
+use crate::embed::hash_source_tree;
 use crate::manifest::{CanaryManifest, CanaryToken};
 use std::fs;
 use std::path::Path;
+
+/// Result of an integrity check.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum IntegrityStatus {
+    /// The current tree hash matches the manifest's recorded hash.
+    Intact,
+    /// The tree hash differs — at least one file was added, removed, renamed,
+    /// or had its contents altered since embedding.
+    Tampered,
+}
+
+/// Verify the integrity of a source tree against the manifest's recorded
+/// `source_tree_hash`.
+///
+/// This detects *tampering or any change* to the embedded tree (unlike
+/// `verify_source`, which only scans for token *presence* / theft). It is a
+/// coarse signal: any modification to any file — including a legitimate edit
+/// by the Maintainer — will report `Tampered`. Use it to confirm a distribution
+/// has not been altered since the canary was embedded.
+pub fn verify_integrity(
+    source_dir: &Path,
+    manifest: &CanaryManifest,
+) -> Result<IntegrityStatus, String> {
+    let current = hash_source_tree(source_dir)?;
+    if current == manifest.source_tree_hash {
+        Ok(IntegrityStatus::Intact)
+    } else {
+        Ok(IntegrityStatus::Tampered)
+    }
+}
 
 /// A match for a canary token found in suspect code.
 #[derive(Debug, Clone)]
