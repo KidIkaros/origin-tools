@@ -97,6 +97,11 @@ duration of each command.
 # address), recording the receipt in the wallet's MMR history.
 origin-wallet pay --file wallet.dat --to <64-hex-meshid> \
     --amount 500 --peer-addr 1.2.3.4:8443 --memo "inference run #42"
+
+# Cap the payment: a per-transaction spend cap (SPEC §10.2 SpendPolicy
+# narrowing) — an amount over the cap is refused before anything is sent.
+origin-wallet pay --file wallet.dat --to <64-hex-meshid> \
+    --amount 500 --peer-addr 1.2.3.4:8443 --cap 1000
 ```
 
 The payment is streamed over an opened channel; the signed ledger entry

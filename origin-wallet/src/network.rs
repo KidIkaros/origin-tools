@@ -25,13 +25,39 @@ use crate::Wallet;
 ///
 /// The wallet's own history is the human-facing record; the ledger entry is
 /// the verifiable evidence — the same evidence a settle would present.
+/// The native rail's spend gate: a per-call `cap` narrows the payment
+/// using the SPEC §10.2 `SpendPolicy` rule (per-call narrowing only —
+/// the call may never exceed the standing cap; here the standing cap is
+/// the flag, so `amount > cap` refuses the payment outright before any
+/// channel is opened or ledger entry is signed).
+fn enforce_spend_cap(amount: u64, cap: Option<u64>) -> Result<()> {
+    if let Some(cap) = cap {
+        let standing = stoa::pay::SpendPolicy {
+            per_tx: Some(cap),
+            ..Default::default()
+        };
+        let call = stoa::pay::SpendPolicy {
+            per_tx: Some(amount),
+            ..Default::default()
+        };
+        standing.narrow(&call).map_err(|_| {
+            WalletError::Transaction(format!(
+                "amount {amount} exceeds the spend cap {cap} (per-tx, SPEC §10.2)"
+            ))
+        })?;
+    }
+    Ok(())
+}
+
 pub async fn pay_native(
     wallet: &mut Wallet,
     to: stoa::MeshId,
     peer_addr: SocketAddr,
     amount: u64,
     memo: Vec<u8>,
+    cap: Option<u64>,
 ) -> Result<stoa::ledger::LedgerEntry> {
+    enforce_spend_cap(amount, cap)?;
     let node_keys = wallet.stoa_node_keys()?;
     let bind_addr = "0.0.0.0:0"
         .parse()
@@ -93,7 +119,9 @@ pub async fn pay_native_via_relay(
     relay_addr: SocketAddr,
     amount: u64,
     memo: Vec<u8>,
+    cap: Option<u64>,
 ) -> Result<stoa::ledger::LedgerEntry> {
+    enforce_spend_cap(amount, cap)?;
     let node_keys = wallet.stoa_node_keys()?;
     let bind_addr = "0.0.0.0:0"
         .parse()
@@ -749,7 +777,9 @@ pub async fn pay_service(
     peer_addr: Option<SocketAddr>,
     amount: u64,
     memo: Vec<u8>,
+    cap: Option<u64>,
 ) -> Result<(stoa::ledger::LedgerEntry, stoa::ServiceRecord)> {
+    enforce_spend_cap(amount, cap)?;
     let node_keys = wallet.stoa_node_keys()?;
     let bind_addr = "0.0.0.0:0"
         .parse()
@@ -860,6 +890,43 @@ pub async fn lookup_service(
 mod tests {
     use super::*;
 
+    #[test]
+    fn spend_cap_narrowing_semantics() {
+        // The SPEC §10.2 rule as the wallet's gate: a `--cap` is a
+        // per-tx standing cap; the payment (the call) may only narrow,
+        // never exceed it.
+        assert!(enforce_spend_cap(100, Some(100)).is_ok(), "at-cap is allowed");
+        assert!(enforce_spend_cap(99, Some(100)).is_ok(), "under-cap is allowed");
+        assert!(enforce_spend_cap(101, Some(100)).is_err(), "over-cap is refused");
+        assert!(enforce_spend_cap(1_000_000, None).is_ok(), "no cap = uncapped");
+    }
+
+    #[tokio::test]
+    async fn over_cap_payment_is_refused_before_any_network_activity() {
+        // The wallet surface: an over-cap `pay` errors before binding,
+        // connecting, or signing — the cap gate is the first line, so
+        // nothing is recorded in the MMR and nothing leaves the node.
+        let mut wallet = Wallet::create("cap-pass").unwrap();
+        let payee = Wallet::create("cap-payee-pass").unwrap();
+        let payee_id = *payee.stoa_node_keys().unwrap().mesh_id();
+
+        let err = pay_native(
+            &mut wallet,
+            payee_id,
+            "127.0.0.1:1".parse().unwrap(),
+            500,
+            b"capped".to_vec(),
+            Some(100),
+        )
+        .await
+        .expect_err("over-cap payment must be refused");
+        assert!(
+            err.to_string().contains("exceeds the spend cap"),
+            "error names the cap: {err}"
+        );
+        assert_eq!(wallet.transaction_count(), 0, "nothing recorded in the MMR");
+    }
+
     #[tokio::test]
     async fn wallet_pays_counterparty_and_records_history() {
         // INTEGRATION.md step 3, end-to-end: wallet A pays wallet B on the
@@ -873,7 +940,7 @@ mod tests {
         let (payee_mesh, payee_addr) =
             stoa::Mesh::bind(payee_keys, "127.0.0.1:0".parse().unwrap()).unwrap();
 
-        let entry = pay_native(&mut payer, payee_id, payee_addr, 777, b"step-3 test".to_vec())
+        let entry = pay_native(&mut payer, payee_id, payee_addr, 777, b"step-3 test".to_vec(), None)
             .await
             .expect("pay");
 
@@ -937,6 +1004,7 @@ mod tests {
             relay_addr,
             4242,
             b"relayed dogfood".to_vec(),
+            None,
         )
         .await
         .expect("relayed pay");
@@ -1047,6 +1115,7 @@ mod tests {
             Some(service_addr),
             555,
             b"call the provider".to_vec(),
+            None,
         )
         .await
         .expect("pay service");
@@ -1471,7 +1540,7 @@ mod tests {
             stoa::Mesh::bind(payee_keys, "127.0.0.1:0".parse().unwrap()).unwrap();
 
         // A pays B on the native rail; B ingests the receipt via gossip.
-        pay_native(&mut payer, payee_id, payee_addr, 555, b"sync test".to_vec())
+        pay_native(&mut payer, payee_id, payee_addr, 555, b"sync test".to_vec(), None)
             .await
             .expect("pay");
         tokio::time::timeout(std::time::Duration::from_secs(30), async {

@@ -47,6 +47,7 @@ pub fn execute(cli: super::Cli) -> Result<(), Box<dyn std::error::Error>> {
             relay,
             relay_addr,
             memo,
+            cap,
         } => {
             let target = match (to, service) {
                 (Some(to), None) => PayTarget::Counterparty(to.parse()?),
@@ -62,10 +63,13 @@ pub fn execute(cli: super::Cli) -> Result<(), Box<dyn std::error::Error>> {
                 &cli.file,
                 target,
                 amount,
-                peer_addr,
-                relay,
-                relay_addr,
-                memo,
+                PayFlags {
+                    peer_addr,
+                    relay,
+                    relay_addr,
+                    memo,
+                    cap,
+                },
             )?
         }
         super::Commands::Settle { to, peer_addr } => cmd_settle(&cli.file, &to, peer_addr)?,
@@ -542,6 +546,16 @@ fn cmd_network_status(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+/// The optional knobs on a `pay` (grouped so `cmd_pay` stays under the
+/// clippy argument limit).
+struct PayFlags {
+    peer_addr: Option<std::net::SocketAddr>,
+    relay: Option<String>,
+    relay_addr: Option<std::net::SocketAddr>,
+    memo: Option<String>,
+    cap: Option<u64>,
+}
+
 /// The target of a `pay` — a counterparty MeshId, or a discovered
 /// service to resolve and pay.
 enum PayTarget {
@@ -558,10 +572,7 @@ fn cmd_pay(
     path: &Path,
     target: PayTarget,
     amount: u64,
-    peer_addr: Option<std::net::SocketAddr>,
-    relay: Option<String>,
-    relay_addr: Option<std::net::SocketAddr>,
-    memo: Option<String>,
+    flags: PayFlags,
 ) -> Result<(), Box<dyn std::error::Error>> {
     if !path.exists() {
         return Err(format!("Wallet file not found: {}", path.display()).into());
@@ -570,7 +581,7 @@ fn cmd_pay(
     let passphrase = prompt_passphrase("Enter passphrase: ")?;
     let mut wallet = Wallet::open(path, &passphrase)?;
 
-    let memo_bytes = memo.unwrap_or_default().into_bytes();
+    let memo_bytes = flags.memo.unwrap_or_default().into_bytes();
     let rt = tokio::runtime::Runtime::new()?;
 
     // --service mode: resolve the record, pay its payment address.
@@ -582,9 +593,10 @@ fn cmd_pay(
         let (entry, record) = rt.block_on(origin_wallet::network::pay_service(
             &mut wallet,
             service_mesh,
-            peer_addr,
+            flags.peer_addr,
             amount,
             memo_bytes,
+            flags.cap,
         ))?;
         wallet.save(path, &passphrase)?;
         println!("\n✓ Service paid");
@@ -600,7 +612,7 @@ fn cmd_pay(
         unreachable!()
     };
 
-    let entry = match (relay, relay_addr) {
+    let entry = match (flags.relay, flags.relay_addr) {
         // Relayed pay: connect only to the relay; the counterparty is
         // reached over the mesh (gossip fanout to the relay + the
         // payee's registry sync).
@@ -617,6 +629,7 @@ fn cmd_pay(
                 relay_addr,
                 amount,
                 memo_bytes,
+                flags.cap,
             ))?
         }
         (None, Some(relay_addr)) => {
@@ -627,7 +640,9 @@ fn cmd_pay(
         }
         // Direct pay: dial the counterparty itself.
         (None, None) => {
-            let peer_addr = peer_addr.ok_or("--peer-addr is required unless --relay is given")?;
+            let peer_addr = flags
+                .peer_addr
+                .ok_or("--peer-addr is required unless --relay is given")?;
             println!(
                 "Paying {} units to {} at {} on the native rail...",
                 amount, to_mesh, peer_addr
@@ -638,6 +653,7 @@ fn cmd_pay(
                 peer_addr,
                 amount,
                 memo_bytes,
+                flags.cap,
             ))?
         }
     };

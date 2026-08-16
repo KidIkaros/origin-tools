@@ -109,6 +109,7 @@ async fn e2e_relayed_pay_across_the_cli_relay_process() {
         relay_addr,
         999,
         b"two-process relayed pay".to_vec(),
+        None,
     )
     .await
     .expect("relayed pay through the CLI relay process");
@@ -220,6 +221,7 @@ async fn e2e_relayed_pay_pulled_on_demand_by_network_sync_cli() {
         relay_addr,
         999,
         b"on-demand sync pull".to_vec(),
+        None,
     )
     .await
     .expect("relayed pay");
@@ -310,6 +312,7 @@ async fn e2e_relayed_pay_then_settle_through_the_cli_relay() {
         relay_addr,
         500,
         b"settle e2e".to_vec(),
+        None,
     )
     .await
     .expect("relayed pay");
