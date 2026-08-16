@@ -941,7 +941,12 @@ fn cmd_mail_inbox(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
 /// addressed topic and blocks for a message.
 fn cmd_chat(path: &Path, command: super::ChatCommands) -> Result<(), Box<dyn std::error::Error>> {
     match command {
-        super::ChatCommands::Repl { peer, peer_addr } => cmd_chat_repl(path, peer, peer_addr),
+        super::ChatCommands::Repl {
+            peer,
+            peer_addr,
+            via_relay,
+            relay_addr,
+        } => cmd_chat_repl(path, peer, peer_addr, via_relay, relay_addr),
         super::ChatCommands::Send {
             to,
             peer_addr,
@@ -1063,6 +1068,8 @@ fn cmd_chat_repl(
     path: &Path,
     peer: Option<String>,
     peer_addr: Option<std::net::SocketAddr>,
+    via_relay: Option<String>,
+    relay_addr: Option<std::net::SocketAddr>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     if !path.exists() {
         return Err(format!("Wallet file not found: {}", path.display()).into());
@@ -1075,8 +1082,24 @@ fn cmd_chat_repl(
         Some(p) => Some(p.parse::<stoa::MeshId>()?),
         None => None,
     };
+    let via_relay = match (via_relay, relay_addr) {
+        (Some(r), Some(a)) => Some((r.parse::<stoa::MeshId>()?, a)),
+        (Some(_), None) => {
+            return Err("--via-relay requires --relay-addr <host:port>".into())
+        }
+        (None, Some(_)) => {
+            return Err("--relay-addr given without --via-relay <meshid>".into())
+        }
+        (None, None) => None,
+    };
     let rt = tokio::runtime::Runtime::new()?;
-    rt.block_on(origin_wallet::network::chat_repl(&wallet, &contacts, peer, peer_addr))?;
+    rt.block_on(origin_wallet::network::chat_repl(
+        &wallet,
+        &contacts,
+        peer,
+        peer_addr,
+        via_relay,
+    ))?;
     Ok(())
 }/// Serve this wallet's node as a circuit relay (INTEGRATION.md step 5 —
 /// the "help the network" toggle, off by default): unlock, bind the node

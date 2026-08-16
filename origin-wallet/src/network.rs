@@ -593,14 +593,36 @@ pub async fn chat_send(
 /// messages print inline), and a prompt loop for `send <meshid|label>
 /// <text…>`, `whoami`, `help`, and `quit`. `send` accepts a raw MeshId
 /// or a contact label (resolved via the wallet's contacts table);
+/// Keep a chain-capable relay hint fresh (RELAY.md §13.7): re-publish
+/// "reachable via `relay`" every `interval`, so a long-lived node stays
+/// resolvable by a `--chain-auto` dialer after the hint TTL lapses.
+async fn refresh_relay_hint(
+    mesh: stoa::Mesh,
+    relay: stoa::MeshId,
+    relay_addr: SocketAddr,
+    interval: std::time::Duration,
+) {
+    let mut tick = tokio::time::interval(interval);
+    tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    loop {
+        tick.tick().await;
+        let _ = mesh
+            .publish_relay_hint_chain(relay, relay_addr, 300, true)
+            .await;
+    }
+}
+
 /// `peer`/`peer_addr` is the optional way in: a known node to dial at
 /// startup so `dial_any` and gossip have somewhere to reach. Ctrl-D or
-/// `quit` exits.
+/// `quit` exits. `via_relay` (RELAY.md §13.7) publishes this node's
+/// chain-capable reachable hint and keeps it fresh for the REPL's
+/// lifetime.
 pub async fn chat_repl(
     wallet: &Wallet,
     contacts: &crate::Contacts,
     peer: Option<stoa::MeshId>,
     peer_addr: Option<SocketAddr>,
+    via_relay: Option<(stoa::MeshId, SocketAddr)>,
 ) -> Result<()> {
     let node_keys = wallet.stoa_node_keys()?;
     let bind_addr = "127.0.0.1:0"
@@ -615,6 +637,23 @@ pub async fn chat_repl(
             Ok(()) => println!("  connected (mesh link up)"),
             Err(e) => println!("  note: connect failed ({e}) — continuing without it"),
         }
+    }
+
+    // The chain-capable reachable hint (RELAY.md §13.7): connect to the
+    // named relay, publish "reachable via R", and keep it fresh for the
+    // REPL's lifetime (hint TTL 5 min; refresh every ~2.5 min).
+    if let Some((relay, relay_addr)) = via_relay {
+        let _ = mesh.connect(relay, relay_addr).await;
+        let _ = mesh
+            .publish_relay_hint_chain(relay, relay_addr, 300, true)
+            .await;
+        println!("  relay   : reachable via {relay} (chain-capable hint published)");
+        tokio::spawn(refresh_relay_hint(
+            mesh.clone(),
+            relay,
+            relay_addr,
+            std::time::Duration::from_secs(150),
+        ));
     }
 
     let mut rx = mesh

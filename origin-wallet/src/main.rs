@@ -340,6 +340,14 @@ enum ChatCommands {
         /// The known node's dial address (host:port)
         #[arg(long)]
         peer_addr: Option<SocketAddr>,
+        /// Publish this node's chain-capable relay hint (RELAY.md §13.7)
+        /// and keep it fresh for the REPL's lifetime — "reachable via
+        /// relay R", so `--chain-auto` dialers can resolve us through R.
+        #[arg(long)]
+        via_relay: Option<String>,
+        /// The relay node's dial address (host:port), with --via-relay.
+        #[arg(long)]
+        relay_addr: Option<SocketAddr>,
     },
 
     /// Send one chat message over a session to the peer

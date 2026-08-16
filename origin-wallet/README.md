@@ -248,6 +248,11 @@ origin-wallet chat repl --file wallet.dat --peer <peer-meshid> \
     --peer-addr 1.2.3.4:8443
 > send alice hello over the mesh
   (contact 'alice' → <64-hex-meshid>)
+```
+
+`chat repl --via-relay <relay> --relay-addr <addr>` also publishes this
+node's chain-capable reachable hint (RELAY.md §13.7) and keeps it fresh
+for the session — the long-lived counterpart to `chat listen --via-relay`.
 ✓ sent over the direct
 > ✉ <64-hex-meshid>: hi back
 ```
