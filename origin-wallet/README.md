@@ -96,6 +96,22 @@ The payment is streamed over an opened channel; the signed ledger entry
 is evidence that settles on both sides (the counterparty's node ingests it
 via gossip). The wallet's own MMR history is the human-facing record.
 
+#### Pay through a relay (A→relay→C)
+
+```bash
+# The counterparty need not be dialable by you — connect only to a relay
+# and pay across the mesh. The ledger entries gossip to the relay (fanout)
+# and the payee's node ingests them via registry sync (SPEC §6.2, default
+# 60 s cadence).
+origin-wallet pay --file wallet.dat --to <64-hex-meshid> \
+    --amount 500 --relay <relay-meshid> --relay-addr 1.2.3.4:8443 \
+    --memo "inference run #42"
+```
+
+`--relay` + `--relay-addr` are the standing-network shape: the payer never
+dials the payee, so a payee behind NAT or a fixed relay still receives.
+`--peer-addr` is required only for a direct pay (no `--relay`).
+
 ### Discover services
 
 ```bash

@@ -75,6 +75,62 @@ pub async fn pay_native(
     Ok(entry)
 }
 
+/// Pay `to` on the native rail **through a relay** (the A→relay→C
+/// dogfood): bind this wallet's Stoa node, connect only to the relay,
+/// open a credit line to the counterparty, and stream the payment —
+/// never dialing the counterparty directly.
+///
+/// Delivery rides the mesh, not a direct link: the ledger entries gossip
+/// to the relay (fanout), and the counterparty's node ingests them via
+/// registry sync (§6.2 — the on-connect hello + periodic checkpoint
+/// exchange, default 60 s). This is the standing-network shape: the
+/// payee doesn't need to be dialable by the payer, just connected to the
+/// mesh.
+pub async fn pay_native_via_relay(
+    wallet: &mut Wallet,
+    to: stoa::MeshId,
+    relay: stoa::MeshId,
+    relay_addr: SocketAddr,
+    amount: u64,
+    memo: Vec<u8>,
+) -> Result<stoa::ledger::LedgerEntry> {
+    let node_keys = wallet.stoa_node_keys()?;
+    let bind_addr = "0.0.0.0:0"
+        .parse()
+        .map_err(|e: std::net::AddrParseError| WalletError::Network(e.to_string()))?;
+    let (mesh, _) = stoa::Mesh::bind(node_keys.clone(), bind_addr)?;
+
+    // Connect only to the relay — the payer never dials the counterparty.
+    mesh.connect(relay, relay_addr).await.map_err(|e| {
+        WalletError::Transaction(format!("connect to relay {relay} at {relay_addr} failed: {e}"))
+    })?;
+    mesh.open_channel(to, amount.max(1), memo.clone()).await.map_err(|e| {
+        WalletError::Transaction(format!("open channel to {to} failed: {e}"))
+    })?;
+    let entry = mesh.stream_payment(to, amount, memo).await.map_err(|e| {
+        WalletError::Transaction(format!("stream payment to {to} failed: {e}"))
+    })?;
+
+    // Record the payment in the wallet's MMR history — same evidence
+    // recording as the direct path.
+    let sender = Address::from_ed25519(
+        &ed25519_dalek::VerifyingKey::from_bytes(&node_keys.public_keys().0)
+            .map_err(|e| WalletError::KeyDerivation(e.to_string()))?,
+        AddressType::Bech32,
+        Network::Mainnet,
+    );
+    let digest = Sha256::digest(to.as_bytes());
+    let mut to_hash = [0u8; 20];
+    to_hash.copy_from_slice(&digest[..20]);
+    let recipient = Address::from_hash(to_hash, AddressType::Bech32, Network::Mainnet);
+
+    let tx = Transaction::new(&sender, &recipient, amount, 0, wallet.transaction_count());
+    wallet.add_transaction(&tx)?;
+
+    let _ = mesh.shutdown().await;
+    Ok(entry)
+}
+
 /// Discover services for a query (INTEGRATION.md step 4): bind this
 /// wallet's node (identity from the wallet seed), optionally dial a peer
 /// first so DHT lookups can reach it, then rank known services. `room` +
@@ -590,6 +646,13 @@ pub async fn serve_relay(
     mesh.serve_relay_with(config)
         .await
         .map_err(|e| WalletError::Network(format!("serve relay failed: {e}")))?;
+    // Publish the relay hint (RELAY.md §7) so `dial_any` can find this
+    // relay — a wallet serving as a relay is undiscoverable otherwise.
+    // TTL ~5 min; `run_punch_refresh` below keeps the DHT records fresh.
+    let bound = mesh.local_addr();
+    let _ = mesh
+        .publish_relay_hint(mesh.local_mesh_id(), bound, 300)
+        .await;
     // Punch records are TTL'd (~5 min); refresh them so a NAT remap never
     // leaves the node's candidates stale. Best-effort background loop.
     mesh.run_punch_refresh(stun_server, std::time::Duration::from_secs(300));
@@ -653,6 +716,77 @@ mod tests {
         .await
         .expect("payee never ingested the receipt");
         assert_eq!(payee_mesh.ledger_snapshot().await[0].amount, 777);
+    }
+
+    #[tokio::test]
+    async fn wallet_pays_through_relay_and_payee_ingests() {
+        // The A→relay→C dogfood: payer A connects ONLY to relay B (never
+        // dials C); C is connected to B. A's ledger entries reach the
+        // relay by gossip fanout, and C's node ingests them via registry
+        // sync — the standing-network shape where the payee isn't
+        // dialable by the payer.
+        let mut payer = Wallet::create("payer-pass").unwrap();
+        let payee = Wallet::create("payee-pass").unwrap();
+
+        // The payee's node binds and connects to the relay.
+        let payee_keys = payee.stoa_node_keys().unwrap();
+        let payee_id = *payee_keys.mesh_id();
+        let (payee_mesh, _) =
+            stoa::Mesh::bind(payee_keys, "127.0.0.1:0".parse().unwrap()).unwrap();
+
+        // The relay (a wallet-derived node serving circuits).
+        let relay_wallet = Wallet::create("relay-pass").unwrap();
+        let relay_mesh = serve_relay(
+            &relay_wallet,
+            8,
+            "127.0.0.1:9".parse().unwrap(),
+            "127.0.0.1:0".parse().unwrap(),
+        )
+        .await
+        .expect("serve relay");
+        let relay_id = relay_mesh.local_mesh_id();
+        let relay_addr = relay_mesh.local_addr();
+
+        // C hops to the relay so the relay has a route and C syncs with it.
+        payee_mesh.connect(relay_id, relay_addr).await.expect("C→relay");
+
+        // A pays C through the relay — never dialing C directly.
+        let entry = pay_native_via_relay(
+            &mut payer,
+            payee_id,
+            relay_id,
+            relay_addr,
+            4242,
+            b"relayed dogfood".to_vec(),
+        )
+        .await
+        .expect("relayed pay");
+
+        assert_eq!(entry.amount, 4242);
+        assert_eq!(entry.counterparty, payee_id);
+        assert_eq!(payer.transaction_count(), 1, "receipt recorded in the MMR history");
+
+        // C ingests A's receipt via gossip (relay fanout) + registry sync.
+        // C's node actively re-syncs like the wallet's periodic check.
+        tokio::time::timeout(std::time::Duration::from_secs(30), async {
+            loop {
+                let _ = payee_mesh.sync_registries().await;
+                let snap = payee_mesh.ledger_snapshot().await;
+                if snap.iter().any(|e| e.amount == 4242) {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            }
+        })
+        .await
+        .expect("payee never ingested the relayed receipt");
+        assert!(
+            payee_mesh.ledger_snapshot().await.iter().any(|e| e.amount == 4242),
+            "payee's ledger holds the relayed receipt"
+        );
+
+        payee_mesh.shutdown().await.expect("payee shutdown");
+        relay_mesh.shutdown().await.expect("relay shutdown");
     }
 
     #[tokio::test]
@@ -838,6 +972,16 @@ mod tests {
         .expect("serve relay");
         let relay_id = relay_mesh.local_mesh_id();
         let relay_addr = relay_mesh.local_addr();
+
+        // Serving publishes the relay hint so `dial_any` can find it
+        // (RELAY.md §7) — a wallet relay is undiscoverable otherwise.
+        let hint = relay_mesh
+            .resolve_relay_hint(relay_id)
+            .await
+            .expect("resolve hint")
+            .expect("serve_relay must publish its relay hint");
+        assert_eq!(hint.relay, relay_id);
+        assert_eq!(hint.relay_addr, Some(relay_addr));
 
         // Target hops to the relay so the relay has a route to it.
         let target_keys = stoa::NodeKeys::generate().unwrap();

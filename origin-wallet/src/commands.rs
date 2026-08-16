@@ -30,8 +30,10 @@ pub fn execute(cli: super::Cli) -> Result<(), Box<dyn std::error::Error>> {
             to,
             amount,
             peer_addr,
+            relay,
+            relay_addr,
             memo,
-        } => cmd_pay(&cli.file, &to, amount, peer_addr, memo)?,
+        } => cmd_pay(&cli.file, &to, amount, peer_addr, relay, relay_addr, memo)?,
         super::Commands::Discover {
             query,
             room,
@@ -457,12 +459,16 @@ fn cmd_network_status(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
 
 /// Pay a counterparty on the native rail (INTEGRATION.md step 3): unlock,
 /// bind the node, connect, open a channel, stream the payment, and record
-/// the receipt in the wallet's MMR history (then save the wallet).
+/// the receipt in the wallet's MMR history (then save the wallet). With
+/// `--relay`/`--relay-addr`, pay through a relay instead of dialing the
+/// counterparty directly (A→relay→C).
 fn cmd_pay(
     path: &Path,
     to: &str,
     amount: u64,
-    peer_addr: std::net::SocketAddr,
+    peer_addr: Option<std::net::SocketAddr>,
+    relay: Option<String>,
+    relay_addr: Option<std::net::SocketAddr>,
     memo: Option<String>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     if !path.exists() {
@@ -474,19 +480,49 @@ fn cmd_pay(
 
     let to_mesh: stoa::MeshId = to.parse()?;
     let memo_bytes = memo.unwrap_or_default().into_bytes();
-
-    println!(
-        "Paying {} units to {} at {} on the native rail...",
-        amount, to_mesh, peer_addr
-    );
     let rt = tokio::runtime::Runtime::new()?;
-    let entry = rt.block_on(origin_wallet::network::pay_native(
-        &mut wallet,
-        to_mesh,
-        peer_addr,
-        amount,
-        memo_bytes,
-    ))?;
+
+    let entry = match (relay, relay_addr) {
+        // Relayed pay: connect only to the relay; the counterparty is
+        // reached over the mesh (gossip fanout to the relay + the
+        // payee's registry sync).
+        (Some(relay), Some(relay_addr)) => {
+            let relay_mesh: stoa::MeshId = relay.parse()?;
+            println!(
+                "Paying {} units to {} through relay {} at {} on the native rail...",
+                amount, to_mesh, relay_mesh, relay_addr
+            );
+            rt.block_on(origin_wallet::network::pay_native_via_relay(
+                &mut wallet,
+                to_mesh,
+                relay_mesh,
+                relay_addr,
+                amount,
+                memo_bytes,
+            ))?
+        }
+        (None, Some(relay_addr)) => {
+            return Err(format!("--relay-addr {relay_addr} requires --relay").into())
+        }
+        (Some(_), None) => {
+            return Err("--relay requires --relay-addr".into())
+        }
+        // Direct pay: dial the counterparty itself.
+        (None, None) => {
+            let peer_addr = peer_addr.ok_or("--peer-addr is required unless --relay is given")?;
+            println!(
+                "Paying {} units to {} at {} on the native rail...",
+                amount, to_mesh, peer_addr
+            );
+            rt.block_on(origin_wallet::network::pay_native(
+                &mut wallet,
+                to_mesh,
+                peer_addr,
+                amount,
+                memo_bytes,
+            ))?
+        }
+    };
 
     wallet.save(path, &passphrase)?;
 

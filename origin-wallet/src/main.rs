@@ -120,6 +120,8 @@ enum Commands {
     /// Pay an agent on the native rail (INTEGRATION.md step 3): bind the
     /// wallet's Stoa node, connect to the counterparty, open a channel,
     /// stream the payment, and record it in the wallet's MMR history.
+    /// With --relay, pay through the relay instead of dialing the
+    /// counterparty directly (A→relay→C).
     Pay {
         /// Counterparty MeshId (64 hex chars)
         #[arg(long)]
@@ -127,9 +129,19 @@ enum Commands {
         /// Amount in the smallest unit
         #[arg(long)]
         amount: u64,
-        /// The counterparty node's dial address (host:port)
+        /// The counterparty node's dial address (host:port) — required
+        /// unless --relay is given
         #[arg(long)]
-        peer_addr: SocketAddr,
+        peer_addr: Option<SocketAddr>,
+        /// A relay to circuit the payment through (MeshId) — with
+        /// --relay-addr. When set, the counterparty is never dialed
+        /// directly; delivery rides gossip + registry sync through the
+        /// relay.
+        #[arg(long)]
+        relay: Option<String>,
+        /// The relay node's dial address (host:port)
+        #[arg(long)]
+        relay_addr: Option<SocketAddr>,
         /// Optional memo
         #[arg(long)]
         memo: Option<String>,
