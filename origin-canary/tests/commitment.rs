@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Apache-2.0
+// SPDX-License-Identifier: OPL-1.4
 // Copyright (c) 2026 Origin Contributors
 
 //! Phase 2 tests — signed commitments (hybrid Ed25519 + Falcon-1024).

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Apache-2.0
+// SPDX-License-Identifier: OPL-1.4
 // Copyright (c) 2026 Origin Contributors
 
 //! Signed commitments — Phase 2 of origin-canary.
