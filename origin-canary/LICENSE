@@ -1,7 +1,7 @@
-# Open-Pact License v1.4 (OPL-1.4)
+# Open-Pact License v1.4.3 (OPL-1.4)
 
 >
-> **Status:** Draft v1.4. Not yet published. Supersedes published v1.3.1.
+> **Status:** Draft v1.4.3 (clarifications from legal-skills review; same `OPL-1.4` SPDX identifier). Not yet published. Supersedes published v1.3.1.
 > **Headline:** *Free for personal use. Paid for commercial use. The Maintainer decides how.*
 
 ---
@@ -25,7 +25,7 @@ OPL-Standard (the organization that publishes this license) does not charge for 
 - **"Hosted Service"** means a service operated by You, accessible to third parties over a network, whose primary functionality is the Work or a Derivative.
 - **"Personal Use"** means use by an individual for non-commercial purposes: study, modification, personal projects, education, research, evaluation. Includes use within a single legal entity for internal **non-revenue-generating** purposes (e.g., internal tooling, internal evaluation, internal research) where the use does not contribute to revenue-producing activities.
 - **"Commercial Use"** means any use that is not Personal Use. Commercial Use includes: (a) offering the Work or a Derivative as a hosted or managed service, (b) distributing a Derivative to third parties for use in their commercial activities, (c) using the Work or a Derivative to provide paid services to third parties, (d) using the Work or a Derivative in a product or service offered for sale or license.
-- **"Standard Terms"** means the Maintainer's published commercial-use pricing, payment mechanism, and terms, available at the URL declared in `NOTICE`. The Standard Terms are part of this license as incorporated by reference. The License incorporates the Standard Terms as they exist at the URL at the time of access by the user (i.e., the *current* Standard Terms, not a frozen snapshot). The Maintainer's duty: if the Maintainer changes the Standard Terms at the URL, they must also update the URL in `NOTICE` (if the URL itself changes) and respect the 90-day notice period in §13.
+- **"Standard Terms"** means the Maintainer's published commercial-use pricing, payment mechanism, and terms, available at the URL declared in `NOTICE`. The Standard Terms are part of this license as incorporated by reference. The License incorporates the Standard Terms as they exist at the URL at the time of access by the user (i.e., the *current* Standard Terms, not a frozen snapshot), **subject to the wind-down protections in §3.7 for existing commercial users**. The Maintainer's duty: if the Maintainer changes the Standard Terms at the URL, they must also update the URL in `NOTICE` (if the URL itself changes) and respect the 90-day notice period in §13.
 - **"Valid Standard Terms URL"** means an HTTPS URL that (a) returns a 2xx response, (b) is a webpage (HTML), not a PDF or other document, and (c) is human-readable in a major browser without authentication. **See §3.3 for the full 7-criteria definition** (HTTPS, redirect-following, HTML, no-auth, no-JS-only rendering, stability, substantive content) and the rebuttable-presumption rule with burden allocation.
 - **"AI System"** has the meaning given in the **OPL-AI addendum**, incorporated by reference **only if** the Maintainer has opted in via `NOTICE`.
 - **"Contributor"** means any individual who has submitted a merged change to the Work, as recorded in the project's contribution history.
@@ -66,7 +66,7 @@ If You distribute the Work or a Derivative, You must:
 
 You may not distribute the Work or a Derivative under terms that remove, weaken, or fail to enforce the conditions in §3.3 and §3.5.
 
-This is light copyleft. It propagates the protections, not the code. A Derivative may be relicensed for any other terms as long as the protections in this section continue to apply to the protections themselves.
+This is light copyleft. It propagates the protections, not the code. A Derivative may be relicensed under any other terms, provided that any Commercial Use of the Derivative remains subject to the §3.3 payment requirement — the payment protection travels with the Work and applies to the Derivative wherever it is distributed. You may not distribute a Derivative under terms that permit Commercial Use without the §3.3 payment obligation.
 
 ### 3.3 Commercial Use requires Standard Terms payment
 
@@ -148,10 +148,10 @@ During the 90-day wind-down period, the **previous Standard Terms continue to ap
 
 The Maintainer must:
 
-- **4.1 Reachable contact.** Be reachable at the contact published in `NOTICE`.
+- **4.1 Reachable contact.** Be reachable at the contact published in `NOTICE` — meaning a human response is returned to a written inquiry at that contact within the response window in §4.2. A contact that bounces, is unanswered beyond the §4.2 window, or is not monitored is not "reachable."
 - **4.2 Response window.** Respond to written licensing inquiries within 60 days.
 - **4.3 Valid Standard Terms URL or no-Commercial-Use declaration.** Maintain a Valid Standard Terms URL (so that Commercial Use is permitted under §3.3), OR declare in `NOTICE` that Commercial Use is not permitted and accept only Personal Use. The Maintainer may change between these two modes at any time by updating `NOTICE`.
-- **4.4 Designated Successor.** Maintain the Work, or designate a Designated Successor and update `NOTICE` accordingly.
+- **4.4 Designated Successor (optional).** The Maintainer may, but is not required to, designate a Designated Successor in `NOTICE` (see §5). If a Successor is named, the Maintainer should keep `NOTICE` current; if no Successor is named, the abandonment conversion in §5 still takes effect under its standing grant with no actor required.
 
 These are not aspirations. Failure to satisfy §4.1 or §4.3 for the period specified in §5 is a condition for abandonment.
 
@@ -159,9 +159,9 @@ These are not aspirations. Failure to satisfy §4.1 or §4.3 for the period spec
 
 ## 5. Abandonment
 
-If no Maintainer is reachable at the contact in `NOTICE` for **36 consecutive months**, the Work converts to the **Apache License 2.0**.
+If no Maintainer is reachable at the contact in `NOTICE` for the period declared in `NOTICE` (default **36 consecutive months**), the Maintainer **hereby grants each recipient a license under the Apache License 2.0**, effective automatically on abandonment, for the Work as published. This is a **standing conditional grant**: it requires no further act by the Maintainer, no third-party authorization, no fiscal sponsor, no counter-notice process, and no public notice (a public-notice mechanism creates an enforcement problem for a solo Maintainer who lacks access to a recognized venue).
 
-The conversion is **automatic**. No third-party authorization is required. No fiscal sponsor. No counter-notice process. No public notice requirement (a public-notice mechanism creates an enforcement problem for a solo Maintainer who lacks access to a recognized venue).
+**Optional Designated Successor (Maintainer's choice).** A Maintainer may, but is not required to, name a Designated Successor in `NOTICE` (see §4.4). If a Successor is named, the Successor is **authorized — but not required** — to record the abandonment conversion by publishing an Apache License 2.0 `LICENSE` for the Work. Such a recording is **conclusive evidence** of the conversion; it is **not a precondition**. The conversion takes effect under the standing grant above regardless of whether any Successor acts. A Successor's power is strictly limited to recording the predefined Apache-2.0 terms; a Successor may not modify the Work, set or change price, revoke licenses, or assume any other Maintainer power.
 
 A Maintainer may voluntarily relinquish stewardship at any time by publishing a public statement and designating a successor in `NOTICE`. If no successor is named, abandonment is deemed to have begun on the date of the relinquishment.
 
@@ -173,10 +173,10 @@ OPL does not impose a scheduled open-source conversion. A Maintainer who wants o
 
 If `NOTICE` declares a DOSP period, then in addition to the abandonment conversion in §5, each **Version** of the Work converts to the **Apache License 2.0** on the scheduled date.
 
-- A "Version" is a release identified by a version number in the Work's package manifest or `NOTICE` file. The DOSP date for a Version is **N months after that Version's first public release date**, where N is the DOSP period declared in `NOTICE` (recommended range 24-60 months; other values permitted at the Maintainer's discretion, including values that exceed the recommended range for long-horizon projects).
+- A "Version" is a release identified by a version number in the Work's package manifest or `NOTICE` file. The DOSP date for a Version is **N months after that Version's first public release date**, where N is the DOSP period declared in `NOTICE` (recommended range 24-60 months; other values permitted at the Maintainer's discretion, including values that exceed the recommended range for long-horizon projects). For the purpose of this section, the **first public release date** is the date on which that Version was first made available to the public through a public registry, repository, package index, or distribution channel (for example, a tagged release, a published package, or a public download), and a **Version** is each such distinct, version-identified release; a change or hotfix that does not carry a distinct version identifier is part of the Version it modifies, not a new Version.
 - The conversion is **automatic** and applies to the **source of that Version** as published. No third-party authorization, fiscal sponsor, or public notice is required.
 - **Existing licensees are unaffected.** A party who lawfully obtained Commercial Use rights under §3.3 before the DOSP date keeps those rights for the Version they licensed; DOSP only opens the source to *new* adopters after the DOSP date.
-- The abandonment conversion in §5 and the DOSP conversion in this section are **independent triggers**; whichever occurs first opens the relevant source.
+- The abandonment conversion in §5 and the DOSP conversion in this section are **independent triggers**; whichever occurs first opens the relevant source. The optional Designated Successor (§5) is authorized to record either conversion by publishing the applicable Apache License 2.0 `LICENSE`; in either case the conversion takes effect under the standing grant regardless of whether the Successor acts.
 - **Opt-out by default.** If `NOTICE` declares no DOSP period, version-based DOSP does not apply and the Work converts to Apache 2.0 only under §5 (abandonment, if at all). The Work is then source-available for the life of the project unless the Maintainer later adds a DOSP period or abandons stewardship.
 
 ---
@@ -250,7 +250,7 @@ To apply OPL-1.4 to a Work:
    - **OPL-AI opt-in/opt-out**: explicitly state whether the OPL-AI addendum applies (default: opt-out, addendum not incorporated).
    - **Abandonment period** (optional): a number of months between 12 and 60; default 36.
    - **DOSP period** (optional, opt-in): if declared, a number of months (recommended 24-60; other values permitted at the Maintainer's discretion, including longer horizons for long-lived projects) after each Version's first public release on which that Version's source converts to Apache 2.0. **If absent, version-based DOSP does NOT apply** — the Work stays source-available (it converts to Apache 2.0 only under §5 abandonment, if at all). OPL is opt-out of scheduled conversion by default; declaring this field is the Maintainer's explicit choice to adopt DOSP.
-   - **Commercial Terms file** (optional but recommended): the filename of a `COMMERCIAL_TERMS.md` (or equivalent) file in the repository that pins the exact commercial terms — pricing, payment mechanism, and scope — for the specific Version identified in `NOTICE`. This file is immutable per Version: once published for a Version, it is not changed for that Version. It provides enterprise users a mathematically predictable, legally immutable contract for the exact Version they obtained, independent of any Standard Terms URL.
+   - **Commercial Terms file** (optional but recommended): the filename of a `COMMERCIAL_TERMS.md` (or equivalent) file in the repository that pins the exact commercial terms — pricing, payment mechanism, and scope — for the specific Version identified in `NOTICE`. This file is immutable per Version: once published for a Version, it is not changed for that Version. It provides enterprise users a mathematically predictable, legally immutable contract for the exact Version they obtained, independent of any Standard Terms URL. **If the referenced Commercial Terms file is absent or cannot be located, the Standard Terms URL (§3.3) governs Commercial Use for that Version**; the absence of the file does not by itself render Commercial Use free of charge.
    - **Trademark notice** (optional): any trademark notice the Maintainer wishes to assert under §10.
 3. Add `SPDX-License-Identifier: OPL-1.4` to each source file.
 4. Reference the license from your package manifest (`pyproject.toml`, `Cargo.toml`, `package.json`, etc.) using the SPDX identifier.
@@ -294,5 +294,32 @@ v1.4 is a substantive adoption-focused revision (not a clarification):
 | Steward/Guild | Mentioned as "options in framework repo" | **Removed entirely.** OPL-Standard does not act as steward. The Maintainer is the steward. |
 
 ---
+
+## v1.4.1 — clarifications (no rights or obligations changed)
+
+v1.4.1 is a clarification patch. It does **not** add, remove, or alter any grant, restriction, or obligation. The `OPL-1.4` SPDX identifier is unchanged; this patch tightens wording the Custom OPL validation gate (`ambiguity-stress-test`) flagged as ambiguous:
+
+- **§5.1 "first public release date" and "Version" defined.** Clarifies that the first public release date is the date a Version was first made available to the public through a public registry, repository, package index, or distribution channel, and that a change or hotfix without a distinct version identifier is part of the Version it modifies (not a new Version). This removes the boundary ambiguity around hotfixes and internal demos.
+- **§13 Commercial Terms file — absence fallback.** If the referenced `COMMERCIAL_TERMS.md` is absent or cannot be located, the Standard Terms URL (§3.3) governs Commercial Use for that Version; absence of the file does not by itself make Commercial Use free of charge. This closes the gap where a missing pinned file left Commercial Use terms undefined.
+
+## v1.4.2 — abandonment-conversion robustness
+
+v1.4.2 closes the fair-source abandonment weakness surfaced during Adoption Kit dogfooding ("who actually relicenses the work?"). It is a **strengthening**, not a new restriction:
+
+- **§5 standing conditional grant.** Replaced the vague "the Work converts to Apache-2.0" with an explicit grant: the Maintainer *hereby grants each recipient an Apache-2.0 license, effective automatically on abandonment*. This makes the conversion a right that flows by the license's own terms — **no actor, successor, or registry is required**. The fallback works even if the Maintainer and any Successor have vanished.
+- **§5 optional Designated Successor (Maintainer's choice, never required).** A Maintainer *may* name a Successor in `NOTICE`; that Successor is **authorized but not required** to *record* the conversion by publishing an Apache-2.0 `LICENSE`. The recording is conclusive evidence but **not a precondition** — the standing grant applies regardless. A Successor's power is strictly bounded: they may only record the predefined Apache-2.0 terms; they cannot modify the Work, set price, revoke licenses, or assume other Maintainer powers. This keeps the successor a convenience/evidence mechanism, never a new gatekeeper.
+- **§5.1** extended so the optional Successor may record either trigger (abandonment or DOSP).
+
+This makes OPL the most abandonment-robust fair-source license: automatic by the license's own grant, human-recordable if the Maintainer opts in, zero new infrastructure, and the fallback never depends on anyone acting.
+
+## v1.4.3 — clarifications from legal-skills review
+
+v1.4.3 closes the three material seams flagged by an `ambiguity-stress-test` (contract profile) + `contract-risk-analyzer` review of OPL v1.4.2, performed as a real-adopter red-team. All three are clarifications; no rights or obligations materially changed. Validated by re-running the stress-test — the target scenarios no longer sustain a genuine dispute.
+
+- **§4.1 "reachable" defined.** A contact is "reachable" only if a human response is returned to a written inquiry within the §4.2 window; a bouncing, unanswered, or unmonitored contact is not reachable. Closes the abandonment-trigger vagueness (Scenario 3).
+- **§1 "Standard Terms" qualified.** The "current Standard Terms at time of access" language is now expressly "subject to the wind-down protections in §3.7 for existing commercial users," removing the characterization conflict with §3.7.1(b) rate-increase wind-down (Scenario 1).
+- **§3.2 Derivative copyleft stated plainly.** A Derivative may be relicensed under any terms, but Commercial Use of the Derivative remains subject to the §3.3 payment requirement, and a Derivative may not be distributed under terms that permit Commercial Use without that obligation. Replaces the metaphysical "protections apply to the protections themselves" with enforceable language (Scenario 5).
+
+Items 4–6 from the review (cosmetic successor-definition alignment, Hosted Service narrowing, DOSP pre-adoption clock) remain open as optional hardening for a future patch.
 
 *End of OPL-1.4 draft.*
