@@ -95,13 +95,26 @@ pub fn execute(cli: super::Cli) -> Result<(), Box<dyn std::error::Error>> {
             super::MailCommands::Inbox => cmd_mail_inbox(&cli.file)?,
         },
         super::Commands::Chat { command } => cmd_chat(&cli.file, command)?,
-        super::Commands::ChatListen { from } => cmd_chat_listen(&cli.file, from)?,
+        super::Commands::ChatListen {
+            from,
+            via_relay,
+            relay_addr,
+        } => cmd_chat_listen(&cli.file, from, via_relay, relay_addr)?,
         super::Commands::Relay { command } => match command {
             super::RelayCommands::Serve {
                 difficulty,
                 stun_server,
                 addr,
-            } => cmd_relay_serve(&cli.file, difficulty, &stun_server, addr)?,
+                discovery_point,
+                discovery_addr,
+            } => cmd_relay_serve(
+                &cli.file,
+                difficulty,
+                &stun_server,
+                addr,
+                discovery_point,
+                discovery_addr,
+            )?,
             super::RelayCommands::Stats => cmd_relay_stats(&cli.file)?,
             super::RelayCommands::Evict { peer } => cmd_relay_evict(&cli.file, &peer)?,
             super::RelayCommands::Pardon { peer } => cmd_relay_pardon(&cli.file, &peer)?,
@@ -1005,10 +1018,13 @@ fn cmd_chat(path: &Path, command: super::ChatCommands) -> Result<(), Box<dyn std
 }
 
 /// `chat listen` — subscribe to the addressed topic and block for a
-/// message (60 s), printing sender + body.
+/// message (60 s), printing sender + body. `--via-relay` publishes this
+/// node's chain-capable relay hint first (RELAY.md §13.2).
 fn cmd_chat_listen(
     path: &Path,
     from: Option<String>,
+    via_relay: Option<String>,
+    relay_addr: Option<std::net::SocketAddr>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     if !path.exists() {
         return Err(format!("Wallet file not found: {}", path.display()).into());
@@ -1020,8 +1036,18 @@ fn cmd_chat_listen(
         Some(p) => Some(p.parse::<stoa::MeshId>()?),
         None => None,
     };
+    let via_relay = match (via_relay, relay_addr) {
+        (Some(r), Some(a)) => Some((r.parse::<stoa::MeshId>()?, a)),
+        (Some(_), None) => {
+            return Err("--via-relay requires --relay-addr <host:port>".into())
+        }
+        (None, Some(_)) => {
+            return Err("--relay-addr given without --via-relay <meshid>".into())
+        }
+        (None, None) => None,
+    };
     let rt = tokio::runtime::Runtime::new()?;
-    let msg = rt.block_on(origin_wallet::network::chat_listen(&wallet, peer))?;
+    let msg = rt.block_on(origin_wallet::network::chat_listen(&wallet, peer, via_relay))?;
 
     println!("\n✉ chat from {}", msg.from);
     println!("  {}", String::from_utf8_lossy(&msg.data));
@@ -1062,6 +1088,8 @@ fn cmd_relay_serve(
     difficulty: u32,
     stun_server: &str,
     bind_addr: std::net::SocketAddr,
+    discovery_point: Option<String>,
+    discovery_addr: Option<std::net::SocketAddr>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     if !path.exists() {
         return Err(format!("Wallet file not found: {}", path.display()).into());
@@ -1074,19 +1102,37 @@ fn cmd_relay_serve(
         .next()
         .ok_or_else(|| format!("STUN server {stun_server} resolved to nothing"))?;
 
+    // The relay directory (R7, RELAY.md §13.2): both flags or neither.
+    let directory = match (discovery_point, discovery_addr) {
+        (Some(point), Some(addr)) => Some(stoa::relay::RelayDirectory {
+            point: point.parse::<stoa::MeshId>()?,
+            point_addr: addr,
+            ..stoa::relay::RelayDirectory::default()
+        }),
+        (Some(_), None) => {
+            return Err("--discovery-point requires --discovery-addr <host:port>".into())
+        }
+        (None, Some(_)) => {
+            return Err("--discovery-addr given without --discovery-point <meshid>".into())
+        }
+        (None, None) => None,
+    };
+
     println!("Serving as a circuit relay...");
     let rt = tokio::runtime::Runtime::new()?;
-    let mesh = rt.block_on(origin_wallet::network::serve_relay(
+    let mesh = rt.block_on(origin_wallet::network::serve_relay_full(
         &wallet,
         difficulty,
         stun_addr,
         bind_addr,
+        directory,
     ))?;
 
     println!("\n✓ Relay serving (help the network)");
     println!("  mesh id : {}", mesh.local_mesh_id());
     println!("  address : {}", mesh.local_addr());
     println!("  pow     : {difficulty} bits (cookie gate, RELAY.md §9)");
+    println!("  chain   : yes (advertised chain-capable, RELAY.md §13.2)");
     println!("  stun    : {stun_server} (punch-candidate refresh)");
     println!("  store   : {}", doctor_home().join("nodes").join(mesh.local_mesh_id().to_string()).display());
     println!("Press Ctrl-C to stop. Peers dial through this node only while it runs.");

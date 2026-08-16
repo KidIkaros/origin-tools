@@ -472,19 +472,35 @@ async fn chat_send_on(
         Some((relay_id, relay_addr)) => {
             if route.chain_auto {
                 // Auto path selection (RELAY.md §13.2): resolve the
-                // peer's chain-capable far relay from its published hint,
-                // then chain near → far → peer. A peer whose relay
-                // doesn't advertise chain capability is a clean miss.
-                let (far, _) = mesh.chain_relay_for(to).await.map_err(|e| {
+                // peer's chain-capable far relays from its published hint
+                // set, then chain near → far → peer — trying each fallback
+                // in turn until one opens. A peer with no chain-capable
+                // relay advertised is a clean miss.
+                let candidates = mesh.chain_relays_for(to).await.map_err(|e| {
                     WalletError::Network(format!("auto chain path to {to} unavailable: {e}"))
                 })?;
-                Some(
-                    mesh.dial_relayed_chain_v(relay_id, relay_addr, &[far], to)
-                        .await
-                        .map_err(|e| {
-                            WalletError::Network(format!("auto chain dial to {to} failed: {e}"))
-                        })?,
-                )
+                let mut opened = None;
+                let mut last_err = None;
+                for (far, _) in candidates {
+                    match mesh.dial_relayed_chain_v(relay_id, relay_addr, &[far], to).await {
+                        Ok(sess) => {
+                            opened = Some(sess);
+                            break;
+                        }
+                        Err(e) => last_err = Some(e),
+                    }
+                }
+                match opened {
+                    Some(sess) => Some(sess),
+                    None => {
+                        let detail = last_err
+                            .map(|e| e.to_string())
+                            .unwrap_or_else(|| "no chain-capable relay advertised".into());
+                        return Err(WalletError::Network(format!(
+                            "auto chain dial to {to} failed: {detail}"
+                        )));
+                    }
+                }
             } else if route.chain.is_empty() {
                 Some(
                     mesh.dial_relayed(relay_id, relay_addr, to)
@@ -757,10 +773,14 @@ pub async fn chat_repl(
 
 /// Listen for chat on the addressed topic: subscribe to `stoa:chat:<me>`
 /// (all senders) or a specific peer's topic, and return the live message
-/// receiver (INTEGRATION.md §4).
+/// receiver (INTEGRATION.md §4). `via_relay` (RELAY.md §13.2) publishes
+/// this node's chain-capable relay hint first — "I'm reachable via relay
+/// R" — so a path-selection dialer (`--chain-auto`) can resolve us as a
+/// far relay through R.
 pub async fn chat_listen(
     wallet: &Wallet,
     peer: Option<stoa::MeshId>,
+    via_relay: Option<(stoa::MeshId, std::net::SocketAddr)>,
 ) -> Result<stoa::PubsubMessage> {
     let node_keys = wallet.stoa_node_keys()?;
     let bind_addr = "127.0.0.1:0"
@@ -768,6 +788,16 @@ pub async fn chat_listen(
         .map_err(|e: std::net::AddrParseError| WalletError::Network(e.to_string()))?;
     let (mesh, _) = stoa::Mesh::bind(node_keys, bind_addr)?;
     let me = mesh.local_mesh_id();
+    // Publish the chain-capable hint (RELAY.md §13.2): connect to the
+    // named relay so the DHT record replicates to it, then advertise
+    // "reachable via R, chain-capable". Best-effort — listen still works
+    // if the relay is unreachable, just without a resolvable chain path.
+    if let Some((relay, relay_addr)) = via_relay {
+        let _ = mesh.connect(relay, relay_addr).await;
+        let _ = mesh
+            .publish_relay_hint_chain(relay, relay_addr, 300, true)
+            .await;
+    }
     let topic = match peer {
         Some(p) => chat_topic(p), // a peer's addressed topic (we send TO it)
         None => chat_topic(me),   // our own (others send TO us)
@@ -796,10 +826,26 @@ pub async fn serve_relay(
     stun_server: std::net::SocketAddr,
     bind_addr: std::net::SocketAddr,
 ) -> Result<stoa::Mesh> {
+    serve_relay_full(wallet, pow_difficulty, stun_server, bind_addr, None).await
+}
+
+/// Like [`serve_relay`], with the relay directory (R7, RELAY.md §13.2):
+/// when `directory` is set, the relay also joins the relay mesh — it
+/// registers in a rendezvous namespace, discovers and peers with other
+/// chain-capable relays, and pre-warms their cookies so chained circuits
+/// open without manual hop wiring.
+pub async fn serve_relay_full(
+    wallet: &Wallet,
+    pow_difficulty: u32,
+    stun_server: std::net::SocketAddr,
+    bind_addr: std::net::SocketAddr,
+    directory: Option<stoa::relay::RelayDirectory>,
+) -> Result<stoa::Mesh> {
     let node_keys = wallet.stoa_node_keys()?;
     let (mesh, _) = stoa::Mesh::bind(node_keys, bind_addr)?;
     let config = stoa::relay::RelayConfig {
         pow_difficulty,
+        directory,
         ..stoa::relay::RelayConfig::default()
     };
     mesh.serve_relay_with(config)
@@ -807,10 +853,13 @@ pub async fn serve_relay(
         .map_err(|e| WalletError::Network(format!("serve relay failed: {e}")))?;
     // Publish the relay hint (RELAY.md §7) so `dial_any` can find this
     // relay — a wallet serving as a relay is undiscoverable otherwise.
-    // TTL ~5 min; `run_punch_refresh` below keeps the DHT records fresh.
+    // Advertised chain-capable (RELAY.md §13.2): the relay serves chained
+    // opens, so a path-selection dialer (`--chain-auto`) may route a
+    // multi-hop circuit through it. TTL ~5 min; `run_punch_refresh` below
+    // keeps the DHT records fresh.
     let bound = mesh.local_addr();
     let _ = mesh
-        .publish_relay_hint(mesh.local_mesh_id(), bound, 300)
+        .publish_relay_hint_chain(mesh.local_mesh_id(), bound, 300, true)
         .await;
     // Punch records are TTL'd (~5 min); refresh them so a NAT remap never
     // leaves the node's candidates stale. Best-effort background loop.
@@ -1548,6 +1597,11 @@ mod tests {
             .expect("serve_relay must publish its relay hint");
         assert_eq!(hint.relay, relay_id);
         assert_eq!(hint.relay_addr, Some(relay_addr));
+        assert!(
+            hint.chain,
+            "a serving relay advertises chain capability (RELAY.md §13.2), \
+             so `--chain-auto` has relays to resolve"
+        );
 
         // Target hops to the relay so the relay has a route to it.
         let target_keys = stoa::NodeKeys::generate().unwrap();

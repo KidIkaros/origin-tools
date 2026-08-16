@@ -147,6 +147,61 @@ async fn e2e_relayed_pay_across_the_cli_relay_process() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// A relay spawned as the real CLI binary advertises chain capability
+/// (RELAY.md §13.2): its published hint carries `chain: true`, so a
+/// path-selection dialer (`chat --chain-auto`) can resolve it as a far
+/// relay. Proves the `serve_relay` advertisement wiring crosses the
+/// process boundary — the in-process lib test covers the full auto-chain
+/// flow; this covers the CLI half.
+#[tokio::test]
+async fn e2e_relay_cli_advertises_chain_capability() {
+    let dir = std::env::temp_dir().join(format!("e2e-relay-chain-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    std::env::set_var("STOA_HOME", dir.join("stoa"));
+
+    let relay_wallet = dir.join("relay.dat");
+    Wallet::create("e2e-pass")
+        .expect("create")
+        .save(&relay_wallet, "e2e-pass")
+        .expect("save");
+
+    let (relay_child, relay_id, relay_addr) = spawn_relay_cli(
+        relay_wallet.to_str().unwrap(),
+        "e2e-pass",
+    );
+
+    // A probe node resolves the relay's hint across the mesh (a FindValue
+    // to the relay, not the relay reading its own local store).
+    let probe_keys = stoa::NodeKeys::generate().unwrap();
+    let (probe, _) = stoa::Mesh::bind(probe_keys, "127.0.0.1:0".parse().unwrap()).unwrap();
+    probe
+        .connect(relay_id, relay_addr)
+        .await
+        .expect("probe → relay");
+
+    let hint = tokio::time::timeout(Duration::from_secs(30), async {
+        loop {
+            match probe.resolve_relay_hint(relay_id).await {
+                Ok(Some(h)) => break h,
+                // Not replicated yet — the relay just bound. Retry.
+                _ => tokio::time::sleep(Duration::from_millis(100)).await,
+            }
+        }
+    })
+    .await
+    .expect("probe never resolved the relay's hint");
+
+    assert_eq!(hint.relay, relay_id);
+    assert!(
+        hint.chain,
+        "the CLI-spawned relay must advertise chain capability (RELAY.md §13.2)"
+    );
+
+    probe.shutdown().await.expect("probe shutdown");
+    kill(relay_child);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// Run the real `origin-wallet network sync` CLI binary as a child
 /// process and return (exit status, captured stdout).
 fn run_network_sync_cli(

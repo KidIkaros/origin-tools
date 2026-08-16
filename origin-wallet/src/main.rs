@@ -204,6 +204,14 @@ enum Commands {
         /// Only messages addressed to this peer's topic (default: ours)
         #[arg(long)]
         from: Option<String>,
+        /// Publish this node's chain-capable relay hint first (RELAY.md
+        /// §13.2) — "reachable via relay R" — so `--chain-auto` dialers
+        /// can resolve us through R.
+        #[arg(long)]
+        via_relay: Option<String>,
+        /// The relay node's dial address (host:port), with --via-relay.
+        #[arg(long)]
+        relay_addr: Option<SocketAddr>,
     },
 
     /// Relay operations: serve circuits (the "help the network" toggle),
@@ -272,6 +280,15 @@ enum RelayCommands {
         /// pin one for automation/tests so the port is known in advance)
         #[arg(long, default_value = "0.0.0.0:0")]
         addr: std::net::SocketAddr,
+        /// Rendezvous point MeshId for the relay directory (R7, RELAY.md
+        /// §13.2) — with --discovery-addr, joins the relay mesh: the
+        /// relay discovers and peers with other chain-capable relays.
+        #[arg(long)]
+        discovery_point: Option<String>,
+        /// The rendezvous point's dial address (host:port), with
+        /// --discovery-point.
+        #[arg(long)]
+        discovery_addr: Option<std::net::SocketAddr>,
     },
     /// Show the relay's abuse-control state: live circuits, validated
     /// clients, eviction set size, challenges issued (RELAY.md §9).

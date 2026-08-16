@@ -198,6 +198,12 @@ mail inline (`✉ mail from …`).
 # + body).
 origin-wallet chat listen --file wallet.dat
 
+# Listen AND advertise a chain-capable reachable path (RELAY.md §13.7):
+# "I'm reachable via relay R, chain-capable", so a `chat send --chain-auto`
+# dialer can resolve this wallet as a far relay through R.
+origin-wallet chat listen --file wallet.dat \
+    --via-relay <relay-meshid> --relay-addr 5.6.7.8:8443
+
 # Send one message: opens a session — an encrypted L3 pipe through a
 # relay (upgraded to a direct leg when possible), or the addressed topic
 # on a direct mesh link. --wait-reply awaits one frame back.
@@ -259,7 +265,20 @@ one step.
 # persists under $STOA_HOME/nodes/<meshid>/.
 origin-wallet relay serve --file wallet.dat --difficulty 16 \
     --stun-server stun.l.google.com:19302
+
+# Join the relay mesh (RELAY.md §13.7): register in the `stoa:relays`
+# rendezvous namespace and auto-peer with other chain-capable relays.
+origin-wallet relay serve --file wallet.dat --difficulty 16 \
+    --stun-server stun.l.google.com:19302 \
+    --discovery-point <point-meshid> --discovery-addr 1.2.3.4:8443
 ```
+
+A serving relay publishes its hint with `chain: true` (RELAY.md §13.2):
+it accepts chained opens, so a `chat send --chain-auto` dialer can
+resolve it as a far relay and route a multi-hop circuit through it.
+With `--discovery-point`, the relay also joins the mesh: it discovers
+and peers with other chain-capable relays and pre-warms their cookies,
+so chained circuits open without manual hop wiring.
 
 ### Relay abuse-control (the operator's surface)
 
