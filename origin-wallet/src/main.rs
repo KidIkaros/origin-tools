@@ -344,6 +344,13 @@ enum ChatCommands {
         /// relay on the path learns both endpoints (RELAY.md §13).
         #[arg(long)]
         chain: Option<String>,
+        /// Auto path selection (RELAY.md §13.2): resolve the peer's
+        /// chain-capable far relay from its published relay hint, then
+        /// chain --relay → that relay → the peer. Requires --relay (the
+        /// near relay is your choice; the far relay comes from the peer's
+        /// hint and must advertise chain capability).
+        #[arg(long)]
+        chain_auto: bool,
         /// Message body
         #[arg(long)]
         body: String,

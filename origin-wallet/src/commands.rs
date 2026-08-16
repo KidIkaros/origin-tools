@@ -935,6 +935,7 @@ fn cmd_chat(path: &Path, command: super::ChatCommands) -> Result<(), Box<dyn std
             relay,
             relay_addr,
             chain,
+            chain_auto,
             body,
             wait_reply,
         } => {
@@ -971,15 +972,24 @@ fn cmd_chat(path: &Path, command: super::ChatCommands) -> Result<(), Box<dyn std
             if !chain.is_empty() && relay.is_none() {
                 return Err("--chain needs --relay (and --relay-addr)".into());
             }
+            if chain_auto && relay.is_none() {
+                return Err("--chain-auto needs --relay (and --relay-addr)".into());
+            }
+            if chain_auto && !chain.is_empty() {
+                return Err("--chain-auto and --chain are mutually exclusive".into());
+            }
 
             println!("Chatting to {to_mesh}...");
             let rt = tokio::runtime::Runtime::new()?;
             let outcome = rt.block_on(origin_wallet::network::chat_send(
                 &wallet,
                 to_mesh,
-                peer_addr,
-                relay,
-                chain,
+                origin_wallet::network::ChatRoute {
+                    peer_addr,
+                    relay,
+                    chain,
+                    chain_auto,
+                },
                 body.into_bytes(),
                 wait_reply,
             ))?;

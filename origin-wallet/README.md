@@ -215,6 +215,13 @@ origin-wallet chat send --file wallet.dat --to <64-hex-meshid> \
 origin-wallet chat send --file wallet.dat --to <64-hex-meshid> \
     --relay <relay-meshid> --relay-addr 5.6.7.8:8443 \
     --chain <mid1>,<mid2> --body "hello"
+
+# Auto path selection (RELAY.md §13.2): name only your near relay; the
+# far relay comes from the peer's published chain-capable hint. A peer
+# whose relay doesn't advertise chain capability is a clean miss.
+origin-wallet chat send --file wallet.dat --to <64-hex-meshid> \
+    --relay <relay-meshid> --relay-addr 5.6.7.8:8443 \
+    --chain-auto --body "hello"
 ```
 
 Chat is the real-time rail (mail is store-and-forward). `chat listen`

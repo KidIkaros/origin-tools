@@ -442,19 +442,50 @@ pub struct ChatOutcome {
 /// [`chat_send`] (bind-per-call) and the REPL (one long-lived node).
 /// `chain` (RELAY.md §13) extends the relayed pipe through extra relays
 /// so no single relay on the path learns both endpoints.
+/// The routing options on a chat send (grouped so [`chat_send`] stays
+/// under the clippy argument limit — the `PayFlags` pattern).
+#[derive(Debug, Clone, Default)]
+pub struct ChatRoute {
+    /// The recipient's dial address (host:port) — the way in for
+    /// `dial_any` resolution and the direct tier's carrier.
+    pub peer_addr: Option<SocketAddr>,
+    /// A relay to circuit through (MeshId + dial address).
+    pub relay: Option<(stoa::MeshId, SocketAddr)>,
+    /// Extra chain relays (RELAY.md §13): the circuit runs
+    /// relay → chain → the peer, so no single relay learns both ends.
+    pub chain: Vec<stoa::MeshId>,
+    /// Auto path selection (§13.2): resolve the peer's chain-capable
+    /// far relay from its published hint, then chain relay → far → peer.
+    pub chain_auto: bool,
+}
+
 async fn chat_send_on(
     mesh: &stoa::Mesh,
     to: stoa::MeshId,
-    relay: Option<(stoa::MeshId, SocketAddr)>,
-    chain: Vec<stoa::MeshId>,
+    route: ChatRoute,
     body: Vec<u8>,
     wait_reply: bool,
 ) -> Result<ChatOutcome> {
     // 1. The session pipe: named relay (or chain), or dial_any's
     //    automatic fallback.
-    let session = match relay {
+    let session = match route.relay {
         Some((relay_id, relay_addr)) => {
-            if chain.is_empty() {
+            if route.chain_auto {
+                // Auto path selection (RELAY.md §13.2): resolve the
+                // peer's chain-capable far relay from its published hint,
+                // then chain near → far → peer. A peer whose relay
+                // doesn't advertise chain capability is a clean miss.
+                let (far, _) = mesh.chain_relay_for(to).await.map_err(|e| {
+                    WalletError::Network(format!("auto chain path to {to} unavailable: {e}"))
+                })?;
+                Some(
+                    mesh.dial_relayed_chain_v(relay_id, relay_addr, &[far], to)
+                        .await
+                        .map_err(|e| {
+                            WalletError::Network(format!("auto chain dial to {to} failed: {e}"))
+                        })?,
+                )
+            } else if route.chain.is_empty() {
                 Some(
                     mesh.dial_relayed(relay_id, relay_addr, to)
                         .await
@@ -464,7 +495,7 @@ async fn chat_send_on(
                 )
             } else {
                 Some(
-                    mesh.dial_relayed_chain_v(relay_id, relay_addr, &chain, to)
+                    mesh.dial_relayed_chain_v(relay_id, relay_addr, &route.chain, to)
                         .await
                         .map_err(|e| {
                             WalletError::Network(format!("chain dial to {to} failed: {e}"))
@@ -523,9 +554,7 @@ async fn chat_send_on(
 pub async fn chat_send(
     wallet: &Wallet,
     to: stoa::MeshId,
-    peer_addr: Option<SocketAddr>,
-    relay: Option<(stoa::MeshId, SocketAddr)>,
-    chain: Vec<stoa::MeshId>,
+    route: ChatRoute,
     body: Vec<u8>,
     wait_reply: bool,
 ) -> Result<ChatOutcome> {
@@ -537,10 +566,10 @@ pub async fn chat_send(
 
     // A live mesh link helps dial_any resolve the target (DHT punch
     // records, relay hints) and is the direct tier's carrier.
-    if let Some(addr) = peer_addr {
+    if let Some(addr) = route.peer_addr {
         let _ = mesh.connect(to, addr).await;
     }
-    chat_send_on(&mesh, to, relay, chain, body, wait_reply).await
+    chat_send_on(&mesh, to, route, body, wait_reply).await
 }
 
 /// Interactive chat REPL (INTEGRATION.md §4): one long-lived node, a
@@ -702,7 +731,7 @@ pub async fn chat_repl(
                     continue;
                 };
                 let body = body.as_bytes().to_vec();
-                match chat_send_on(&mesh2, to, None, Vec::new(), body.clone(), false).await {
+                match chat_send_on(&mesh2, to, ChatRoute::default(), body.clone(), false).await {
                     Ok(outcome) => println!("✓ sent over the {}", outcome.tier),
                     Err(e) => {
                         // No live route — escalate to store-and-forward mail
@@ -962,7 +991,6 @@ mod tests {
             per_tx: Some(1000),
             per_day: Some(1500),
             per_month: Some(4000),
-            ..Default::default()
         });
         // The gate + record rhythm `pay_native` uses: gate before, record
         // after the payment lands.
@@ -1005,7 +1033,6 @@ mod tests {
             per_tx: Some(10),
             per_day: Some(12),
             per_month: Some(30),
-            ..Default::default()
         });
         wallet.check_spend(7).unwrap();
         wallet.record_spend(7);
@@ -1568,9 +1595,10 @@ mod tests {
         let outcome = chat_send(
             &b_wallet,
             a_id,
-            Some(a_addr),
-            None,
-            Vec::new(),
+            ChatRoute {
+                peer_addr: Some(a_addr),
+                ..Default::default()
+            },
             b"direct hello".to_vec(),
             false,
         )
@@ -1631,9 +1659,10 @@ mod tests {
         let outcome = chat_send(
             &b_wallet,
             a_id,
-            None,
-            Some((relay_id, relay_addr)),
-            Vec::new(),
+            ChatRoute {
+                relay: Some((relay_id, relay_addr)),
+                ..Default::default()
+            },
             b"relayed hello".to_vec(),
             true,
         )
@@ -1710,10 +1739,12 @@ mod tests {
             .expect("listener closed");
         tokio::time::timeout(std::time::Duration::from_secs(30), probe.close())
             .await
-            .expect("probe closes");
+            .expect("probe closes")
+            .expect("probe close failed");
         tokio::time::timeout(std::time::Duration::from_secs(30), validation.close())
             .await
-            .expect("validation closes");
+            .expect("validation closes")
+            .expect("validation close failed");
 
         // A's side runs concurrently: accept the chain circuit, read the
         // frame, and reply while B's --wait-reply is awaiting.
@@ -1735,9 +1766,11 @@ mod tests {
         let outcome = chat_send(
             &b_wallet,
             a_id,
-            None,
-            Some((relay_id_1, relay_addr_1)),
-            vec![relay_id_2],
+            ChatRoute {
+                relay: Some((relay_id_1, relay_addr_1)),
+                chain: vec![relay_id_2],
+                ..Default::default()
+            },
             b"chain hello".to_vec(),
             true,
         )
@@ -1750,6 +1783,142 @@ mod tests {
 
         // Privacy: R1's circuit names B and R2 only; R2's names R1 and A
         // only — neither learns both endpoints.
+        let r1_circuits = relay_mesh_1.relay_circuits().await;
+        assert_eq!(r1_circuits.len(), 1);
+        assert!(
+            r1_circuits
+                .iter()
+                .all(|cv| cv.target == relay_id_2 && cv.b == Some(relay_id_2)),
+            "R1 must name only R2 as its far end, got {r1_circuits:?}"
+        );
+        assert!(
+            r1_circuits
+                .iter()
+                .all(|cv| cv.initiator != a_id && cv.target != a_id),
+            "R1 must never learn A, got {r1_circuits:?}"
+        );
+        let r2_circuits = relay_mesh_2.relay_circuits().await;
+        assert_eq!(r2_circuits.len(), 1);
+        assert!(
+            r2_circuits
+                .iter()
+                .all(|cv| cv.a == relay_id_1 && cv.b == Some(a_id) && cv.target == a_id),
+            "R2 must name only R1 and A, got {r2_circuits:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn chat_chain_auto_resolves_far_relay_from_target_hint() {
+        // RELAY.md §13.2 auto path selection through the wallet: B gives
+        // only its *near* relay; the far relay comes from A's published
+        // chain-capable relay hint (chain_relay_for). The circuit still
+        // splits endpoints — R1 never learns A, R2 never learns B.
+        let relay_wallet_1 = Wallet::create("auto-relay-1-pass").unwrap();
+        let relay_mesh_1 = serve_relay(
+            &relay_wallet_1,
+            8,
+            "127.0.0.1:9".parse().unwrap(),
+            "127.0.0.1:0".parse().unwrap(),
+        )
+        .await
+        .expect("serve relay 1");
+        let relay_id_1 = relay_mesh_1.local_mesh_id();
+        let relay_addr_1 = relay_mesh_1.local_addr();
+
+        let relay_wallet_2 = Wallet::create("auto-relay-2-pass").unwrap();
+        let relay_mesh_2 = serve_relay(
+            &relay_wallet_2,
+            8,
+            "127.0.0.1:9".parse().unwrap(),
+            "127.0.0.1:0".parse().unwrap(),
+        )
+        .await
+        .expect("serve relay 2");
+        let relay_id_2 = relay_mesh_2.local_mesh_id();
+        let relay_addr_2 = relay_mesh_2.local_addr();
+
+        relay_mesh_1
+            .connect(relay_id_2, relay_addr_2)
+            .await
+            .expect("R1 connects to R2");
+
+        // A hops to R2 and accepts circuits; A's hint advertises R2 as
+        // chain-capable, so a path-selection dialer may chain through it.
+        let a_wallet = Wallet::create("auto-a-pass").unwrap();
+        let a_keys = a_wallet.stoa_node_keys().unwrap();
+        let a_id = *a_keys.mesh_id();
+        let (a_mesh, a_addr) = stoa::Mesh::bind(a_keys, "127.0.0.1:0".parse().unwrap()).unwrap();
+        let mut listener = a_mesh.accept_relayed().await.unwrap();
+        a_mesh.connect(relay_id_2, relay_addr_2).await.unwrap();
+        a_mesh
+            .publish_relay_hint_chain(relay_id_2, relay_addr_2, 300, true)
+            .await
+            .expect("A publishes its chain-capable relay hint");
+
+        // Per-hop cookie gate: R1 validates at R2 (R2 hosts the leg; the
+        // throwaway circuit's target is A, so R1 proves itself through
+        // the same path the chain will use).
+        let validation = tokio::time::timeout(std::time::Duration::from_secs(30), async {
+            relay_mesh_1
+                .dial_relayed(relay_id_2, relay_addr_2, a_id)
+                .await
+        })
+        .await
+        .expect("validation circuit opens")
+        .expect("relayed dial");
+        let probe = tokio::time::timeout(std::time::Duration::from_secs(30), listener.recv())
+            .await
+            .expect("A accepts the validation circuit")
+            .expect("listener closed");
+        tokio::time::timeout(std::time::Duration::from_secs(30), probe.close())
+            .await
+            .expect("probe closes")
+            .expect("probe close failed");
+        tokio::time::timeout(std::time::Duration::from_secs(30), validation.close())
+            .await
+            .expect("validation closes")
+            .expect("validation close failed");
+
+        let a_task = tokio::spawn(async move {
+            let mut sess = tokio::time::timeout(std::time::Duration::from_secs(30), listener.recv())
+                .await
+                .expect("no circuit")
+                .expect("listener closed");
+            let got =
+                tokio::time::timeout(std::time::Duration::from_secs(30), sess.receiver().recv())
+                    .await
+                    .expect("no data")
+                    .expect("channel closed");
+            assert_eq!(got, b"auto chain hello");
+            sess.send(b"got it").await.expect("reply send");
+        });
+
+        // B's mesh must see A's hint to resolve the far relay. A live
+        // mesh link to A (peer_addr) lets B's mesh run the DHT lookup;
+        // the *circuit* still goes through the chain for endpoint
+        // privacy — the link is resolution only.
+        let b_wallet = Wallet::create("auto-b-pass").unwrap();
+        let outcome = chat_send(
+            &b_wallet,
+            a_id,
+            ChatRoute {
+                peer_addr: Some(a_addr),
+                relay: Some((relay_id_1, relay_addr_1)),
+                chain_auto: true,
+                ..Default::default()
+            },
+            b"auto chain hello".to_vec(),
+            true,
+        )
+        .await
+        .expect("auto chain chat");
+        assert!(outcome.tier == "relayed", "auto chain stays relayed");
+        let reply = outcome.reply.expect("wait_reply must capture the reply");
+        assert_eq!(reply, b"got it");
+        a_task.await.expect("A's side of the chat");
+
+        // Privacy held: R1's far end is R2 (never A); R2's near end is
+        // R1 and its far end A (never B).
         let r1_circuits = relay_mesh_1.relay_circuits().await;
         assert_eq!(r1_circuits.len(), 1);
         assert!(
