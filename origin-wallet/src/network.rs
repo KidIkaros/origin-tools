@@ -131,6 +131,85 @@ pub async fn pay_native_via_relay(
     Ok(entry)
 }
 
+/// Result of a forced registry sync (SPEC §6.2 — the manual "pull now").
+#[derive(Debug, Clone)]
+pub struct SyncSummary {
+    /// The peer whose checkpoint was pulled.
+    pub peer: stoa::MeshId,
+    /// Sync lag after the exchange (`u64::MAX` = never synced).
+    pub sync_lag_secs: u64,
+    /// Re-syncs fired since bind (including the forced one).
+    pub resyncs: u64,
+    /// Ledger entries now held (other authors' chains pulled too).
+    pub ledger_entries: usize,
+    /// Identity records now held.
+    pub identities: usize,
+    /// Spent claims now held.
+    pub spent_claims: usize,
+    /// Mailbox size now held.
+    pub inbox: usize,
+}
+
+/// Force a registry sync from a known peer — the manual "pull now" for
+/// a payment or mail already sitting on the mesh (SPEC §6.2; the
+/// automatic cadence is 60 s). Binds this wallet's node, connects to
+/// `peer` (identity-pinned: at `peer_addr` if given, else via the
+/// transport fallback — punch candidates, then the peer's relay
+/// record), requests every syncable registry's checkpoint, waits a
+/// bounded grace for the exchange to land, and returns a summary of
+/// what was pulled.
+pub async fn sync_from(
+    wallet: &Wallet,
+    peer: stoa::MeshId,
+    peer_addr: Option<SocketAddr>,
+) -> Result<SyncSummary> {
+    let node_keys = wallet.stoa_node_keys()?;
+    let bind_addr = "0.0.0.0:0"
+        .parse()
+        .map_err(|e: std::net::AddrParseError| WalletError::Network(e.to_string()))?;
+    let (mesh, _) = stoa::Mesh::bind(node_keys, bind_addr)?;
+
+    // Connect to the peer. A bare address is not enough — the transport
+    // is identity-pinned, so the peer's MeshId is the trust anchor.
+    if let Some(addr) = peer_addr {
+        mesh.connect(peer, addr).await.map_err(|e| {
+            WalletError::Network(format!("connect to {peer} at {addr} failed: {e}"))
+        })?;
+    } else {
+        mesh.dial_any(peer).await.map_err(|e| {
+            WalletError::Network(format!("dial {peer} failed: {e}"))
+        })?;
+    }
+
+    // Force the checkpoint exchange, then give the responses a bounded
+    // grace to land (the actor processes them asynchronously). The
+    // on-connect hello already syncs once; this is the explicit re-pull.
+    mesh.sync_registries().await.map_err(|e| {
+        WalletError::Network(format!("sync request failed: {e}"))
+    })?;
+    let mut lag = u64::MAX;
+    for _ in 0..30 {
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        let m = mesh.metrics().await;
+        if m.sync_lag_secs != u64::MAX {
+            lag = m.sync_lag_secs;
+            break;
+        }
+    }
+    let m = mesh.metrics().await;
+    let summary = SyncSummary {
+        peer,
+        sync_lag_secs: lag,
+        resyncs: m.resyncs,
+        ledger_entries: mesh.ledger_snapshot().await.len(),
+        identities: mesh.identities().await.map(|v| v.len()).unwrap_or(0),
+        spent_claims: mesh.spent_claims().await.len(),
+        inbox: mesh.mailbox().await.len(),
+    };
+    let _ = mesh.shutdown().await;
+    Ok(summary)
+}
+
 /// Discover services for a query (INTEGRATION.md step 4): bind this
 /// wallet's node (identity from the wallet seed), optionally dial a peer
 /// first so DHT lookups can reach it, then rank known services. `room` +
@@ -998,10 +1077,10 @@ mod tests {
         // payments, then settles. The settle entry records the total paid
         // out, and finality is time-boxed (DISPUTE_WINDOW_SECS) — not
         // eternal.
-        let mut payer = Wallet::create("payer-pass").unwrap();
+        let payer = Wallet::create("payer-pass").unwrap();
         let payee_keys = stoa::NodeKeys::generate().unwrap();
         let payee_id = *payee_keys.mesh_id();
-        let (payee_mesh, payee_addr) =
+        let (_payee_mesh, payee_addr) =
             stoa::Mesh::bind(payee_keys, "127.0.0.1:0".parse().unwrap()).unwrap();
 
         // A opens + streams directly (the pay path), then settles.
@@ -1372,5 +1451,54 @@ mod tests {
         let reply = outcome.reply.expect("wait_reply must capture the reply");
         assert_eq!(reply, b"got it");
         a_task.await.expect("A's side of the chat");
+    }
+
+    #[tokio::test]
+    async fn wallet_pulls_registry_checkpoint_from_peer() {
+        // The manual "pull now" (SPEC §6.2): C binds its node, connects
+        // to B — which already holds an A→B receipt it never witnessed —
+        // and forces a checkpoint exchange. C ends up holding the receipt
+        // pulled from B's checkpoint, not gossiped to it directly: the
+        // exact shape of a node that was offline while the mesh moved.
+        let mut payer = Wallet::create("sync-payer-pass").unwrap();
+        let payee = Wallet::create("sync-payee-pass").unwrap();
+        let syncer = Wallet::create("sync-syncer-pass").unwrap();
+
+        // B's node is long-lived and ingests A's payment.
+        let payee_keys = payee.stoa_node_keys().unwrap();
+        let payee_id = *payee_keys.mesh_id();
+        let (payee_mesh, payee_addr) =
+            stoa::Mesh::bind(payee_keys, "127.0.0.1:0".parse().unwrap()).unwrap();
+
+        // A pays B on the native rail; B ingests the receipt via gossip.
+        pay_native(&mut payer, payee_id, payee_addr, 555, b"sync test".to_vec())
+            .await
+            .expect("pay");
+        tokio::time::timeout(std::time::Duration::from_secs(30), async {
+            loop {
+                if !payee_mesh.ledger_snapshot().await.is_empty() {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("payee never ingested the receipt");
+
+        // C pulls B's checkpoint on demand.
+        let summary = sync_from(&syncer, payee_id, Some(payee_addr))
+            .await
+            .expect("sync");
+        assert_eq!(summary.peer, payee_id);
+        assert_ne!(summary.sync_lag_secs, u64::MAX, "the checkpoint exchange landed");
+        assert_eq!(
+            summary.ledger_entries, 2,
+            "A's chain (channel open + receipt) was pulled from B's checkpoint"
+        );
+        // Identity records ride the same checkpoint exchange, but A's
+        // node shut down right after paying, so its identity gossip may
+        // not have reached B before C pulled — the ledger is the
+        // deterministic assertion here (shutdown flushes ledger bytes,
+        // not identity gossip).
     }
 }

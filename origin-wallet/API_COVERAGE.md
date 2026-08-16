@@ -22,6 +22,7 @@ deliberate gaps.
 | Service pay | `lookup_service`, `open_channel`, `stream_payment` | `pay --service <id>` (resolve a discovered service's record, pay its payment address — tested) |
 | Settle | `settle_channel`, `channel_state` | `settle --to <id>` (time-boxed finality, SPEC §10.3 — tested) |
 | Ops | `metrics`, `run_punch_refresh` | `network status` (mesh degree, pulse liveness, sync lag, gossip drop), `network doctor` (full SPEC §13 under the wallet identity) |
+| Registry sync | `sync_registries` | `network sync --peer [--peer-addr]` (manual "pull now" — closes the 60 s cadence gap; tested: pulls another author's ledger chain from the peer's checkpoint) |
 | Contacts | — | `contact add/list`, `discover --save` (top hit → contact in one step) |
 
 ## Not exposed (deliberate — agent-layer, not wallet-layer)
@@ -39,9 +40,8 @@ CLI deliberately does not surface them:
   CLI would invite mistakes a wallet user can't audit.
 - **Multi-rail pay** — `pay`, `pay_stealth`, `pay_service`,
   `configure_pay`. The wallet exposes the **native rail** only; the
-  test-rail x402/ACP paths exist for the sim and embedders. A wallet
-  `pay` routing over HTTP rails would need credential handling the CLI
-  doesn't have yet.
+  test-rail x402/ACP paths exist for the sim and embedders (see the
+  evaluation below).
 - **Raw DHT / rendezvous** — `put`, `get`, `register`, `query`,
   `resolve_relay_hint`. Used *inside* discovery and relay logic; no
   command-line JSON spelunking.
@@ -97,17 +97,37 @@ claims), raw DHT/rendezvous plumbing, and multi-rail pay.
 
 **Next additions (in priority order):**
 
-1. **`network sync`** — bind the node and force `sync_registries` on
-   demand. Today the 60 s sync cadence (SPEC §6.2) is the delivery path
-   for `pay --relay` receipts and inbound mail; a manual "pull now"
-   command closes the latency gap for a human waiting on a payment
-   that's already on the relay. Cheap: one command wrapping the existing
-   `sync_registries` call, no new stoa API.
-2. **Multi-rail pay** (`pay_stealth` / `pay_service` over the test-rail
-   x402/ACP paths) — the only remaining product-shaped gap, and it is
-   deliberately deferred: routing a wallet `pay` over HTTP rails needs
-   credential handling the CLI doesn't have yet. Pull when standing-
-   network rails exist.
+1. **`network sync`** — **shipped 2026-08-16**: `sync_registries` is now
+   exposed as `network sync --peer [--peer-addr]`, the manual "pull now"
+   that closes the 60 s cadence gap for `pay --relay` receipts and
+   inbound mail. Tested end-to-end: a wallet pulls another author's
+   ledger chain from a peer's checkpoint.
+2. **Multi-rail pay** — evaluated 2026-08-16, still deliberately
+   deferred (see the evaluation below).
 3. **Nothing further** — endorsements/disputes/reputation stay in stoa
    (they run inside the node, ingesting gossip); surfacing them as CLI
    commands would invite mistakes a wallet user can't audit.
+
+## Multi-rail pay — credential evaluation (2026-08-16)
+
+`stoa::pay` (`SPEC §10.2`) routes one `pay()` over three rails
+cheapest-first with fall-through: **native** (free, settles on the mesh
+ledger), **x402** (`Http402 { url, scheme }`, 1% cost model), and **ACP**
+(`CardAcp { network, last4 }`, 2%). The x402/ACP rails are *offline
+doubles* today — `RailDouble::{Authorize, Decline}` prove the router,
+spend policy, and fall-through without a live HTTP/card network (P8).
+The wallet CLI deliberately exposes the native rail only. What routing a
+real x402/ACP payment would require:
+
+| Rail | Credential the CLI would need to hold | Blocker |
+|---|---|---|
+| x402 | An account at an ILP/Open-Payments provider (the URL + `PaymentScheme` come from a service record; the *payment authorization* needs a provider identity — bearer token / signing key) | No standing network to pay into — there is no live HTTP-402 endpoint or payment pointer to route to; the doubles are honest about that |
+| ACP | Full PAN + expiry + CVC (the `last4` in the rail is only a display hint) | Card storage is a PCI-DSS surface the wallet doesn't have; holding card data is a product decision, not a protocol one |
+
+**The pull condition is unchanged and now grounded:** when a real x402
+payment pointer starts appearing in service records, the wallet's
+`pay --service` should switch from its hand-rolled native path to
+`Mesh::pay_service`, which routes multi-rail automatically — with just
+the pointer, no stored credentials (Open-Payments auth is
+provider-side). Card rail stays out until the product decides to hold
+card data. Nothing to build today.

@@ -35,6 +35,9 @@ pub fn execute(cli: super::Cli) -> Result<(), Box<dyn std::error::Error>> {
             super::NetworkCommands::Doctor { stun_server } => {
                 cmd_network_doctor(&cli.file, &stun_server)?
             }
+            super::NetworkCommands::Sync { peer, peer_addr } => {
+                cmd_network_sync(&cli.file, &peer, peer_addr)?
+            }
         },
         super::Commands::Pay {
             to,
@@ -449,6 +452,42 @@ fn cmd_network_doctor(path: &Path, stun_server: &str) -> Result<(), Box<dyn std:
     println!("Running stoa doctor under the wallet's identity...");
     let rt = tokio::runtime::Runtime::new()?;
     rt.block_on(stoa::doctor::run_with_keys(&node_keys, Some(stun_server)))?;
+    Ok(())
+}
+
+fn cmd_network_sync(
+    path: &Path,
+    peer: &str,
+    peer_addr: Option<std::net::SocketAddr>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    if !path.exists() {
+        return Err(format!("Wallet file not found: {}", path.display()).into());
+    }
+    let passphrase = prompt_passphrase("Enter passphrase: ")?;
+    let wallet = Wallet::open(path, &passphrase)?;
+    let peer_id: stoa::MeshId = peer.parse()?;
+
+    let rt = tokio::runtime::Runtime::new()?;
+    let summary = rt.block_on(origin_wallet::network::sync_from(
+        &wallet,
+        peer_id,
+        peer_addr,
+    ))?;
+
+    println!("\n✓ Registry checkpoint pulled from {peer_id}");
+    println!(
+        "  sync lag     : {}",
+        if summary.sync_lag_secs == u64::MAX {
+            "never".to_string()
+        } else {
+            format!("{} s", summary.sync_lag_secs)
+        }
+    );
+    println!("  re-syncs     : {}", summary.resyncs);
+    println!("  ledger       : {} entries", summary.ledger_entries);
+    println!("  identities   : {}", summary.identities);
+    println!("  spent claims : {}", summary.spent_claims);
+    println!("  inbox        : {} messages", summary.inbox);
     Ok(())
 }
 

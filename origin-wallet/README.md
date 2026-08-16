@@ -275,6 +275,20 @@ origin-wallet network doctor --file wallet.dat [--stun-server <host:port>]
 origin-wallet network status
 ```
 
+### Network sync (the manual "pull now")
+
+```bash
+# Pull the registry checkpoint from a known peer NOW, instead of waiting
+# for the 60 s automatic cadence (SPEC §6.2). Closes the delivery gap for
+# a payment or mail already sitting on the mesh — e.g. after `pay --relay`,
+# the payee pulls the receipt on demand instead of on the next sync tick.
+origin-wallet network sync --peer <64-hex-meshid> [--peer-addr 1.2.3.4:8443]
+```
+
+`--peer` is identity-pinned (the transport trusts the MeshId, not the
+address). Omit `--peer-addr` to resolve the peer via the transport
+fallback — punch candidates, then the peer's relay record.
+
 ## Architecture
 
 ```

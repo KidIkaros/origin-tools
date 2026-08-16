@@ -361,6 +361,21 @@ enum NetworkCommands {
         #[arg(long, default_value = "stun.l.google.com:19302")]
         stun_server: String,
     },
+
+    /// Bind this wallet's node and pull the registry checkpoint from a
+    /// known peer NOW — the manual "pull now" for a payment or mail
+    /// already sitting on the mesh (the automatic cadence is 60 s,
+    /// SPEC §6.2).
+    Sync {
+        /// The peer's MeshId (64 hex chars) — the transport is
+        /// identity-pinned, so this is the trust anchor
+        #[arg(long)]
+        peer: String,
+        /// Optional direct address (omit to resolve via the transport
+        /// fallback: punch candidates, then the peer's relay record)
+        #[arg(long)]
+        peer_addr: Option<std::net::SocketAddr>,
+    },
 }
 
 #[derive(Subcommand)]
