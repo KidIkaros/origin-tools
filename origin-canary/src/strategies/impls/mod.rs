@@ -272,7 +272,11 @@ impl EmbedStrategy for WatermarkStrategy {
     }
     fn extensions(&self) -> &'static [&'static str] {
         &[
-            "py", "js", "jsx", "ts", "tsx", "rs", "sol", "c", "cpp", "h", "hpp", "go", "java", "kt",
+            "py", "js", "jsx", "ts", "tsx", "rs", "sol", "c", "cpp", "h", "hpp", "go", "java",
+            "kt",
+            // Universal text/data formats — watermark should mark any text file.
+            "txt", "md", "markdown", "json", "yaml", "yml", "toml", "csv", "cfg", "log", "xml",
+            "rst", "adoc",
         ]
     }
     fn embed(
@@ -286,7 +290,8 @@ impl EmbedStrategy for WatermarkStrategy {
             source_dir,
             &[
                 "py", "js", "jsx", "ts", "tsx", "rs", "sol", "c", "cpp", "h", "hpp", "go", "java",
-                "kt",
+                "kt", "txt", "md", "markdown", "json", "yaml", "yml", "toml", "csv", "cfg", "log",
+                "xml", "rst", "adoc",
             ],
         )?;
         if files.is_empty() {

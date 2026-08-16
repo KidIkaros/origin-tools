@@ -433,10 +433,14 @@ fn trailing_newline_is_preserved_after_embed() {
 
 #[test]
 fn embed_tree_with_no_supported_files_errors_cleanly() {
-    // A tree with only .md/.txt files — nothing embeddable anywhere.
+    // A tree with only non-text/binary files — nothing embeddable anywhere.
     let tmp = tempfile::tempdir().unwrap();
-    fs::write(tmp.path().join("README.md"), "# docs only\n").unwrap();
-    fs::write(tmp.path().join("notes.txt"), "plain text\n").unwrap();
+    fs::write(
+        tmp.path().join("img.png"),
+        [0x89u8, 0x50, 0x4E, 0x47, 0x0D, 0x0A],
+    )
+    .unwrap();
+    fs::write(tmp.path().join("data.bin"), vec![0u8; 16]).unwrap();
 
     let err = run_embed(base_config(tmp.path(), 3)).unwrap_err();
     assert!(
