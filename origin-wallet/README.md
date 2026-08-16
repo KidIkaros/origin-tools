@@ -207,6 +207,14 @@ origin-wallet chat send --file wallet.dat --to <64-hex-meshid> \
 # Dial through a named relay (the NAT'd case).
 origin-wallet chat send --file wallet.dat --to <64-hex-meshid> \
     --relay <relay-meshid> --relay-addr 5.6.7.8:8443 --body "hello"
+
+# Chain through extra relays (RELAY.md §13): the circuit runs
+# --relay → --chain → the peer, so no single relay on the path learns
+# both endpoints. Each hop must be a chain-capable relay and hold a
+# route to the next.
+origin-wallet chat send --file wallet.dat --to <64-hex-meshid> \
+    --relay <relay-meshid> --relay-addr 5.6.7.8:8443 \
+    --chain <mid1>,<mid2> --body "hello"
 ```
 
 Chat is the real-time rail (mail is store-and-forward). `chat listen`

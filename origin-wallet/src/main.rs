@@ -339,6 +339,11 @@ enum ChatCommands {
         /// The relay node's dial address (host:port)
         #[arg(long)]
         relay_addr: Option<SocketAddr>,
+        /// Extra chain relays (comma-separated MeshIds) — with --relay,
+        /// the circuit runs --relay → these → the peer, so no single
+        /// relay on the path learns both endpoints (RELAY.md §13).
+        #[arg(long)]
+        chain: Option<String>,
         /// Message body
         #[arg(long)]
         body: String,

@@ -12,10 +12,10 @@ deliberate gaps.
 |---|---|---|
 | Identity | `stoa_node_keys` → seed-derived node | `Wallet::stoa_node_keys` (stable per wallet, tested) |
 | Bind / dial | `bind`, `local_mesh_id`, `local_addr`, `connect` | `pay_native`, `pay_native_via_relay`, `send_mail`, `discover_with`, `chat_*`, `serve_relay`, `lookup_service` |
-| Relay | `dial_relayed`, `dial_any`, `upgrade_to_direct`, `serve_relay_with`, `publish_relay_hint` | `chat send --relay` (session pipe, upgrade to direct), `relay serve` (serves + now publishes its hint) |
+| Relay | `dial_relayed`, `dial_relayed_chain_v`, `dial_any`, `upgrade_to_direct`, `serve_relay_with`, `publish_relay_hint_chain`, `chain_relay_for` | `chat send --relay` (session pipe, upgrade to direct), `chat send --chain` (multi-relay pipe, no single relay learns both endpoints), `relay serve` (serves + publishes its hint) |
 | Payments | `open_channel`, `stream_payment`, `channel_state` | `pay` (direct) and `pay --relay` (A→relay→C), MMR history recording; `pay --cap <n>` (per-tx SpendPolicy narrowing — over-cap refused before anything is sent, tested); `policy` (standing per-tx/day/month caps, persisted with the wallet, enforced before anything binds/signs — tested across save/load) |
 | Mail | `send_mail`, `poll_mail`, `mailbox`, `sync_registries` | `mail send`, `mail inbox` (persisted deduped mailbox, reloads across restart) |
-| Chat | `subscribe`, `publish` | `chat send` (direct / relayed / upgraded tiers), `chat repl` (long-lived node), `chat listen` |
+| Chat | `subscribe`, `publish` | `chat send` (direct / relayed / upgraded / chained tiers), `chat repl` (long-lived node), `chat listen` |
 | Discovery | `discover`, `discover_in_room`, `lookup_service` | `discover --query [--room --point --peer-addr --save]` |
 | Trust | `trust_scores` (indirectly, through discovery ranking) | `discover` ranks by cosine × trust |
 | Relay ops | `relay_evict`, `relay_pardon`, `relay_stats` | `relay stats` / `relay evict` / `relay pardon` (abuse-control state, persisted across restarts — tested) |

@@ -934,6 +934,7 @@ fn cmd_chat(path: &Path, command: super::ChatCommands) -> Result<(), Box<dyn std
             peer_addr,
             relay,
             relay_addr,
+            chain,
             body,
             wait_reply,
         } => {
@@ -953,6 +954,23 @@ fn cmd_chat(path: &Path, command: super::ChatCommands) -> Result<(), Box<dyn std
                 }
                 (None, None) => None,
             };
+            // Chain relays (RELAY.md §13): the circuit runs
+            // --relay → chain → the peer. Requires --relay (the first hop
+            // needs an address to dial).
+            let chain: Vec<stoa::MeshId> = match chain {
+                Some(s) if !s.trim().is_empty() => s
+                    .split(',')
+                    .map(|m| {
+                        m.trim()
+                            .parse::<stoa::MeshId>()
+                            .map_err(|e| format!("bad chain relay {m:?}: {e}"))
+                    })
+                    .collect::<Result<_, _>>()?,
+                _ => Vec::new(),
+            };
+            if !chain.is_empty() && relay.is_none() {
+                return Err("--chain needs --relay (and --relay-addr)".into());
+            }
 
             println!("Chatting to {to_mesh}...");
             let rt = tokio::runtime::Runtime::new()?;
@@ -961,6 +979,7 @@ fn cmd_chat(path: &Path, command: super::ChatCommands) -> Result<(), Box<dyn std
                 to_mesh,
                 peer_addr,
                 relay,
+                chain,
                 body.into_bytes(),
                 wait_reply,
             ))?;
