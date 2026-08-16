@@ -72,6 +72,11 @@ pub fn execute(cli: super::Cli) -> Result<(), Box<dyn std::error::Error>> {
                 },
             )?
         }
+        super::Commands::Policy {
+            per_tx,
+            per_day,
+            per_month,
+        } => cmd_policy(&cli.file, per_tx, per_day, per_month)?,
         super::Commands::Settle { to, peer_addr } => cmd_settle(&cli.file, &to, peer_addr)?,
         super::Commands::Discover {
             query,
@@ -493,6 +498,63 @@ fn cmd_network_sync(
     println!("  spent claims : {}", summary.spent_claims);
     println!("  inbox        : {} messages", summary.inbox);
     Ok(())
+}
+
+/// `wallet policy` — the standing spend policy (SPEC §10.2): print the
+/// current caps + day/month totals, or set/update the caps. The caps are
+/// persisted with the wallet and enforced on every `pay` before anything
+/// binds or signs.
+fn cmd_policy(
+    path: &Path,
+    per_tx: Option<u64>,
+    per_day: Option<u64>,
+    per_month: Option<u64>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    if !path.exists() {
+        return Err(format!("Wallet file not found: {}", path.display()).into());
+    }
+    let passphrase = prompt_passphrase("Enter passphrase: ")?;
+    let mut wallet = Wallet::open(path, &passphrase)?;
+
+    if per_tx.is_none() && per_day.is_none() && per_month.is_none() {
+        print_policy(&mut wallet);
+        return Ok(());
+    }
+    let mut policy = wallet.spend_policy().clone();
+    if let Some(v) = per_tx {
+        policy.per_tx = Some(v);
+    }
+    if let Some(v) = per_day {
+        policy.per_day = Some(v);
+    }
+    if let Some(v) = per_month {
+        policy.per_month = Some(v);
+    }
+    wallet.set_spend_policy(policy);
+    wallet.save(path, &passphrase)?;
+    println!("\n✓ Standing spend policy updated (enforced on every payment):");
+    print_policy(&mut wallet);
+    Ok(())
+}
+
+fn print_policy(wallet: &mut Wallet) {
+    let p = wallet.spend_policy().clone();
+    let (_, day_spent, month_spent) = wallet.spend_usage();
+    println!("Standing spend policy (SPEC §10.2):");
+    println!(
+        "  per-tx    : {}",
+        p.per_tx.map(|v| v.to_string()).unwrap_or_else(|| "unset".into())
+    );
+    println!(
+        "  per-day   : {}",
+        p.per_day.map(|v| v.to_string()).unwrap_or_else(|| "unset".into())
+    );
+    println!(
+        "  per-month : {}",
+        p.per_month.map(|v| v.to_string()).unwrap_or_else(|| "unset".into())
+    );
+    println!("  spent today  : {day_spent}");
+    println!("  spent this month : {month_spent}");
 }
 
 fn cmd_network_status(path: &Path) -> Result<(), Box<dyn std::error::Error>> {

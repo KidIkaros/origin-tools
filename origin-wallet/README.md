@@ -104,6 +104,23 @@ origin-wallet pay --file wallet.dat --to <64-hex-meshid> \
     --amount 500 --peer-addr 1.2.3.4:8443 --cap 1000
 ```
 
+### Standing spend policy (per-day / per-month)
+
+```bash
+# Print the current policy and the day/month totals spent against it.
+origin-wallet policy --file wallet.dat
+
+# Set caps: per-transaction, per-calendar-day, and per-calendar-month.
+# Caps persist with the wallet and are enforced on every pay before any
+# node binds or ledger entry signs — a refusal records nothing.
+origin-wallet policy --file wallet.dat --per-tx 1000 --per-day 5000 --per-month 50000
+```
+
+`--cap` on `pay` is the per-call variant of the same SPEC §10.2 rule
+(call may only narrow the standing policy); `wallet policy` sets the
+standing caps themselves. The rolling day/month totals are persisted too,
+so a restart doesn't reset the day's spend.
+
 The payment is streamed over an opened channel; the signed ledger entry
 is evidence that settles on both sides (the counterparty's node ingests it
 via gossip). The wallet's own MMR history is the human-facing record.

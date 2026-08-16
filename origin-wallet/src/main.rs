@@ -156,11 +156,26 @@ enum Commands {
         relay_addr: Option<SocketAddr>,
         /// Optional memo
         #[arg(long)]
-        memo: Option<String>,
-        /// Per-transaction spend cap (SPEC §10.2 SpendPolicy narrowing):
-        /// refuse the payment outright if the amount exceeds it
+        memo: Option<String>,    /// Per-transaction spend cap (SPEC §10.2 SpendPolicy narrowing):
+    /// refuse the payment outright if the amount exceeds it
+    #[arg(long)]
+    cap: Option<u64>,
+    },
+
+    /// Standing spend policy (SPEC §10.2): per-transaction / per-day /
+    /// per-month caps enforced on every payment. With no flags, prints
+    /// the current policy and the day/month totals spent against it.
+    /// Caps are persisted with the wallet.
+    Policy {
+        /// Per-transaction cap (max per single payment)
         #[arg(long)]
-        cap: Option<u64>,
+        per_tx: Option<u64>,
+        /// Per-day cap (calendar day)
+        #[arg(long)]
+        per_day: Option<u64>,
+        /// Per-month cap (calendar month)
+        #[arg(long)]
+        per_month: Option<u64>,
     },
 
     /// Settle a channel toward a counterparty (SPEC §10.3 — time-boxed

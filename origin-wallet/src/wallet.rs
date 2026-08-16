@@ -6,6 +6,7 @@ use crate::account::Account;
 use crate::address::{Address, AddressType, Network};
 use crate::error::{Result, WalletError};
 use crate::transaction::Transaction;
+use chrono::Datelike;
 use origin_crypto_sdk::seed::SeedHandle;
 use origin_proof::mmr::MmrState;
 use std::path::Path;
@@ -76,6 +77,14 @@ struct WalletPayload {
     history: MmrState,
     /// Metadata
     metadata: WalletMetadata,
+    /// Standing spend policy (SPEC §10.2) — `#[serde(default)]` keeps
+    /// wallets saved before the policy existed loadable.
+    #[serde(default)]
+    spend_policy: SpendPolicy,
+    /// Rolling spend buckets (day/month totals) — persisted so a restart
+    /// doesn't reset the day's spend.
+    #[serde(default)]
+    spend_buckets: SpendBuckets,
 }
 
 /// Account data for serialization.
@@ -103,6 +112,49 @@ pub struct Shard {
     pub threshold: u32,
 }
 
+/// Standing spend policy (SPEC §10.2): per-transaction / per-day /
+/// per-month caps, enforced on every payment before any node binds or
+/// ledger entry signs. A `None` cap is unset — no limit for that window.
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+pub struct SpendPolicy {
+    /// Maximum per single transaction.
+    pub per_tx: Option<u64>,
+    /// Maximum spent in the current calendar day.
+    pub per_day: Option<u64>,
+    /// Maximum spent in the current calendar month.
+    pub per_month: Option<u64>,
+}
+
+/// Rolling spend buckets: how much has been spent in the current day and
+/// month windows, and which window each bucket belongs to (unix-day and
+/// unix-month keys). A bucket rolls over when the wall clock moves past
+/// its key — checked at enforcement time, no timers. Persisted with the
+/// wallet so a restart doesn't reset the day's spend.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct SpendBuckets {
+    /// Days-since-epoch of the current day window.
+    pub day_key: u64,
+    /// Spent in the current day window.
+    pub day_spent: u64,
+    /// `year * 12 + month0` of the current month window.
+    pub month_key: u64,
+    /// Spent in the current month window.
+    pub month_spent: u64,
+}
+
+impl Default for SpendBuckets {
+    fn default() -> Self {
+        // Sentinel keys: the first enforcement always opens a fresh
+        // window (a new wallet has spent nothing in "today").
+        Self {
+            day_key: u64::MAX,
+            day_spent: 0,
+            month_key: u64::MAX,
+            month_spent: 0,
+        }
+    }
+}
+
 /// A post-quantum secure wallet.
 pub struct Wallet {
     /// Master seed handle with TTL and memory protection
@@ -113,6 +165,10 @@ pub struct Wallet {
     history: MmrState,
     /// Metadata
     metadata: WalletMetadata,
+    /// Standing spend policy (SPEC §10.2)
+    spend_policy: SpendPolicy,
+    /// Rolling day/month spend buckets
+    spend_buckets: SpendBuckets,
 }
 
 impl Wallet {
@@ -154,6 +210,8 @@ impl Wallet {
             accounts: Vec::new(),
             history: MmrState::new(),
             metadata: WalletMetadata::new(),
+            spend_policy: SpendPolicy::default(),
+            spend_buckets: SpendBuckets::default(),
         })
     }
 
@@ -215,6 +273,8 @@ impl Wallet {
             accounts,
             history: payload.history,
             metadata: payload.metadata,
+            spend_policy: payload.spend_policy,
+            spend_buckets: payload.spend_buckets,
         })
     }
 
@@ -260,6 +320,8 @@ impl Wallet {
             accounts: accounts_data,
             history: self.history.clone(),
             metadata: self.metadata.clone(),
+            spend_policy: self.spend_policy.clone(),
+            spend_buckets: self.spend_buckets.clone(),
         };
         let plaintext = bincode::serialize(&payload)?;
 
@@ -390,6 +452,92 @@ impl Wallet {
     /// Get transaction history size.
     pub fn transaction_count(&self) -> u64 {
         self.history.leaf_count
+    }
+
+    // ── Standing spend policy (SPEC §10.2) ───────────────────────────
+
+    /// The standing spend policy (per-tx / per-day / per-month caps).
+    pub fn spend_policy(&self) -> &SpendPolicy {
+        &self.spend_policy
+    }
+
+    /// Replace the standing spend policy. Caps apply to the next payment;
+    /// the rolling buckets are untouched (a lowered cap bites immediately,
+    /// a raised one doesn't retroactively erase spend).
+    pub fn set_spend_policy(&mut self, policy: SpendPolicy) {
+        self.spend_policy = policy;
+        self.metadata.modified_at = chrono::Utc::now().timestamp() as u64;
+    }
+
+    /// Roll the day/month windows to the wall clock (a bucket whose key
+    /// is behind today resets — the window turned over).
+    fn roll_spend_windows(&mut self) {
+        let now = chrono::Utc::now();
+        let now_secs = now.timestamp() as u64;
+        let day = now_secs / 86_400;
+        if day != self.spend_buckets.day_key {
+            self.spend_buckets.day_key = day;
+            self.spend_buckets.day_spent = 0;
+        }
+        let month = now.year() as u64 * 12 + now.month0() as u64;
+        if month != self.spend_buckets.month_key {
+            self.spend_buckets.month_key = month;
+            self.spend_buckets.month_spent = 0;
+        }
+    }
+
+    /// Gate a payment against the standing policy: roll the windows, then
+    /// refuse (SPEC §10.2 — before anything binds or signs) when the
+    /// amount would exceed the per-tx cap or push the day/month totals
+    /// over their caps. The buckets are *not* incremented here —
+    /// [`Wallet::record_spend`] does that only after the payment lands.
+    pub fn check_spend(&mut self, amount: u64) -> Result<()> {
+        self.roll_spend_windows();
+        if let Some(cap) = self.spend_policy.per_tx {
+            if amount > cap {
+                return Err(WalletError::Transaction(format!(
+                    "amount {amount} exceeds the per-transaction spend cap {cap} (SPEC §10.2)"
+                )));
+            }
+        }
+        if let Some(cap) = self.spend_policy.per_day {
+            let projected = self.spend_buckets.day_spent.saturating_add(amount);
+            if projected > cap {
+                return Err(WalletError::Transaction(format!(
+                    "day spend would reach {projected}, exceeding the per-day cap {cap} (SPEC §10.2)"
+                )));
+            }
+        }
+        if let Some(cap) = self.spend_policy.per_month {
+            let projected = self.spend_buckets.month_spent.saturating_add(amount);
+            if projected > cap {
+                return Err(WalletError::Transaction(format!(
+                    "month spend would reach {projected}, exceeding the per-month cap {cap} (SPEC §10.2)"
+                )));
+            }
+        }
+        Ok(())
+    }
+
+    /// Record a successful payment into the day/month buckets (the
+    /// counterpart of the [`Wallet::check_spend`] gate — only called once
+    /// the ledger entry actually landed).
+    pub fn record_spend(&mut self, amount: u64) {
+        self.roll_spend_windows();
+        self.spend_buckets.day_spent = self.spend_buckets.day_spent.saturating_add(amount);
+        self.spend_buckets.month_spent = self.spend_buckets.month_spent.saturating_add(amount);
+        self.metadata.modified_at = chrono::Utc::now().timestamp() as u64;
+    }
+
+    /// The current day/month spend totals (windows rolled to now) — the
+    /// `wallet policy` surface.
+    pub fn spend_usage(&mut self) -> (SpendBuckets, u64, u64) {
+        self.roll_spend_windows();
+        (
+            self.spend_buckets.clone(),
+            self.spend_buckets.day_spent,
+            self.spend_buckets.month_spent,
+        )
     }
 
     /// Update account balance.
@@ -613,6 +761,8 @@ impl Wallet {
             accounts: Vec::new(),
             history: MmrState::new(),
             metadata: WalletMetadata::new(),
+            spend_policy: SpendPolicy::default(),
+            spend_buckets: SpendBuckets::default(),
         })
     }
 

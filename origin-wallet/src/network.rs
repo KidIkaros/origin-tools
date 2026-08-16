@@ -58,6 +58,7 @@ pub async fn pay_native(
     cap: Option<u64>,
 ) -> Result<stoa::ledger::LedgerEntry> {
     enforce_spend_cap(amount, cap)?;
+    wallet.check_spend(amount)?;
     let node_keys = wallet.stoa_node_keys()?;
     let bind_addr = "0.0.0.0:0"
         .parse()
@@ -92,6 +93,8 @@ pub async fn pay_native(
 
     let tx = Transaction::new(&sender, &recipient, amount, 0, wallet.transaction_count());
     wallet.add_transaction(&tx)?;
+    // The payment landed — count it against the day/month buckets.
+    wallet.record_spend(amount);
 
     // Graceful shutdown: the receipt's gossip to the counterparty is
     // written before `stream_payment` returns, but a dropped Mesh can
@@ -122,6 +125,7 @@ pub async fn pay_native_via_relay(
     cap: Option<u64>,
 ) -> Result<stoa::ledger::LedgerEntry> {
     enforce_spend_cap(amount, cap)?;
+    wallet.check_spend(amount)?;
     let node_keys = wallet.stoa_node_keys()?;
     let bind_addr = "0.0.0.0:0"
         .parse()
@@ -154,6 +158,8 @@ pub async fn pay_native_via_relay(
 
     let tx = Transaction::new(&sender, &recipient, amount, 0, wallet.transaction_count());
     wallet.add_transaction(&tx)?;
+    // The payment landed — count it against the day/month buckets.
+    wallet.record_spend(amount);
 
     let _ = mesh.shutdown().await;
     Ok(entry)
@@ -780,6 +786,7 @@ pub async fn pay_service(
     cap: Option<u64>,
 ) -> Result<(stoa::ledger::LedgerEntry, stoa::ServiceRecord)> {
     enforce_spend_cap(amount, cap)?;
+    wallet.check_spend(amount)?;
     let node_keys = wallet.stoa_node_keys()?;
     let bind_addr = "0.0.0.0:0"
         .parse()
@@ -819,6 +826,8 @@ pub async fn pay_service(
     let recipient = Address::from_hash(to_hash, AddressType::Bech32, Network::Mainnet);
     let tx = Transaction::new(&sender, &recipient, amount, 0, wallet.transaction_count());
     wallet.add_transaction(&tx)?;
+    // The payment landed — count it against the day/month buckets.
+    wallet.record_spend(amount);
 
     let _ = mesh.shutdown().await;
     Ok((entry, record))
@@ -924,6 +933,103 @@ mod tests {
             err.to_string().contains("exceeds the spend cap"),
             "error names the cap: {err}"
         );
+        assert_eq!(wallet.transaction_count(), 0, "nothing recorded in the MMR");
+    }
+
+    #[test]
+    fn standing_spend_policy_gates_day_month_and_per_tx() {
+        use crate::wallet::SpendPolicy;
+
+        let mut wallet = Wallet::create("policy-pass").unwrap();
+        wallet.set_spend_policy(SpendPolicy {
+            per_tx: Some(1000),
+            per_day: Some(1500),
+            per_month: Some(4000),
+            ..Default::default()
+        });
+        // The gate + record rhythm `pay_native` uses: gate before, record
+        // after the payment lands.
+        wallet.check_spend(1000).unwrap();
+        wallet.record_spend(1000);
+        wallet.check_spend(500).unwrap(); // day at 1500 — exactly the cap
+        wallet.record_spend(500);
+
+        let err = wallet.check_spend(1).expect_err("day cap exhausted");
+        assert!(err.to_string().contains("per-day cap"), "names the cap: {err}");
+        let err = wallet.check_spend(1001).expect_err("per-tx cap bites first");
+        assert!(err.to_string().contains("per-transaction"), "names the cap: {err}");
+
+        // Both buckets count the same spend; the windows are open.
+        let (_, day, month) = wallet.spend_usage();
+        assert_eq!((day, month), (1500, 1500));
+
+        // A raised cap doesn't erase spend; a lowered one bites immediately.
+        wallet.set_spend_policy(SpendPolicy {
+            per_day: Some(4000),
+            ..Default::default()
+        });
+        let err = wallet.check_spend(2600).expect_err("still over the new day cap");
+        assert!(err.to_string().contains("per-day cap"));
+    }
+
+    #[test]
+    fn standing_policy_persists_across_save_and_load() {
+        use crate::wallet::SpendPolicy;
+
+        let dir = std::env::temp_dir().join(format!(
+            "stoa-wallet-policy-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("policy.dat");
+
+        let mut wallet = Wallet::create("policy-pass").unwrap();
+        wallet.set_spend_policy(SpendPolicy {
+            per_tx: Some(10),
+            per_day: Some(12),
+            per_month: Some(30),
+            ..Default::default()
+        });
+        wallet.check_spend(7).unwrap();
+        wallet.record_spend(7);
+        wallet.save(&path, "policy-pass").unwrap();
+
+        // A restart must not forget the caps or the day's spend.
+        let mut loaded = Wallet::open(&path, "policy-pass").unwrap();
+        assert_eq!(loaded.spend_policy().per_tx, Some(10));
+        assert_eq!(loaded.spend_policy().per_day, Some(12));
+        assert_eq!(loaded.spend_policy().per_month, Some(30));
+        let (_, day, month) = loaded.spend_usage();
+        assert_eq!((day, month), (7, 7), "day/month spend survives the restart");
+        // ...and the restored policy still gates: 10 is at per-tx, but
+        // 7 + 10 = 17 exceeds the restored per-day cap of 12.
+        let err = loaded.check_spend(10).expect_err("restored day cap bites");
+        assert!(err.to_string().contains("per-day cap"));
+    }
+
+    #[tokio::test]
+    async fn standing_policy_refuses_before_any_network_activity() {
+        use crate::wallet::SpendPolicy;
+
+        let mut wallet = Wallet::create("policy-pass").unwrap();
+        wallet.set_spend_policy(SpendPolicy {
+            per_day: Some(100),
+            ..Default::default()
+        });
+        let payee = Wallet::create("policy-payee-pass").unwrap();
+        let payee_id = *payee.stoa_node_keys().unwrap().mesh_id();
+
+        let err = pay_native(
+            &mut wallet,
+            payee_id,
+            "127.0.0.1:1".parse().unwrap(),
+            500,
+            b"policy-gated".to_vec(),
+            None,
+        )
+        .await
+        .expect_err("per-day cap must refuse the payment");
+        assert!(err.to_string().contains("per-day cap"), "error names the cap: {err}");
         assert_eq!(wallet.transaction_count(), 0, "nothing recorded in the MMR");
     }
 
