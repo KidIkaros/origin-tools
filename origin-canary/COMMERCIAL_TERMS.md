@@ -46,7 +46,7 @@ pricing. New versions are not bound by this file.
 
 ## Governing law
 
-Berlin, Germany (per NOTICE).
+United States (per NOTICE).
 
 ## Disclaimer
 
