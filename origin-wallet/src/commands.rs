@@ -99,7 +99,8 @@ pub fn execute(cli: super::Cli) -> Result<(), Box<dyn std::error::Error>> {
             from,
             via_relay,
             relay_addr,
-        } => cmd_chat_listen(&cli.file, from, via_relay, relay_addr)?,
+            addr,
+        } => cmd_chat_listen(&cli.file, from, via_relay, relay_addr, addr)?,
         super::Commands::Relay { command } => match command {
             super::RelayCommands::Serve {
                 difficulty,
@@ -107,6 +108,7 @@ pub fn execute(cli: super::Cli) -> Result<(), Box<dyn std::error::Error>> {
                 addr,
                 discovery_point,
                 discovery_addr,
+                discovery_refresh,
             } => cmd_relay_serve(
                 &cli.file,
                 difficulty,
@@ -114,6 +116,7 @@ pub fn execute(cli: super::Cli) -> Result<(), Box<dyn std::error::Error>> {
                 addr,
                 discovery_point,
                 discovery_addr,
+                discovery_refresh,
             )?,
             super::RelayCommands::Stats => cmd_relay_stats(&cli.file)?,
             super::RelayCommands::Evict { peer } => cmd_relay_evict(&cli.file, &peer)?,
@@ -946,7 +949,8 @@ fn cmd_chat(path: &Path, command: super::ChatCommands) -> Result<(), Box<dyn std
             peer_addr,
             via_relay,
             relay_addr,
-        } => cmd_chat_repl(path, peer, peer_addr, via_relay, relay_addr),
+            addr,
+        } => cmd_chat_repl(path, peer, peer_addr, via_relay, relay_addr, addr),
         super::ChatCommands::Send {
             to,
             peer_addr,
@@ -1030,6 +1034,7 @@ fn cmd_chat_listen(
     from: Option<String>,
     via_relay: Option<String>,
     relay_addr: Option<std::net::SocketAddr>,
+    addr: Option<std::net::SocketAddr>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     if !path.exists() {
         return Err(format!("Wallet file not found: {}", path.display()).into());
@@ -1051,8 +1056,9 @@ fn cmd_chat_listen(
         }
         (None, None) => None,
     };
+    let bind = addr.unwrap_or_else(|| "127.0.0.1:0".parse().expect("valid loopback"));
     let rt = tokio::runtime::Runtime::new()?;
-    let msg = rt.block_on(origin_wallet::network::chat_listen(&wallet, peer, via_relay))?;
+    let msg = rt.block_on(origin_wallet::network::chat_listen(&wallet, peer, via_relay, bind))?;
 
     println!("\n✉ chat from {}", msg.from);
     println!("  {}", String::from_utf8_lossy(&msg.data));
@@ -1070,6 +1076,7 @@ fn cmd_chat_repl(
     peer_addr: Option<std::net::SocketAddr>,
     via_relay: Option<String>,
     relay_addr: Option<std::net::SocketAddr>,
+    addr: Option<std::net::SocketAddr>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     if !path.exists() {
         return Err(format!("Wallet file not found: {}", path.display()).into());
@@ -1092,6 +1099,7 @@ fn cmd_chat_repl(
         }
         (None, None) => None,
     };
+    let bind = addr.unwrap_or_else(|| "127.0.0.1:0".parse().expect("valid loopback"));
     let rt = tokio::runtime::Runtime::new()?;
     rt.block_on(origin_wallet::network::chat_repl(
         &wallet,
@@ -1099,6 +1107,7 @@ fn cmd_chat_repl(
         peer,
         peer_addr,
         via_relay,
+        bind,
     ))?;
     Ok(())
 }/// Serve this wallet's node as a circuit relay (INTEGRATION.md step 5 —
@@ -1113,6 +1122,7 @@ fn cmd_relay_serve(
     bind_addr: std::net::SocketAddr,
     discovery_point: Option<String>,
     discovery_addr: Option<std::net::SocketAddr>,
+    discovery_refresh: Option<u64>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     if !path.exists() {
         return Err(format!("Wallet file not found: {}", path.display()).into());
@@ -1126,10 +1136,14 @@ fn cmd_relay_serve(
         .ok_or_else(|| format!("STUN server {stun_server} resolved to nothing"))?;
 
     // The relay directory (R7, RELAY.md §13.2): both flags or neither.
+    // `--discovery-refresh` lowers the auto-peer cadence for
+    // automation/tests (the default 300 s is right for a standing
+    // network; a smoke wants the chain wired within seconds).
     let directory = match (discovery_point, discovery_addr) {
         (Some(point), Some(addr)) => Some(stoa::relay::RelayDirectory {
             point: point.parse::<stoa::MeshId>()?,
             point_addr: addr,
+            refresh: std::time::Duration::from_secs(discovery_refresh.unwrap_or(300)),
             ..stoa::relay::RelayDirectory::default()
         }),
         (Some(_), None) => {
@@ -1172,10 +1186,14 @@ fn cmd_relay_serve(
 /// circuits served, no hint published), run `f` against the live mesh, and
 /// shut down cleanly (persisting any relay-state change) — the shared
 /// shape of the relay management commands.
-fn with_relay_mesh(
+fn with_relay_mesh<F, Fut>(
     path: &Path,
-    f: impl FnOnce(&stoa::Mesh) -> Result<(), Box<dyn std::error::Error>>,
-) -> Result<(), Box<dyn std::error::Error>> {
+    f: F,
+) -> Result<(), Box<dyn std::error::Error>>
+where
+    F: FnOnce(stoa::Mesh) -> Fut,
+    Fut: std::future::Future<Output = Result<(), Box<dyn std::error::Error>>>,
+{
     if !path.exists() {
         return Err(format!("Wallet file not found: {}", path.display()).into());
     }
@@ -1185,7 +1203,11 @@ fn with_relay_mesh(
 
     let rt = tokio::runtime::Runtime::new()?;
     let mesh = rt.block_on(origin_wallet::network::relay_admin(&wallet))?;
-    let result = f(&mesh);
+    // Run the closure inside the runtime so async mesh calls work (the
+    // relay-admin commands call `relay_stats`/`relay_evict`/`relay_pardon`).
+    // The closure owns a clone of the mesh handle (cheap), so its future
+    // borrows nothing from the call site.
+    let result = rt.block_on(f(mesh.clone()));
     // Shutdown flushes the persisted relay state (the eviction set and
     // strike tallies survive this command, RELAY.md §9).
     let _ = rt.block_on(mesh.shutdown());
@@ -1195,9 +1217,8 @@ fn with_relay_mesh(
 /// `relay stats` — the relay operator's abuse-control view (RELAY.md §9):
 /// live circuits, validated clients, eviction set size, challenges issued.
 fn cmd_relay_stats(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
-    with_relay_mesh(path, |mesh| {
-        let rt = tokio::runtime::Handle::current();
-        let stats = rt.block_on(mesh.relay_stats());
+    with_relay_mesh(path, |mesh| async move {
+        let stats = mesh.relay_stats().await;
         println!("\nRelay abuse-control state (RELAY.md §9)");
         println!("  serving          : {}", if stats.enabled { "yes" } else { "no" });
         println!("  live circuits    : {}", stats.circuits);
@@ -1212,9 +1233,8 @@ fn cmd_relay_stats(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
 /// future opens. Persists across restarts.
 fn cmd_relay_evict(path: &Path, peer: &str) -> Result<(), Box<dyn std::error::Error>> {
     let peer_id: stoa::MeshId = peer.parse()?;
-    with_relay_mesh(path, |mesh| {
-        let rt = tokio::runtime::Handle::current();
-        let removed = rt.block_on(mesh.relay_evict(peer_id))?;
+    with_relay_mesh(path, |mesh| async move {
+        let removed = mesh.relay_evict(peer_id).await?;
         println!("\n✓ Evicted {peer_id}");
         println!("  circuits revoked : {removed}");
         println!("  (persisted — survives a relay restart, RELAY.md §9)");
@@ -1226,9 +1246,8 @@ fn cmd_relay_evict(path: &Path, peer: &str) -> Result<(), Box<dyn std::error::Er
 /// clear its strikes). Persists across restarts.
 fn cmd_relay_pardon(path: &Path, peer: &str) -> Result<(), Box<dyn std::error::Error>> {
     let peer_id: stoa::MeshId = peer.parse()?;
-    with_relay_mesh(path, |mesh| {
-        let rt = tokio::runtime::Handle::current();
-        rt.block_on(mesh.relay_pardon(peer_id))?;
+    with_relay_mesh(path, |mesh| async move {
+        mesh.relay_pardon(peer_id).await?;
         println!("\n✓ Pardoned {peer_id}");
         println!("  (removed from the eviction set — persisted, RELAY.md §9)");
         Ok(())

@@ -201,8 +201,11 @@ origin-wallet chat listen --file wallet.dat
 # Listen AND advertise a chain-capable reachable path (RELAY.md §13.7):
 # "I'm reachable via relay R, chain-capable", so a `chat send --chain-auto`
 # dialer can resolve this wallet as a far relay through R.
+# --addr pins the bind (default: an ephemeral loopback port — pin it for
+# automation so the dialer's hint-resolution link knows where to reach you).
 origin-wallet chat listen --file wallet.dat \
-    --via-relay <relay-meshid> --relay-addr 5.6.7.8:8443
+    --via-relay <relay-meshid> --relay-addr 5.6.7.8:8443 \
+    --addr 127.0.0.1:9000
 
 # Send one message: opens a session — an encrypted L3 pipe through a
 # relay (upgraded to a direct leg when possible), or the addressed topic
@@ -231,8 +234,11 @@ origin-wallet chat send --file wallet.dat --to <64-hex-meshid> \
 ```
 
 Chat is the real-time rail (mail is store-and-forward). `chat listen`
-subscribes to the addressed topic; `chat send` reports which tier
-carried it (`direct`, `relayed`, or `direct-upgraded`).
+subscribes to the addressed topic **and accepts relayed/chain circuits**
+(RELAY.md §6, §13): a `chat send --relay` or `--chain`/`--chain-auto`
+message terminates on the circuit, not just the topic — the receiver
+prints it either way. `chat send` reports which tier carried it
+(`direct`, `relayed`, or `direct-upgraded`).
 
 For a conversation, `chat repl` keeps one long-lived node: incoming
 messages print inline while a prompt accepts `send <meshid|label>
@@ -253,6 +259,8 @@ origin-wallet chat repl --file wallet.dat --peer <peer-meshid> \
 `chat repl --via-relay <relay> --relay-addr <addr>` also publishes this
 node's chain-capable reachable hint (RELAY.md §13.7) and keeps it fresh
 for the session — the long-lived counterpart to `chat listen --via-relay`.
+Like `chat listen`, the REPL accepts relayed/chain circuits and prints
+those messages inline (`✉ <relay> (via relay): <body>`).
 ✓ sent over the direct
 > ✉ <64-hex-meshid>: hi back
 ```
@@ -273,9 +281,12 @@ origin-wallet relay serve --file wallet.dat --difficulty 16 \
 
 # Join the relay mesh (RELAY.md §13.7): register in the `stoa:relays`
 # rendezvous namespace and auto-peer with other chain-capable relays.
+# --discovery-refresh lowers the auto-peer cadence (default 300 s) for
+# automation/tests so the chain wires within seconds.
 origin-wallet relay serve --file wallet.dat --difficulty 16 \
     --stun-server stun.l.google.com:19302 \
-    --discovery-point <point-meshid> --discovery-addr 1.2.3.4:8443
+    --discovery-point <point-meshid> --discovery-addr 1.2.3.4:8443 \
+    --discovery-refresh 1
 ```
 
 A serving relay publishes its hint with `chain: true` (RELAY.md §13.2):

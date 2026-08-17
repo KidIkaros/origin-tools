@@ -623,11 +623,9 @@ pub async fn chat_repl(
     peer: Option<stoa::MeshId>,
     peer_addr: Option<SocketAddr>,
     via_relay: Option<(stoa::MeshId, SocketAddr)>,
+    bind_addr: SocketAddr,
 ) -> Result<()> {
     let node_keys = wallet.stoa_node_keys()?;
-    let bind_addr = "127.0.0.1:0"
-        .parse()
-        .map_err(|e: std::net::AddrParseError| WalletError::Network(e.to_string()))?;
     let (mesh, bound) = stoa::Mesh::bind(node_keys, bind_addr)?;
     let me = mesh.local_mesh_id();
 
@@ -661,6 +659,13 @@ pub async fn chat_repl(
         .await
         .map_err(|e| WalletError::Network(format!("subscribe {} failed: {e}", chat_topic(me))))?;
 
+    // Accept inbound relayed/chain circuits so a relayed or chained chat
+    // can terminate here (RELAY.md §6, §13 — same as `chat listen`).
+    let mut relayed_rx = mesh
+        .accept_relayed()
+        .await
+        .map_err(|e| WalletError::Network(format!("accept relayed circuits failed: {e}")))?;
+
     // The mail contract's receive side (INTEGRATION.md §5a): a node that
     // wants mail announces its KEM identity, so any sender can encrypt to
     // it after the on-connect registry sync.
@@ -693,6 +698,20 @@ pub async fn chat_repl(
                         let _ = std::io::stdout().flush();
                     }
                     None => break,
+                },
+                sess = relayed_rx.recv() => {
+                    if let Some(mut sess) = sess {
+                        if let Ok(Some(data)) = tokio::time::timeout(
+                            std::time::Duration::from_secs(30),
+                            sess.receiver().recv(),
+                        ).await {
+                            let body = String::from_utf8_lossy(&data);
+                            println!("\n✉ {} (via relay): {body}", sess.relay());
+                            print!("> ");
+                            use std::io::Write;
+                            let _ = std::io::stdout().flush();
+                        }
+                    }
                 },
                 _ = tick.tick() => {
                     if let Ok(known) = poller.identities().await {
@@ -820,13 +839,19 @@ pub async fn chat_listen(
     wallet: &Wallet,
     peer: Option<stoa::MeshId>,
     via_relay: Option<(stoa::MeshId, std::net::SocketAddr)>,
+    bind_addr: std::net::SocketAddr,
 ) -> Result<stoa::PubsubMessage> {
     let node_keys = wallet.stoa_node_keys()?;
-    let bind_addr = "127.0.0.1:0"
-        .parse()
-        .map_err(|e: std::net::AddrParseError| WalletError::Network(e.to_string()))?;
     let (mesh, _) = stoa::Mesh::bind(node_keys, bind_addr)?;
     let me = mesh.local_mesh_id();
+    // Accept inbound relayed/chain circuits so a relayed or chained chat
+    // can terminate here (RELAY.md §6, §13 — the endpoint hosts the
+    // target leg). The message then arrives on the circuit's session
+    // rather than the addressed topic.
+    let mut relayed_rx = mesh
+        .accept_relayed()
+        .await
+        .map_err(|e| WalletError::Network(format!("accept relayed circuits failed: {e}")))?;
     // Publish the chain-capable hint (RELAY.md §13.2): connect to the
     // named relay so the DHT record replicates to it, then advertise
     // "reachable via R, chain-capable". Best-effort — listen still works
@@ -845,10 +870,36 @@ pub async fn chat_listen(
         .subscribe(&topic)
         .await
         .map_err(|e| WalletError::Network(format!("subscribe {topic} failed: {e}")))?;
-    let msg = tokio::time::timeout(std::time::Duration::from_secs(60), rx.recv())
-        .await
-        .map_err(|_| WalletError::Network("chat listen timed out (60 s)".into()))?
-        .ok_or_else(|| WalletError::Network("chat topic closed".into()))?;
+    // Race the direct rail (addressed topic) and the relayed rail (a
+    // circuit terminating here). The relayed tier reports the immediate
+    // relay as the sender — the L3 handshake proves the real initiator
+    // end-to-end, but the session wrapper doesn't expose it.
+    let msg = tokio::time::timeout(std::time::Duration::from_secs(60), async {
+        tokio::select! {
+            m = rx.recv() => m.ok_or_else(|| WalletError::Network("chat topic closed".into())),
+            sess = relayed_rx.recv() => {
+                let mut sess = sess
+                    .ok_or_else(|| WalletError::Network("relayed channel closed".into()))?;
+                let data = tokio::time::timeout(
+                    std::time::Duration::from_secs(30),
+                    sess.receiver().recv(),
+                )
+                .await
+                .ok()
+                .flatten()
+                .ok_or_else(|| WalletError::Network("relayed chat timed out".into()))?;
+                let msg_id = stoa::pubsub::pub_msg_id(&topic, &data);
+                Ok(stoa::PubsubMessage {
+                    topic: topic.clone(),
+                    data,
+                    from: sess.relay(),
+                    msg_id,
+                })
+            }
+        }
+    })
+    .await
+    .map_err(|_| WalletError::Network("chat listen timed out (60 s)".into()))??;
     Ok(msg)
 }
 

@@ -212,6 +212,10 @@ enum Commands {
         /// The relay node's dial address (host:port), with --via-relay.
         #[arg(long)]
         relay_addr: Option<SocketAddr>,
+        /// Bind address (default: an ephemeral loopback port — pin one
+        /// for automation/tests so the port is known in advance)
+        #[arg(long)]
+        addr: Option<SocketAddr>,
     },
 
     /// Relay operations: serve circuits (the "help the network" toggle),
@@ -289,6 +293,12 @@ enum RelayCommands {
         /// --discovery-point.
         #[arg(long)]
         discovery_addr: Option<std::net::SocketAddr>,
+        /// Directory refresh cadence in seconds (R7, RELAY.md §13.2):
+        /// how often to re-register and re-query the relay directory.
+        /// Default 300 s is right for a standing network; lower it for
+        /// automation/tests so the chain auto-peers within seconds.
+        #[arg(long)]
+        discovery_refresh: Option<u64>,
     },
     /// Show the relay's abuse-control state: live circuits, validated
     /// clients, eviction set size, challenges issued (RELAY.md §9).
@@ -348,6 +358,10 @@ enum ChatCommands {
         /// The relay node's dial address (host:port), with --via-relay.
         #[arg(long)]
         relay_addr: Option<SocketAddr>,
+        /// Bind address (default: an ephemeral loopback port — pin one
+        /// for automation/tests so the port is known in advance)
+        #[arg(long)]
+        addr: Option<SocketAddr>,
     },
 
     /// Send one chat message over a session to the peer
