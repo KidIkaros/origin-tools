@@ -41,7 +41,69 @@ that one-process loopback hides:
   real remaps, and the honest measurement that unlocks the padding knobs
   (PADDING.md §7 — the latency budget is a standing-network decision).
   This is where the relay directory's 300 s refresh and the pre-warm
-  cold-path gap (RELAY.md §13.4) get their real-world exercise.
+  cold-path (RELAY.md §13.4) get their real-world exercise. The
+  buildable half ships now: a **NAT-simulating STUN server** (`stoa nat
+  serve`, §Tier 2 below) that models cone / symmetric / drop NATs so the
+  STUN + punch tier is exercised offline and on a LAN without waiting
+  for residential hardware.
+
+## Tier 2 (design + the NAT-simulating harness)
+
+Tier 2's endpoint is a standing network where nodes sit behind real
+residential NATs. The piece that can be built and verified without
+residential hardware is the **NAT simulator**: a controllable stand-in
+for a NAT's STUN behavior, so the STUN client, the punch-candidate
+ordering, and the relay fallback are exercised deterministically.
+
+### The NAT simulator (`stoa nat serve`)
+
+A small RFC 8489 STUN server whose response depends on the modeled
+behavior (stoa `src/nat.rs`, stun.rs `encode_binding_response`):
+
+| Behavior | Model (RFC 4787) | STUN reports | What it proves |
+|---|---|---|---|
+| `cone` | endpoint-independent, port-preserving | the requester's own `(ip:port)` | the punch tier's port-preservation assumption holds — a hole punch can land |
+| `symmetric` | endpoint-independent, non-port-preserving | a stable but **different** port (base+ range) | the STUN-reported port never matches the QUIC endpoint's — punching fails, dialer falls back to relay (stage-2-first) |
+| `drop` | UDP-blocking | no response | the client times out and falls back to relay |
+
+```bash
+cd stoa && cargo build --bin stoa
+./target/debug/stoa nat serve --addr 0.0.0.0:3478 --behavior cone
+# point the wallet's STUN at it (instead of the public Google server):
+origin-wallet relay serve … --stun-server 127.0.0.1:3478
+origin-wallet network doctor --stun-server 127.0.0.1:3478   # offline reachability probe
+```
+
+Verified: `stoa nat serve --behavior cone` + `doctor --stun-server`
+reports the mapped address; the three behaviors are unit-tested
+(`nat::tests`, offline — no internet dependency). `--public-ip` sets the
+reported public side for LAN runs.
+
+### What the simulator can and cannot measure
+
+- **Can:** STUN correctness against a controllable server; the
+  punch-candidate ordering (bound → interfaces → STUN-mapped) under each
+  behavior; the drop → relay fallback path; the doctor probe offline.
+- **Cannot:** real hole-punching through an actual NAT — the simulator
+  answers STUN but does not remap the nodes' QUIC sockets (that needs a
+  UDP-level proxy or real machines). Real remap behavior, real
+  port-preservation variance, and the honest padding-knob latency budget
+  (PADDING.md §7) still require the standing Tier 2 deployment.
+
+### The standing Tier 2 deployment (needs residential hardware)
+
+Topology: 2–3 residential/NAT'd nodes behind different ISPs, 1–2 public
+relays, 1 public point (the directory anchor). Acceptance:
+
+1. A node behind a cone NAT punches direct to a node behind another NAT
+   (`DialResult::Direct`), and the circuit upgrades off the relay.
+2. A node behind a symmetric or UDP-blocking NAT falls back to relay
+   (never a hard failure) and the chain/relayed chat still delivers.
+3. The relay directory's 300 s refresh + pre-warm keep every hop
+   validated across a multi-hour run (the cold-path slow-open is the
+   graceful degradation, RELAY.md §13.4).
+4. The padding-knob latency budget is measured and PADDING.md §7's
+   decision is made from data, not guesswork.
 
 ## What ships today (Tier 0)
 
@@ -123,8 +185,9 @@ Tier 2's job.
 
 ## Roadmap
 
-Tier 0 is the shipped gate. Tier 1 (LAN) is the next pull — it needs a
-`--host` inventory mode in the harness and standing hosts. Tier 2
-(internet) is where the padding-knob latency budget (PADDING.md) and the
-TEE-attestation / PQ-aggregate-signature items get their measurement —
-both stay standards-blocked until then.
+Tier 0 is the shipped gate; Tier 1 (LAN) is built (`--lan` +
+`STANDING_HOSTS`) and needs standing hosts to run. Tier 2's buildable
+half — the NAT simulator — ships now; the standing residential
+deployment is the next pull, where the padding-knob latency budget
+(PADDING.md §7) and the TEE-attestation / PQ-aggregate-signature items
+get their measurement — both stay standards-blocked until then.
