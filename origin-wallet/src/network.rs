@@ -706,7 +706,10 @@ pub async fn chat_repl(
                             sess.receiver().recv(),
                         ).await {
                             let body = String::from_utf8_lossy(&data);
-                            println!("\n✉ {} (via relay): {body}", sess.relay());
+                            // The L3-proven initiator (RELAY.md §13.5): on
+                            // a chain this is the true sender, not the
+                            // immediate relay.
+                            println!("\n✉ {} (via relay {}): {body}", sess.peer(), sess.relay());
                             print!("> ");
                             use std::io::Write;
                             let _ = std::io::stdout().flush();
@@ -892,7 +895,9 @@ pub async fn chat_listen(
                 Ok(stoa::PubsubMessage {
                     topic: topic.clone(),
                     data,
-                    from: sess.relay(),
+                    // The L3-proven initiator (RELAY.md §13.5): on a chain
+                    // this is the true sender, not the immediate relay.
+                    from: sess.peer(),
                     msg_id,
                 })
             }

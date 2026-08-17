@@ -34,7 +34,8 @@ that one-process loopback hides:
   LAN: real interfaces, real multicast-free discovery, real latency
   (sub-ms → tens of ms), no NAT. Exercises interface enumeration, punch
   candidates across hosts, and cross-host relay peering. Requires
-  standing hosts; the harness needs a `--host` inventory mode.
+  standing hosts; the harness has the `--host` inventory mode
+  (`scripts/standing.sh --lan` + `STANDING_HOSTS`).
 - **Tier 2 — internet, real NAT.** The full testnet: nodes behind
   residential/NAT'd networks, STUN + hole-punch + relay fallback under
   real remaps, and the honest measurement that unlocks the padding knobs
@@ -66,8 +67,31 @@ circuit instead of silently falling back to the addressed topic.
 ```bash
 cd origin-tools
 cargo build --release --bin origin-wallet   # once
-bash scripts/standing.sh                     # exit 0 = the chain delivered
+bash scripts/standing.sh                     # Tier 0: exit 0 = the chain delivered
 ```
+
+### Tier 1 (LAN)
+
+`--lan` runs the same topology across machines. `STANDING_HOSTS` maps
+roles to hosts; every listed role runs over `ssh` on its host (fixed
+`STANDING_PORT`, default 47000 — cross-host port collisions don't
+exist), and every **unlisted** role runs locally, so a partial inventory
+(e.g. `r2` on another box) works too. The wallet `.dat` files and the
+release binary are staged to `STANDING_WDIR` (default `~/standing`) on
+each remote host; logs are written there and read back over `ssh` for
+the assertion.
+
+```bash
+cd origin-tools
+cargo build --release --bin origin-wallet
+STANDING_HOSTS="point=10.0.0.2,r1=10.0.0.3,r2=10.0.0.4,endpoint=10.0.0.5" \
+  bash scripts/standing.sh --lan    # exit 0 = the chain delivered across machines
+```
+
+Env knobs: `STANDING_PORT` (remote port), `STANDING_SSH` (ssh prefix),
+`STANDING_WDIR` (remote working dir), `STANDING_HOME`/`STANDING_PASS`
+(shared with Tier 0). The one thing Tier 1 still fakes is NAT — that's
+Tier 2's job.
 
 ## Acceptance criteria (Tier 0, the shipped gate)
 
@@ -78,21 +102,24 @@ bash scripts/standing.sh                     # exit 0 = the chain delivered
 3. `relay stats` on either relay shows `validated clients ≥ 1` (the
    directory pre-warm ran across processes).
 
-## Honest gaps (unchanged, named)
+## Honest gaps
 
-- **NAT is faked at Tier 0.** Loopback direct dials; the punch/relay
-  fallback and interface enumeration need Tier 1/2.
-- **The relayed tier's `from` is the immediate relay.** The L3 handshake
-  proves the real initiator end-to-end, but the session wrapper doesn't
-  expose it, so `chat listen` reports the far relay as the sender. A
-  `RelayedSession::peer()` plumbing is a candidate refinement.
-- **Chain endpoints need `accept_relayed()`.** Shipped here for
-  `chat listen`/`chat repl`; any other endpoint role must do the same or
-  the chain's final leg refuses the ring (RELAY.md §13.4).
-- **The pre-warm cold-path gap** (RELAY.md §13.4): a stale hop is a hard
-  miss, not a slow open. A challenge-on-ring fallback is the candidate
-  refinement if a standing network shows stale pre-warms beyond the
-  re-serve race.
+- **NAT is faked at Tier 0/1.** Loopback (Tier 0) and LAN (Tier 1) direct
+  dials; the punch/relay fallback and interface enumeration need Tier 2's
+  real NAT.
+- **`RelayedSession::peer()` shipped** — the L3-proven initiator is now
+  exposed, and `chat listen`/`chat repl` report the true sender (`via
+  relay <immediate-hop>`), so a chained chat names the real initiator
+  rather than the far relay.
+- **Chain endpoints need `accept_relayed()`.** Shipped for `chat
+  listen`/`chat repl`; any other endpoint role must do the same or the
+  chain's final leg refuses the ring (RELAY.md §13.4).
+- **The pre-warm cold-path gap is closed** (RELAY.md §13.4): a stale hop
+  now degrades to a slow open via challenge-on-ring (a lapsed cookie
+  makes the ringed relay challenge the leg peer, which re-solves and
+  re-rings) instead of a hard miss. Tested at
+  `r6_stale_prewarm_degrades_to_slow_open_not_hard_miss`; the depth-4
+  soak's t=270 transient was exactly this refusal, now a slow open.
 
 ## Roadmap
 

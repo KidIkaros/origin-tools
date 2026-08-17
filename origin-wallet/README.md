@@ -260,7 +260,8 @@ origin-wallet chat repl --file wallet.dat --peer <peer-meshid> \
 node's chain-capable reachable hint (RELAY.md §13.7) and keeps it fresh
 for the session — the long-lived counterpart to `chat listen --via-relay`.
 Like `chat listen`, the REPL accepts relayed/chain circuits and prints
-those messages inline (`✉ <relay> (via relay): <body>`).
+those messages inline (`✉ <peer> (via relay <relay>): <body>` — the
+L3-proven initiator, not the immediate hop, RELAY.md §13.5).
 ✓ sent over the direct
 > ✉ <64-hex-meshid>: hi back
 ```
