@@ -465,6 +465,7 @@ async fn chat_send_on(
     route: ChatRoute,
     body: Vec<u8>,
     wait_reply: bool,
+    padding: Option<stoa::relay::PaddingConfig>,
 ) -> Result<ChatOutcome> {
     // 1. The session pipe: named relay (or chain), or dial_any's
     //    automatic fallback.
@@ -527,11 +528,24 @@ async fn chat_send_on(
     };
 
     if let Some(mut sess) = session {
+        // Per-circuit traffic padding (PADDING.md §3): when both ends
+        // opted in, pace outbound frames at the configured cadence, cover
+        // on idle — the presence-privacy knob. Best-effort (a failure
+        // just leaves the circuit unpadded).
+        if let Some(cfg) = padding {
+            let _ = sess.enable_padding(cfg).await;
+        }
         // Best-effort: move the circuit onto a direct leg when the relay
         // introduced the peer (RELAY.md §5.3). Failure just means the
-        // chat stays relayed.
+        // chat stays relayed. **Skipped when padding is on:** padding
+        // obscures the circuit's traffic from the relay, and an upgraded
+        // circuit doesn't use the relay (PADDING.md §3) — the two are
+        // mutually exclusive, and the pacer's frames route over the
+        // relayed circuit.
         let relay = sess.relay();
-        let _ = mesh.upgrade_to_direct(relay, sess.circuit_id()).await;
+        if padding.is_none() {
+            let _ = mesh.upgrade_to_direct(relay, sess.circuit_id()).await;
+        }
         let tier = if sess.is_upgraded().await.unwrap_or(false) {
             "direct-upgraded"
         } else {
@@ -573,6 +587,7 @@ pub async fn chat_send(
     route: ChatRoute,
     body: Vec<u8>,
     wait_reply: bool,
+    padding: Option<stoa::relay::PaddingConfig>,
 ) -> Result<ChatOutcome> {
     let node_keys = wallet.stoa_node_keys()?;
     let bind_addr = "127.0.0.1:0"
@@ -585,7 +600,7 @@ pub async fn chat_send(
     if let Some(addr) = route.peer_addr {
         let _ = mesh.connect(to, addr).await;
     }
-    chat_send_on(&mesh, to, route, body, wait_reply).await
+    chat_send_on(&mesh, to, route, body, wait_reply, padding).await
 }
 
 /// Interactive chat REPL (INTEGRATION.md §4): one long-lived node, a
@@ -624,6 +639,7 @@ pub async fn chat_repl(
     peer_addr: Option<SocketAddr>,
     via_relay: Option<(stoa::MeshId, SocketAddr)>,
     bind_addr: SocketAddr,
+    padding: Option<stoa::relay::PaddingConfig>,
 ) -> Result<()> {
     let node_keys = wallet.stoa_node_keys()?;
     let (mesh, bound) = stoa::Mesh::bind(node_keys, bind_addr)?;
@@ -701,6 +717,12 @@ pub async fn chat_repl(
                 },
                 sess = relayed_rx.recv() => {
                     if let Some(mut sess) = sess {
+                        // Per-circuit traffic padding (PADDING.md §3):
+                        // when both ends opted in, pace outbound —
+                        // constant rate, cover on idle.
+                        if let Some(cfg) = padding {
+                            let _ = sess.enable_padding(cfg).await;
+                        }
                         if let Ok(Some(data)) = tokio::time::timeout(
                             std::time::Duration::from_secs(30),
                             sess.receiver().recv(),
@@ -808,7 +830,7 @@ pub async fn chat_repl(
                     continue;
                 };
                 let body = body.as_bytes().to_vec();
-                match chat_send_on(&mesh2, to, ChatRoute::default(), body.clone(), false).await {
+                match chat_send_on(&mesh2, to, ChatRoute::default(), body.clone(), false, None).await {
                     Ok(outcome) => println!("✓ sent over the {}", outcome.tier),
                     Err(e) => {
                         // No live route — escalate to store-and-forward mail
@@ -843,6 +865,7 @@ pub async fn chat_listen(
     peer: Option<stoa::MeshId>,
     via_relay: Option<(stoa::MeshId, std::net::SocketAddr)>,
     bind_addr: std::net::SocketAddr,
+    padding: Option<stoa::relay::PaddingConfig>,
 ) -> Result<stoa::PubsubMessage> {
     let node_keys = wallet.stoa_node_keys()?;
     let (mesh, _) = stoa::Mesh::bind(node_keys, bind_addr)?;
@@ -883,6 +906,13 @@ pub async fn chat_listen(
             sess = relayed_rx.recv() => {
                 let mut sess = sess
                     .ok_or_else(|| WalletError::Network("relayed channel closed".into()))?;
+                // Per-circuit traffic padding (PADDING.md §3): when both
+                // ends opted in, pace outbound — constant rate, cover on
+                // idle. Best-effort (a failure leaves the circuit
+                // unpadded).
+                if let Some(cfg) = padding {
+                    let _ = sess.enable_padding(cfg).await;
+                }
                 let data = tokio::time::timeout(
                     std::time::Duration::from_secs(30),
                     sess.receiver().recv(),
@@ -1750,6 +1780,7 @@ mod tests {
             },
             b"direct hello".to_vec(),
             false,
+            None,
         )
         .await
         .expect("chat send");
@@ -1814,6 +1845,7 @@ mod tests {
             },
             b"relayed hello".to_vec(),
             true,
+            None,
         )
         .await
         .expect("relayed chat");
@@ -1922,6 +1954,7 @@ mod tests {
             },
             b"chain hello".to_vec(),
             true,
+            None,
         )
         .await
         .expect("chain chat");
@@ -2058,6 +2091,7 @@ mod tests {
             },
             b"auto chain hello".to_vec(),
             true,
+            None,
         )
         .await
         .expect("auto chain chat");

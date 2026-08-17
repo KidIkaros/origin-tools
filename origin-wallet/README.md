@@ -262,6 +262,18 @@ for the session — the long-lived counterpart to `chat listen --via-relay`.
 Like `chat listen`, the REPL accepts relayed/chain circuits and prints
 those messages inline (`✉ <peer> (via relay <relay>): <body>` — the
 L3-proven initiator, not the immediate hop, RELAY.md §13.5).
+
+**Presence privacy (PADDING.md §3):** `chat send`, `chat repl`, and
+`chat listen` accept `--padding [--pad-interval <ms>]` (default 250 ms).
+Padding paces a circuit's outbound frames at a constant rate, emitting a
+cover frame when idle, so an observer of the relay sees a steady flow
+instead of real activity. **Both ends must opt in** (the mail-contract
+rule) — a padded sender to an unpadded receiver delivers the markers
+verbatim. A one-shot `chat send --padding` requires `--wait-reply` (the
+pacer emits on a cadence, so the process must stay alive to send the
+frame); a long-lived `chat repl --padding` is the natural padded peer.
+`stoa bench latency` measures the added cost (≈ one interval per
+direction; PADDING.md §7).
 ✓ sent over the direct
 > ✉ <64-hex-meshid>: hi back
 ```

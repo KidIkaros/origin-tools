@@ -216,6 +216,13 @@ enum Commands {
         /// for automation/tests so the port is known in advance)
         #[arg(long)]
         addr: Option<SocketAddr>,
+        /// Enable per-circuit traffic padding on incoming relayed/chain
+        /// circuits (PADDING.md §3) — constant-rate frames, cover on idle.
+        #[arg(long)]
+        padding: bool,
+        /// Padding cadence ms (default 250 — PADDING.md §4 design point).
+        #[arg(long, default_value_t = 250)]
+        pad_interval: u64,
     },
 
     /// Relay operations: serve circuits (the "help the network" toggle),
@@ -362,6 +369,13 @@ enum ChatCommands {
         /// for automation/tests so the port is known in advance)
         #[arg(long)]
         addr: Option<SocketAddr>,
+        /// Enable per-circuit traffic padding on incoming relayed/chain
+        /// circuits (PADDING.md §3) — constant-rate frames, cover on idle.
+        #[arg(long)]
+        padding: bool,
+        /// Padding cadence ms (default 250 — PADDING.md §4 design point).
+        #[arg(long, default_value_t = 250)]
+        pad_interval: u64,
     },
 
     /// Send one chat message over a session to the peer
@@ -396,6 +410,14 @@ enum ChatCommands {
         /// Await the peer's reply frame on the session (relayed tier)
         #[arg(long)]
         wait_reply: bool,
+        /// Enable per-circuit traffic padding on the outbound session
+        /// (PADDING.md §3) — constant-rate frames, cover on idle. Both
+        /// ends must opt in (the mail-contract rule).
+        #[arg(long)]
+        padding: bool,
+        /// Padding cadence ms (default 250 — PADDING.md §4 design point).
+        #[arg(long, default_value_t = 250)]
+        pad_interval: u64,
     },
 }
 

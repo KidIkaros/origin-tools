@@ -100,7 +100,16 @@ pub fn execute(cli: super::Cli) -> Result<(), Box<dyn std::error::Error>> {
             via_relay,
             relay_addr,
             addr,
-        } => cmd_chat_listen(&cli.file, from, via_relay, relay_addr, addr)?,
+            padding,
+            pad_interval,
+        } => cmd_chat_listen(
+            &cli.file,
+            from,
+            via_relay,
+            relay_addr,
+            addr,
+            padding_config(padding, pad_interval)?,
+        )?,
         super::Commands::Relay { command } => match command {
             super::RelayCommands::Serve {
                 difficulty,
@@ -950,7 +959,17 @@ fn cmd_chat(path: &Path, command: super::ChatCommands) -> Result<(), Box<dyn std
             via_relay,
             relay_addr,
             addr,
-        } => cmd_chat_repl(path, peer, peer_addr, via_relay, relay_addr, addr),
+            padding,
+            pad_interval,
+        } => cmd_chat_repl(
+            path,
+            peer,
+            peer_addr,
+            via_relay,
+            relay_addr,
+            addr,
+            padding_config(padding, pad_interval)?,
+        ),
         super::ChatCommands::Send {
             to,
             peer_addr,
@@ -960,6 +979,8 @@ fn cmd_chat(path: &Path, command: super::ChatCommands) -> Result<(), Box<dyn std
             chain_auto,
             body,
             wait_reply,
+            padding,
+            pad_interval,
         } => {
             if !path.exists() {
                 return Err(format!("Wallet file not found: {}", path.display()).into());
@@ -1000,6 +1021,14 @@ fn cmd_chat(path: &Path, command: super::ChatCommands) -> Result<(), Box<dyn std
             if chain_auto && !chain.is_empty() {
                 return Err("--chain-auto and --chain are mutually exclusive".into());
             }
+            // Padding paces outbound frames on a cadence (PADDING.md §3) —
+            // a one-shot send must stay alive for the pacer to emit, which
+            // `--wait-reply` does (it holds the process for the reply).
+            // Without it the process exits before the frame leaves.
+            if padding && !wait_reply {
+                return Err("--padding on a one-shot send needs --wait-reply: the pacer emits on a cadence and the process must stay alive to send the frame (PADDING.md §3). Use chat repl --padding for a long-lived padded peer."
+                    .into());
+            }
 
             println!("Chatting to {to_mesh}...");
             let rt = tokio::runtime::Runtime::new()?;
@@ -1014,6 +1043,7 @@ fn cmd_chat(path: &Path, command: super::ChatCommands) -> Result<(), Box<dyn std
                 },
                 body.into_bytes(),
                 wait_reply,
+                padding_config(padding, pad_interval)?,
             ))?;
 
             println!("\n✓ Chat sent over the {}", outcome.tier);
@@ -1035,6 +1065,7 @@ fn cmd_chat_listen(
     via_relay: Option<String>,
     relay_addr: Option<std::net::SocketAddr>,
     addr: Option<std::net::SocketAddr>,
+    padding: Option<stoa::relay::PaddingConfig>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     if !path.exists() {
         return Err(format!("Wallet file not found: {}", path.display()).into());
@@ -1058,7 +1089,7 @@ fn cmd_chat_listen(
     };
     let bind = addr.unwrap_or_else(|| "127.0.0.1:0".parse().expect("valid loopback"));
     let rt = tokio::runtime::Runtime::new()?;
-    let msg = rt.block_on(origin_wallet::network::chat_listen(&wallet, peer, via_relay, bind))?;
+    let msg = rt.block_on(origin_wallet::network::chat_listen(&wallet, peer, via_relay, bind, padding))?;
 
     println!("\n✉ chat from {}", msg.from);
     println!("  {}", String::from_utf8_lossy(&msg.data));
@@ -1077,6 +1108,7 @@ fn cmd_chat_repl(
     via_relay: Option<String>,
     relay_addr: Option<std::net::SocketAddr>,
     addr: Option<std::net::SocketAddr>,
+    padding: Option<stoa::relay::PaddingConfig>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     if !path.exists() {
         return Err(format!("Wallet file not found: {}", path.display()).into());
@@ -1108,8 +1140,26 @@ fn cmd_chat_repl(
         peer_addr,
         via_relay,
         bind,
+        padding,
     ))?;
     Ok(())
+}
+
+/// `--padding [--pad-interval <ms>]` → the per-circuit padding config
+/// (PADDING.md §3), or `None` when padding is off.
+fn padding_config(
+    padding: bool,
+    pad_interval: u64,
+) -> Result<Option<stoa::relay::PaddingConfig>, Box<dyn std::error::Error>> {
+    if !padding {
+        return Ok(None);
+    }
+    if pad_interval == 0 {
+        return Err("--pad-interval must be ≥ 1 ms".into());
+    }
+    Ok(Some(stoa::relay::PaddingConfig {
+        interval: std::time::Duration::from_millis(pad_interval),
+    }))
 }/// Serve this wallet's node as a circuit relay (INTEGRATION.md step 5 —
 /// the "help the network" toggle, off by default): unlock, bind the node
 /// derived from the wallet seed, serve the relay role with the given PoW
