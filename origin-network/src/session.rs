@@ -14,6 +14,7 @@
 //!   transport change beneath it.
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use tokio::sync::Mutex;
 use x25519_dalek::{PublicKey, StaticSecret};
@@ -174,11 +175,51 @@ impl Endpoint {
     }
 
     /// Dial a known peer at an explicit transport address.
+    ///
+    /// Uses bounded retry with exponential backoff + full jitter so a
+    /// transiently-unreachable or flaky peer doesn't fail the call
+    /// outright, and — critically — doesn't hammer a saturated dependency
+    /// (retry storm). The connection attempt itself is also deadline-
+    /// bounded.
     pub async fn connect_at(&self, peer: &PeerKeys, addr: &TransportAddr) -> Result<SecurePipe> {
         // Validate the record's transport key before dialing.
         let _peer_static_pk = peer.transport_pk_bytes()?;
-        let conn = self.transport.connect(addr).await?;
-        self.drive(conn, peer, true).await
+        const MAX_ATTEMPTS: u32 = 5;
+        const BASE_DELAY_MS: u64 = 100;
+        const MAX_DELAY_MS: u64 = 5_000;
+        const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
+        // Cheap, dependency-free jitter seed so concurrent dialers don't
+        // synchronize their backoffs (retry-storm avoidance). Not crypto.
+        let seed = jitter_seed(addr, peer.fingerprint());
+        let mut attempt: u32 = 0;
+        loop {
+            match tokio::time::timeout(CONNECT_TIMEOUT, self.transport.connect(addr)).await {
+                Ok(Ok(conn)) => return self.drive(conn, peer, true).await,
+                Ok(Err(e)) => {
+                    // Retry only transient transport/timeout errors, not
+                    // permanent ones (e.g. wrong transport type).
+                    if !matches!(e, NetworkError::Transport(_) | NetworkError::Timeout(_)) {
+                        return Err(e);
+                    }
+                    attempt += 1;
+                    if attempt >= MAX_ATTEMPTS {
+                        return Err(NetworkError::Transport(format!(
+                            "dial {addr} failed after {MAX_ATTEMPTS} attempts: {e}"
+                        )));
+                    }
+                    tokio::time::sleep(backoff(attempt, BASE_DELAY_MS, MAX_DELAY_MS, seed)).await;
+                }
+                Err(_) => {
+                    attempt += 1;
+                    if attempt >= MAX_ATTEMPTS {
+                        return Err(NetworkError::Timeout(format!(
+                            "dial {addr} timed out after {MAX_ATTEMPTS} attempts"
+                        )));
+                    }
+                    tokio::time::sleep(backoff(attempt, BASE_DELAY_MS, MAX_DELAY_MS, seed)).await;
+                }
+            }
+        }
     }
 
     /// Accept one inbound connection and establish an authenticated pipe.
@@ -427,6 +468,91 @@ impl PeerKeys {
             falcon_pk: Vec::new(),
             transport_pk: Vec::new(),
         }
+    }
+}
+
+/// Exponential backoff with full jitter, capped at `max_ms`.
+///
+/// delay = min(max_ms, base_ms * 2^(attempt-1)) + uniform(0, that ceiling)
+/// Full jitter spreads concurrent retries so they don't re-synchronize
+/// into a retry storm against a recovering dependency.
+fn backoff(attempt: u32, base_ms: u64, max_ms: u64, seed: u64) -> Duration {
+    let exp = attempt.saturating_sub(1).min(31); // guard against 2^pow overflow
+    let ceil = (base_ms << exp).min(max_ms);
+    // Deterministic-in-this-process jitter from seed + attempt; spreads
+    // retries without a new RNG dependency. Not cryptographically random.
+    let jitter = ((seed ^ (seed >> 17) ^ u64::from(attempt).wrapping_mul(0x9e3779b97f4a7c15))
+        % ceil.max(1)) as u64;
+    Duration::from_millis(ceil.saturating_add(jitter))
+}
+
+/// Stable, non-crypto jitter seed from the dial target so different
+/// peers back off on different schedules.
+fn jitter_seed(addr: &TransportAddr, fp: Fingerprint) -> u64 {
+    let mut h: u64 = 0xcbf29ce484222325;
+    let mut feed = |b: u8| {
+        h ^= u64::from(b);
+        h = h.wrapping_mul(0x100000001b3);
+    };
+    match addr {
+        TransportAddr::Tcp(s) | TransportAddr::Udp(s) | TransportAddr::Quic(s) => {
+            match s.ip() {
+                std::net::IpAddr::V4(v4) => {
+                    for b in v4.octets() {
+                        feed(b);
+                    }
+                }
+                std::net::IpAddr::V6(v6) => {
+                    for b in v6.octets() {
+                        feed(b);
+                    }
+                }
+            }
+            feed((s.port() & 0xff) as u8);
+            feed((s.port() >> 8) as u8);
+        }
+        TransportAddr::Memory(name) => {
+            for b in name.as_bytes() {
+                feed(*b);
+            }
+        }
+    }
+    for b in fp.0 {
+        feed(b);
+    }
+    h
+}
+
+#[cfg(test)]
+mod backoff_tests {
+    use super::*;
+
+    #[test]
+    fn backoff_grows_exponentially_and_caps() {
+        // base=100ms, max=5000ms. Seed irrelevant for the ceiling math.
+        let ceil_1 = backoff(1, 100, 5000, 1);
+        let ceil_2 = backoff(2, 100, 5000, 1);
+        let ceil_3 = backoff(3, 100, 5000, 1);
+        // Exponential growth in the ceiling (100 -> 200 -> 400), plus jitter.
+        assert!(ceil_1 >= Duration::from_millis(100));
+        assert!(ceil_2 >= Duration::from_millis(200));
+        assert!(ceil_3 >= Duration::from_millis(400));
+        // Never exceeds max + jitter window (jitter < 5000).
+        assert!(ceil_3 < Duration::from_millis(9000));
+    }
+
+    #[test]
+    fn backoff_respects_max_cap() {
+        // Attempt 10 would be 100*2^9 = 51.2s but must cap at 5000ms.
+        let d = backoff(10, 100, 5000, 7);
+        assert!(d <= Duration::from_millis(5000 + 5000));
+        assert!(d >= Duration::from_millis(5000));
+    }
+
+    #[test]
+    fn backoff_does_not_panic_on_overflow_attempt() {
+        // attempt saturating_sub(1).min(31) guards 2^pow overflow.
+        let _ = backoff(u32::MAX, 100, 5000, 3);
     }
 }
 

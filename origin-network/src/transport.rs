@@ -159,11 +159,17 @@ impl Transport for TcpTransport {
     }
 }
 
+/// Default per-read deadline for a TCP frame connection. A peer that
+/// connects but sends nothing (or stalls mid-handshake) would otherwise
+/// pin the accept-side task forever at `recv_frame().await`; this bounds it.
+pub const TCP_RECV_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
 /// TCP frame connection with an internal read buffer.
 pub struct TcpFrameConn {
     stream: TcpStream,
     peer: SocketAddr,
     buf: Vec<u8>,
+    recv_timeout: std::time::Duration,
 }
 
 impl TcpFrameConn {
@@ -172,15 +178,15 @@ impl TcpFrameConn {
             stream,
             peer,
             buf: Vec::with_capacity(64 * 1024),
+            recv_timeout: TCP_RECV_TIMEOUT,
         }
     }
 
     async fn read_more(&mut self) -> Result<()> {
         let mut chunk = vec![0u8; 64 * 1024];
-        let n = self
-            .stream
-            .read(&mut chunk)
+        let n = tokio::time::timeout(self.recv_timeout, self.stream.read(&mut chunk))
             .await
+            .map_err(|_| NetworkError::Timeout("tcp read timed out".into()))?
             .map_err(|e| NetworkError::Transport(e.to_string()))?;
         if n == 0 {
             return Err(NetworkError::Transport("peer closed connection".into()));

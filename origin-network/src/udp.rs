@@ -28,11 +28,17 @@ use crate::wire::{encode_wire, WireType};
 /// KB, and anything larger should ride the stream layer.
 pub const MAX_DATAGRAM_FRAME: usize = 48 * 1024;
 
+/// Default per-recv deadline for a UDP frame connection. A peer that
+/// punches but never sends a real frame would otherwise loop forever in
+/// `recv_frame().await`; this bounds it.
+pub const UDP_RECV_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
 /// `FrameConn` over a connected UDP socket.
 #[derive(Debug)]
 pub struct UdpFrameConn {
     socket: UdpSocket,
     peer: SocketAddr,
+    recv_timeout: std::time::Duration,
 }
 
 impl UdpFrameConn {
@@ -43,7 +49,11 @@ impl UdpFrameConn {
         let peer = socket
             .peer_addr()
             .map_err(|e| NetworkError::Transport(format!("socket not connected: {e}")))?;
-        Ok(Self { socket, peer })
+        Ok(Self {
+            socket,
+            peer,
+            recv_timeout: UDP_RECV_TIMEOUT,
+        })
     }
 
     /// Fresh connect: bind anywhere + connect to `peer` (direct dial).
@@ -101,10 +111,9 @@ impl crate::transport::FrameConn for UdpFrameConn {
         // connected socket with a generously-sized buffer.
         let mut buf = vec![0u8; 64 * 1024];
         loop {
-            let n = self
-                .socket
-                .recv(&mut buf)
+            let n = tokio::time::timeout(self.recv_timeout, self.socket.recv(&mut buf))
                 .await
+                .map_err(|_| NetworkError::Timeout("udp recv timed out".into()))?
                 .map_err(|e| NetworkError::Transport(e.to_string()))?;
             let frame = &buf[..n];
             // Skip punch probes: a peer may still be punching our mapping
