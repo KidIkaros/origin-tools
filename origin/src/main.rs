@@ -59,6 +59,8 @@ enum Tool {
     Provenance(origin_provenance::cli::Cli),
     /// Atomic compress-then-encrypt archives (zstd + ChaCha20-BLAKE3)
     Archive(origin_archive::cli::Cli),
+    /// Payment backend (events/orders, journal, reconciliation)
+    Payments(origin_payments::cli::Cli),
     /// Health-check your ~/.origin setup
     Doctor,
 }
@@ -79,6 +81,10 @@ fn main() {
         Tool::Channel(sub) => origin_channel::commands::dispatch(sub),
         Tool::Provenance(sub) => origin_provenance::commands::dispatch(sub),
         Tool::Archive(sub) => origin_archive::commands::dispatch(sub),
+        Tool::Payments(sub) => match origin_payments::payments_root(sub.home.as_deref()) {
+            Ok(root) => origin_payments::commands::dispatch(sub, &root).map_err(|e| e.to_string()),
+            Err(e) => Err(e.to_string()),
+        },
         Tool::Doctor => doctor::run(),
     };
 

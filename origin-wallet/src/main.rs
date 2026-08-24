@@ -156,10 +156,11 @@ enum Commands {
         relay_addr: Option<SocketAddr>,
         /// Optional memo
         #[arg(long)]
-        memo: Option<String>,    /// Per-transaction spend cap (SPEC §10.2 SpendPolicy narrowing):
-    /// refuse the payment outright if the amount exceeds it
-    #[arg(long)]
-    cap: Option<u64>,
+        memo: Option<String>,
+        /// Per-transaction spend cap (SPEC §10.2 SpendPolicy narrowing):
+        /// refuse the payment outright if the amount exceeds it
+        #[arg(long)]
+        cap: Option<u64>,
     },
 
     /// Standing spend policy (SPEC §10.2): per-transaction / per-day /

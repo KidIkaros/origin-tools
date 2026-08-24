@@ -126,12 +126,15 @@ impl Transaction {
         ) as usize;
 
         if self.signature.len() < 68 + falcon_len {
-            return Err(WalletError::Transaction("Truncated Falcon signature".into()));
+            return Err(WalletError::Transaction(
+                "Truncated Falcon signature".into(),
+            ));
         }
 
         let falcon_sig_bytes = &self.signature[68..68 + falcon_len];
-        let falcon_sig = origin_crypto_sdk::pqc::falcon1024::FalconSignature::from_bytes(falcon_sig_bytes)
-            .map_err(|e| WalletError::Transaction(e.to_string()))?;
+        let falcon_sig =
+            origin_crypto_sdk::pqc::falcon1024::FalconSignature::from_bytes(falcon_sig_bytes)
+                .map_err(|e| WalletError::Transaction(e.to_string()))?;
 
         // Verify both signatures
         use origin_crypto_sdk::signing::hybrid::Ed25519Falcon1024;
@@ -147,12 +150,8 @@ impl Transaction {
     /// Encrypt a memo for this transaction.
     pub fn encrypt_memo(&mut self, key: &[u8; 32], memo: &[u8]) -> Result<()> {
         let nonce = origin_crypto_sdk::aead::generate_nonce();
-        let encrypted = origin_crypto_sdk::aead::XChaCha20Poly1305::encrypt_aad(
-            key,
-            &nonce,
-            memo,
-            &self.id,
-        )?;
+        let encrypted =
+            origin_crypto_sdk::aead::XChaCha20Poly1305::encrypt_aad(key, &nonce, memo, &self.id)?;
 
         // Prepend nonce to encrypted data
         let mut data = Vec::with_capacity(24 + encrypted.len());

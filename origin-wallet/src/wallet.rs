@@ -327,11 +327,8 @@ impl Wallet {
 
         // 6. Encrypt the whole payload
         let nonce = origin_crypto_sdk::aead::generate_nonce();
-        let ciphertext = origin_crypto_sdk::aead::XChaCha20Poly1305::encrypt(
-            &key,
-            &nonce,
-            &plaintext,
-        )?;
+        let ciphertext =
+            origin_crypto_sdk::aead::XChaCha20Poly1305::encrypt(&key, &nonce, &plaintext)?;
 
         // 7. Serialize envelope and write
         let state = WalletState {
@@ -372,8 +369,9 @@ impl Wallet {
         let mut seed_array = [0u8; 32];
         seed_array.copy_from_slice(&falcon_seed);
 
-        let (_falcon_pk, falcon_sk) = origin_crypto_sdk::pqc::falcon1024::generate_keypair_from_seed(&seed_array)
-            .map_err(|e| WalletError::KeyDerivation(e.to_string()))?;
+        let (_falcon_pk, falcon_sk) =
+            origin_crypto_sdk::pqc::falcon1024::generate_keypair_from_seed(&seed_array)
+                .map_err(|e| WalletError::KeyDerivation(e.to_string()))?;
 
         // Generate address from Ed25519 public key
         let ed_sk = ed25519_dalek::SigningKey::from_bytes(
@@ -382,8 +380,11 @@ impl Wallet {
                 .try_into()
                 .map_err(|_| WalletError::KeyDerivation("Invalid Ed25519 key".into()))?,
         );
-        let address =
-            Address::from_ed25519(&ed_sk.verifying_key(), AddressType::Bech32, Network::Mainnet);
+        let address = Address::from_ed25519(
+            &ed_sk.verifying_key(),
+            AddressType::Bech32,
+            Network::Mainnet,
+        );
 
         // Derive stealth master keys for this account
         let stealth_domain = format!("wallet:account:{index}:stealth");
@@ -396,8 +397,9 @@ impl Wallet {
         stealth_seed_array.copy_from_slice(&stealth_seed);
         let stealth_handle = origin_crypto_sdk::seed::SeedHandle::new(&stealth_seed_array, None);
 
-        let stealth_master = origin_crypto_sdk::stealth::kdf::derive_stealth_master(&stealth_handle)
-            .map_err(|e| WalletError::KeyDerivation(e.to_string()))?;
+        let stealth_master =
+            origin_crypto_sdk::stealth::kdf::derive_stealth_master(&stealth_handle)
+                .map_err(|e| WalletError::KeyDerivation(e.to_string()))?;
 
         let account = Account::with_stealth(
             format!("Account {index}"),
@@ -589,8 +591,7 @@ impl Wallet {
         }
         let mut arr = [0u8; 32];
         arr.copy_from_slice(seed);
-        stoa::NodeKeys::from_seed(&arr)
-            .map_err(|e| WalletError::KeyDerivation(e.to_string()))
+        stoa::NodeKeys::from_seed(&arr).map_err(|e| WalletError::KeyDerivation(e.to_string()))
     }
 
     /// Generate a transaction proof for a specific leaf in the MMR.
@@ -661,8 +662,10 @@ impl Wallet {
             .ok_or(WalletError::SeedExpired)?;
 
         // Create Reed-Solomon encoder
-        let encoder =
-            origin_crypto_sdk::error_correction::ReedSolomonCodec::new(threshold as usize, (shards - threshold) as usize);
+        let encoder = origin_crypto_sdk::error_correction::ReedSolomonCodec::new(
+            threshold as usize,
+            (shards - threshold) as usize,
+        );
 
         // Encode seed into shards
         let encoded = encoder.encode_shards(seed_bytes)?;
@@ -704,8 +707,10 @@ impl Wallet {
         }
 
         // Create Reed-Solomon decoder with correct parameters
-        let decoder =
-            origin_crypto_sdk::error_correction::ReedSolomonCodec::new(threshold as usize, (total_shards - threshold) as usize);
+        let decoder = origin_crypto_sdk::error_correction::ReedSolomonCodec::new(
+            threshold as usize,
+            (total_shards - threshold) as usize,
+        );
 
         // Prepare shards for decoding (pad with None for missing shards)
         let mut shard_data: Vec<Option<Vec<u8>>> = vec![None; total_shards as usize];
@@ -737,8 +742,12 @@ impl Wallet {
         // Use SDK's unicode cipher to encode first 32 bytes as phrase
         let wordlist = origin_crypto_sdk::recovery::unicode_cipher::UnicodeWordlist::default();
         let phrase_length = origin_crypto_sdk::recovery::unicode_cipher::PhraseLength::Words24;
-        let encoded = origin_crypto_sdk::recovery::unicode_cipher::encode_phrase(&seed_bytes[..32], &wordlist, phrase_length)
-            .map_err(|e| WalletError::Recovery(e.to_string()))?;
+        let encoded = origin_crypto_sdk::recovery::unicode_cipher::encode_phrase(
+            &seed_bytes[..32],
+            &wordlist,
+            phrase_length,
+        )
+        .map_err(|e| WalletError::Recovery(e.to_string()))?;
 
         // Convert Vec<char> to String
         Ok(encoded.into_iter().collect())
@@ -775,8 +784,9 @@ impl Wallet {
         // Decode phrase to seed bytes
         let chars: Vec<char> = phrase.chars().collect();
         let wordlist = origin_crypto_sdk::recovery::unicode_cipher::UnicodeWordlist::default();
-        let seed_bytes = origin_crypto_sdk::recovery::unicode_cipher::decode_phrase(&chars, &wordlist)
-            .map_err(|e| WalletError::Recovery(e.to_string()))?;
+        let seed_bytes =
+            origin_crypto_sdk::recovery::unicode_cipher::decode_phrase(&chars, &wordlist)
+                .map_err(|e| WalletError::Recovery(e.to_string()))?;
 
         Self::from_seed(&seed_bytes)
     }
@@ -985,8 +995,18 @@ mod tests {
     #[test]
     fn test_recover_insufficient_shards() {
         let shards = vec![
-            Shard { index: 0, data: vec![1, 2, 3], total_shards: 5, threshold: 3 },
-            Shard { index: 1, data: vec![4, 5, 6], total_shards: 5, threshold: 3 },
+            Shard {
+                index: 0,
+                data: vec![1, 2, 3],
+                total_shards: 5,
+                threshold: 3,
+            },
+            Shard {
+                index: 1,
+                data: vec![4, 5, 6],
+                total_shards: 5,
+                threshold: 3,
+            },
         ];
 
         // Need 3 shards but only have 2
@@ -1038,7 +1058,10 @@ mod tests {
 
         let shards = wallet.backup(5, 3).unwrap();
         let recovered_seed = Wallet::recover_from_shards(&shards[..3]).unwrap();
-        assert_eq!(recovered_seed, wallet.seed_handle.as_bytes().unwrap().to_vec());
+        assert_eq!(
+            recovered_seed,
+            wallet.seed_handle.as_bytes().unwrap().to_vec()
+        );
 
         let mut restored = Wallet::from_seed(&recovered_seed).unwrap();
         let restored_account = restored.derive_account(0).unwrap();
@@ -1063,7 +1086,9 @@ mod tests {
 
         // None of the secret material may appear verbatim in the file
         assert!(!data.windows(ed_sk.len()).any(|w| w == ed_sk.as_slice()));
-        assert!(!data.windows(falcon_sk.len()).any(|w| w == falcon_sk.as_slice()));
+        assert!(!data
+            .windows(falcon_sk.len())
+            .any(|w| w == falcon_sk.as_slice()));
         assert!(!data.windows(seed.len()).any(|w| w == seed.as_slice()));
     }
 
@@ -1147,8 +1172,7 @@ mod tests {
         // metrics API must round-trip real actor state.
         let wallet = Wallet::create("test-passphrase").unwrap();
         let keys = wallet.stoa_node_keys().unwrap();
-        let (mesh, _addr) =
-            stoa::Mesh::bind(keys, "127.0.0.1:0".parse().unwrap()).expect("bind");
+        let (mesh, _addr) = stoa::Mesh::bind(keys, "127.0.0.1:0".parse().unwrap()).expect("bind");
 
         // The bound node is this wallet's node — same MeshId.
         let again = wallet.stoa_node_keys().unwrap();
@@ -1165,6 +1189,10 @@ mod tests {
         mesh.publish_pulse().await.expect("pulse");
         let after = mesh.metrics().await;
         assert!(after.pulse_live >= 1, "self heartbeat counted live");
-        assert_eq!(after.sync_lag_secs, u64::MAX, "still never synced (no peers)");
+        assert_eq!(
+            after.sync_lag_secs,
+            u64::MAX,
+            "still never synced (no peers)"
+        );
     }
 }

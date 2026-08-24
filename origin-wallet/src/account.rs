@@ -132,10 +132,9 @@ impl Account {
                 .try_into()
                 .map_err(|_| WalletError::KeyDerivation("Invalid Ed25519 key length".into()))?,
         );
-        let falcon_sk = origin_crypto_sdk::pqc::falcon1024::FalconPrivateKey::from_bytes(
-            &self.falcon_sk,
-        )
-        .map_err(|e| WalletError::KeyDerivation(e.to_string()))?;
+        let falcon_sk =
+            origin_crypto_sdk::pqc::falcon1024::FalconPrivateKey::from_bytes(&self.falcon_sk)
+                .map_err(|e| WalletError::KeyDerivation(e.to_string()))?;
 
         Ok(Ed25519Falcon1024::sign(&ed_sk, &falcon_sk, data))
     }
@@ -166,10 +165,9 @@ impl Account {
     /// Each call with a different index produces a unique address that can only
     /// be spent by the holder of the spending secret.
     pub fn generate_stealth_address(&self, index: u64) -> Result<StealthAddress> {
-        let master = self
-            .stealth_master
-            .as_ref()
-            .ok_or_else(|| WalletError::KeyDerivation("Stealth master keys not initialized".into()))?;
+        let master = self.stealth_master.as_ref().ok_or_else(|| {
+            WalletError::KeyDerivation("Stealth master keys not initialized".into())
+        })?;
 
         // Derive stealth keys at the given index
         let keys = origin_crypto_sdk::stealth::kdf::derive_stealth_at_index(master, index)

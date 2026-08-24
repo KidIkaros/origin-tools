@@ -57,6 +57,26 @@ pub async fn pay_native(
     memo: Vec<u8>,
     cap: Option<u64>,
 ) -> Result<stoa::ledger::LedgerEntry> {
+    pay_native_with_credit(wallet, to, peer_addr, amount, memo, cap, None).await
+}
+
+/// [`pay_native`] with an explicit **standing credit line** toward the
+/// counterparty. The channel's `ENTRY_OPEN` limit is `peer_credit` when
+/// given (covering many payments against one credit line — the credit is
+/// cumulative, `remaining = limit − sent`), else `amount` as before.
+/// Payments-layer callers that expect multiple orders against one payee
+/// (the executor's native rail) should pass a credit that covers the
+/// expected flow, otherwise the second order hits "payment exceeds
+/// credit limit" on the persisted ledger.
+pub async fn pay_native_with_credit(
+    wallet: &mut Wallet,
+    to: stoa::MeshId,
+    peer_addr: SocketAddr,
+    amount: u64,
+    memo: Vec<u8>,
+    cap: Option<u64>,
+    peer_credit: Option<u64>,
+) -> Result<stoa::ledger::LedgerEntry> {
     enforce_spend_cap(amount, cap)?;
     wallet.check_spend(amount)?;
     let node_keys = wallet.stoa_node_keys()?;
@@ -66,16 +86,19 @@ pub async fn pay_native(
     let (mesh, _) = stoa::Mesh::bind(node_keys.clone(), bind_addr)?;
 
     // Connect to the counterparty's node, open a credit line that covers
-    // the payment, and stream it.
+    // the payment (or the caller's standing credit, whichever is larger), and
+    // stream it.
     mesh.connect(to, peer_addr).await.map_err(|e| {
         WalletError::Transaction(format!("connect to {to} at {peer_addr} failed: {e}"))
     })?;
-    mesh.open_channel(to, amount.max(1), memo.clone()).await.map_err(|e| {
-        WalletError::Transaction(format!("open channel to {to} failed: {e}"))
-    })?;
-    let entry = mesh.stream_payment(to, amount, memo).await.map_err(|e| {
-        WalletError::Transaction(format!("stream payment to {to} failed: {e}"))
-    })?;
+    let limit = peer_credit.unwrap_or(amount).max(amount).max(1);
+    mesh.open_channel(to, limit, memo.clone())
+        .await
+        .map_err(|e| WalletError::Transaction(format!("open channel to {to} failed: {e}")))?;
+    let entry = mesh
+        .stream_payment(to, amount, memo)
+        .await
+        .map_err(|e| WalletError::Transaction(format!("stream payment to {to} failed: {e}")))?;
 
     // Record the payment in the wallet's MMR history (INTEGRATION.md §4).
     // The sender address is derived from the wallet's node identity; the
@@ -134,14 +157,17 @@ pub async fn pay_native_via_relay(
 
     // Connect only to the relay — the payer never dials the counterparty.
     mesh.connect(relay, relay_addr).await.map_err(|e| {
-        WalletError::Transaction(format!("connect to relay {relay} at {relay_addr} failed: {e}"))
+        WalletError::Transaction(format!(
+            "connect to relay {relay} at {relay_addr} failed: {e}"
+        ))
     })?;
-    mesh.open_channel(to, amount.max(1), memo.clone()).await.map_err(|e| {
-        WalletError::Transaction(format!("open channel to {to} failed: {e}"))
-    })?;
-    let entry = mesh.stream_payment(to, amount, memo).await.map_err(|e| {
-        WalletError::Transaction(format!("stream payment to {to} failed: {e}"))
-    })?;
+    mesh.open_channel(to, amount.max(1), memo.clone())
+        .await
+        .map_err(|e| WalletError::Transaction(format!("open channel to {to} failed: {e}")))?;
+    let entry = mesh
+        .stream_payment(to, amount, memo)
+        .await
+        .map_err(|e| WalletError::Transaction(format!("stream payment to {to} failed: {e}")))?;
 
     // Record the payment in the wallet's MMR history — same evidence
     // recording as the direct path.
@@ -210,17 +236,17 @@ pub async fn sync_from(
             WalletError::Network(format!("connect to {peer} at {addr} failed: {e}"))
         })?;
     } else {
-        mesh.dial_any(peer).await.map_err(|e| {
-            WalletError::Network(format!("dial {peer} failed: {e}"))
-        })?;
+        mesh.dial_any(peer)
+            .await
+            .map_err(|e| WalletError::Network(format!("dial {peer} failed: {e}")))?;
     }
 
     // Force the checkpoint exchange, then give the responses a bounded
     // grace to land (the actor processes them asynchronously). The
     // on-connect hello already syncs once; this is the explicit re-pull.
-    mesh.sync_registries().await.map_err(|e| {
-        WalletError::Network(format!("sync request failed: {e}"))
-    })?;
+    mesh.sync_registries()
+        .await
+        .map_err(|e| WalletError::Network(format!("sync request failed: {e}")))?;
     let mut lag = u64::MAX;
     for _ in 0..30 {
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
@@ -282,8 +308,7 @@ pub async fn send_mail(
     peer_addr: SocketAddr,
     body: Vec<u8>,
 ) -> Result<stoa::mail::MailEnvelope> {
-    let keys = stoa::NodeKeys::generate()
-        .map_err(|e| WalletError::KeyDerivation(e.to_string()))?;
+    let keys = stoa::NodeKeys::generate().map_err(|e| WalletError::KeyDerivation(e.to_string()))?;
     let bind_addr = "0.0.0.0:0"
         .parse()
         .map_err(|e: std::net::AddrParseError| WalletError::Network(e.to_string()))?;
@@ -483,7 +508,10 @@ async fn chat_send_on(
                 let mut opened = None;
                 let mut last_err = None;
                 for (far, _) in candidates {
-                    match mesh.dial_relayed_chain_v(relay_id, relay_addr, &[far], to).await {
+                    match mesh
+                        .dial_relayed_chain_v(relay_id, relay_addr, &[far], to)
+                        .await
+                    {
                         Ok(sess) => {
                             opened = Some(sess);
                             break;
@@ -551,9 +579,9 @@ async fn chat_send_on(
         } else {
             "relayed"
         };
-        sess.send(&body).await.map_err(|e| {
-            WalletError::Network(format!("chat send over session failed: {e}"))
-        })?;
+        sess.send(&body)
+            .await
+            .map_err(|e| WalletError::Network(format!("chat send over session failed: {e}")))?;
         let reply = if wait_reply {
             tokio::time::timeout(std::time::Duration::from_secs(30), sess.receiver().recv())
                 .await
@@ -567,9 +595,9 @@ async fn chat_send_on(
 
     // 2. Direct tier: no circuit in play — deliver over the addressed
     //    topic on the live mesh link (the recipient's `chat listen`).
-    mesh.publish(&chat_topic(to), body).await.map_err(|e| {
-        WalletError::Network(format!("chat publish to {to} failed: {e}"))
-    })?;
+    mesh.publish(&chat_topic(to), body)
+        .await
+        .map_err(|e| WalletError::Network(format!("chat publish to {to} failed: {e}")))?;
     Ok(ChatOutcome {
         tier: "direct",
         reply: None,
@@ -685,7 +713,10 @@ pub async fn chat_repl(
     // The mail contract's receive side (INTEGRATION.md §5a): a node that
     // wants mail announces its KEM identity, so any sender can encrypt to
     // it after the on-connect registry sync.
-    match mesh.publish_identity(b"capability:chat,mail".to_vec()).await {
+    match mesh
+        .publish_identity(b"capability:chat,mail".to_vec())
+        .await
+    {
         Ok(_) => println!("  mail    : receiving (identity published)"),
         Err(e) => println!("  note    : identity publish failed ({e}) — mail cannot be received"),
     }
@@ -788,7 +819,9 @@ pub async fn chat_repl(
             }
             "contacts" => {
                 if contacts.entries.is_empty() {
-                    println!("  (no contacts — add with `contact add --label <label> --mesh <meshid>`)");
+                    println!(
+                        "  (no contacts — add with `contact add --label <label> --mesh <meshid>`)"
+                    );
                 } else {
                     for (label, mesh) in &contacts.entries {
                         println!("  {label} → {mesh}");
@@ -830,7 +863,9 @@ pub async fn chat_repl(
                     continue;
                 };
                 let body = body.as_bytes().to_vec();
-                match chat_send_on(&mesh2, to, ChatRoute::default(), body.clone(), false, None).await {
+                match chat_send_on(&mesh2, to, ChatRoute::default(), body.clone(), false, None)
+                    .await
+                {
                     Ok(outcome) => println!("✓ sent over the {}", outcome.tier),
                     Err(e) => {
                         // No live route — escalate to store-and-forward mail
@@ -1016,10 +1051,11 @@ pub async fn pay_service(
     if let Some(addr) = peer_addr {
         let _ = mesh.connect(service, addr).await;
     }
-    let record = mesh
-        .lookup_service(service)
-        .await
-        .ok_or_else(|| WalletError::Network(format!("no service record for {service} (has it published one?)")))?;
+    let record = mesh.lookup_service(service).await.ok_or_else(|| {
+        WalletError::Network(format!(
+            "no service record for {service} (has it published one?)"
+        ))
+    })?;
 
     // Pay the service's payment address on the native rail. The service's
     // own node (or a relay it hops through) ingests the receipt via
@@ -1103,8 +1139,7 @@ pub async fn lookup_service(
     service: stoa::MeshId,
     peer_addr: Option<SocketAddr>,
 ) -> Result<Option<stoa::ServiceRecord>> {
-    let keys = stoa::NodeKeys::generate()
-        .map_err(|e| WalletError::KeyDerivation(e.to_string()))?;
+    let keys = stoa::NodeKeys::generate().map_err(|e| WalletError::KeyDerivation(e.to_string()))?;
     let bind_addr = "0.0.0.0:0"
         .parse()
         .map_err(|e: std::net::AddrParseError| WalletError::Network(e.to_string()))?;
@@ -1124,10 +1159,22 @@ mod tests {
         // The SPEC §10.2 rule as the wallet's gate: a `--cap` is a
         // per-tx standing cap; the payment (the call) may only narrow,
         // never exceed it.
-        assert!(enforce_spend_cap(100, Some(100)).is_ok(), "at-cap is allowed");
-        assert!(enforce_spend_cap(99, Some(100)).is_ok(), "under-cap is allowed");
-        assert!(enforce_spend_cap(101, Some(100)).is_err(), "over-cap is refused");
-        assert!(enforce_spend_cap(1_000_000, None).is_ok(), "no cap = uncapped");
+        assert!(
+            enforce_spend_cap(100, Some(100)).is_ok(),
+            "at-cap is allowed"
+        );
+        assert!(
+            enforce_spend_cap(99, Some(100)).is_ok(),
+            "under-cap is allowed"
+        );
+        assert!(
+            enforce_spend_cap(101, Some(100)).is_err(),
+            "over-cap is refused"
+        );
+        assert!(
+            enforce_spend_cap(1_000_000, None).is_ok(),
+            "no cap = uncapped"
+        );
     }
 
     #[tokio::test]
@@ -1174,9 +1221,17 @@ mod tests {
         wallet.record_spend(500);
 
         let err = wallet.check_spend(1).expect_err("day cap exhausted");
-        assert!(err.to_string().contains("per-day cap"), "names the cap: {err}");
-        let err = wallet.check_spend(1001).expect_err("per-tx cap bites first");
-        assert!(err.to_string().contains("per-transaction"), "names the cap: {err}");
+        assert!(
+            err.to_string().contains("per-day cap"),
+            "names the cap: {err}"
+        );
+        let err = wallet
+            .check_spend(1001)
+            .expect_err("per-tx cap bites first");
+        assert!(
+            err.to_string().contains("per-transaction"),
+            "names the cap: {err}"
+        );
 
         // Both buckets count the same spend; the windows are open.
         let (_, day, month) = wallet.spend_usage();
@@ -1187,7 +1242,9 @@ mod tests {
             per_day: Some(4000),
             ..Default::default()
         });
-        let err = wallet.check_spend(2600).expect_err("still over the new day cap");
+        let err = wallet
+            .check_spend(2600)
+            .expect_err("still over the new day cap");
         assert!(err.to_string().contains("per-day cap"));
     }
 
@@ -1195,10 +1252,7 @@ mod tests {
     fn standing_policy_persists_across_save_and_load() {
         use crate::wallet::SpendPolicy;
 
-        let dir = std::env::temp_dir().join(format!(
-            "stoa-wallet-policy-{}",
-            std::process::id()
-        ));
+        let dir = std::env::temp_dir().join(format!("stoa-wallet-policy-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("policy.dat");
 
@@ -1247,7 +1301,10 @@ mod tests {
         )
         .await
         .expect_err("per-day cap must refuse the payment");
-        assert!(err.to_string().contains("per-day cap"), "error names the cap: {err}");
+        assert!(
+            err.to_string().contains("per-day cap"),
+            "error names the cap: {err}"
+        );
         assert_eq!(wallet.transaction_count(), 0, "nothing recorded in the MMR");
     }
 
@@ -1264,14 +1321,25 @@ mod tests {
         let (payee_mesh, payee_addr) =
             stoa::Mesh::bind(payee_keys, "127.0.0.1:0".parse().unwrap()).unwrap();
 
-        let entry = pay_native(&mut payer, payee_id, payee_addr, 777, b"step-3 test".to_vec(), None)
-            .await
-            .expect("pay");
+        let entry = pay_native(
+            &mut payer,
+            payee_id,
+            payee_addr,
+            777,
+            b"step-3 test".to_vec(),
+            None,
+        )
+        .await
+        .expect("pay");
 
         assert_eq!(entry.amount, 777);
         assert_eq!(entry.counterparty, payee_id);
         assert_eq!(entry.kind, stoa::ledger::ENTRY_RECEIPT);
-        assert_eq!(payer.transaction_count(), 1, "receipt recorded in the MMR history");
+        assert_eq!(
+            payer.transaction_count(),
+            1,
+            "receipt recorded in the MMR history"
+        );
 
         // The payee's node ingests the signed receipt via gossip — evidence
         // settles on both sides.
@@ -1301,8 +1369,7 @@ mod tests {
         // The payee's node binds and connects to the relay.
         let payee_keys = payee.stoa_node_keys().unwrap();
         let payee_id = *payee_keys.mesh_id();
-        let (payee_mesh, _) =
-            stoa::Mesh::bind(payee_keys, "127.0.0.1:0".parse().unwrap()).unwrap();
+        let (payee_mesh, _) = stoa::Mesh::bind(payee_keys, "127.0.0.1:0".parse().unwrap()).unwrap();
 
         // The relay (a wallet-derived node serving circuits).
         let relay_wallet = Wallet::create("relay-pass").unwrap();
@@ -1318,7 +1385,10 @@ mod tests {
         let relay_addr = relay_mesh.local_addr();
 
         // C hops to the relay so the relay has a route and C syncs with it.
-        payee_mesh.connect(relay_id, relay_addr).await.expect("C→relay");
+        payee_mesh
+            .connect(relay_id, relay_addr)
+            .await
+            .expect("C→relay");
 
         // A pays C through the relay — never dialing C directly.
         let entry = pay_native_via_relay(
@@ -1335,7 +1405,11 @@ mod tests {
 
         assert_eq!(entry.amount, 4242);
         assert_eq!(entry.counterparty, payee_id);
-        assert_eq!(payer.transaction_count(), 1, "receipt recorded in the MMR history");
+        assert_eq!(
+            payer.transaction_count(),
+            1,
+            "receipt recorded in the MMR history"
+        );
 
         // C ingests A's receipt via gossip (relay fanout) + registry sync.
         // C's node actively re-syncs like the wallet's periodic check.
@@ -1352,7 +1426,11 @@ mod tests {
         .await
         .expect("payee never ingested the relayed receipt");
         assert!(
-            payee_mesh.ledger_snapshot().await.iter().any(|e| e.amount == 4242),
+            payee_mesh
+                .ledger_snapshot()
+                .await
+                .iter()
+                .any(|e| e.amount == 4242),
             "payee's ledger holds the relayed receipt"
         );
 
@@ -1401,7 +1479,11 @@ mod tests {
         }
         {
             let mesh = relay_admin(&wallet).await.expect("admin re-bind");
-            assert_eq!(mesh.relay_stats().await.evicted, 0, "pardon survives restart");
+            assert_eq!(
+                mesh.relay_stats().await.evicted,
+                0,
+                "pardon survives restart"
+            );
             mesh.shutdown().await.expect("shutdown");
         }
     }
@@ -1445,10 +1527,17 @@ mod tests {
         .expect("pay service");
 
         assert_eq!(entry.amount, 555);
-        assert_eq!(entry.counterparty, service_id, "paid the service's payment address");
+        assert_eq!(
+            entry.counterparty, service_id,
+            "paid the service's payment address"
+        );
         assert_eq!(got.service, service_id, "resolved the service record");
         assert_eq!(got.profile, "reliable inference provider");
-        assert_eq!(payer.transaction_count(), 1, "receipt recorded in the MMR history");
+        assert_eq!(
+            payer.transaction_count(),
+            1,
+            "receipt recorded in the MMR history"
+        );
 
         // The service's node ingests the receipt via gossip.
         tokio::time::timeout(std::time::Duration::from_secs(30), async {
@@ -1511,7 +1600,13 @@ mod tests {
             mesh.shutdown().await.expect("shutdown");
             v
         };
-        assert_eq!(view.state, stoa::channel::ChannelState::Settled { total: 1200, ts: settle.ts });
+        assert_eq!(
+            view.state,
+            stoa::channel::ChannelState::Settled {
+                total: 1200,
+                ts: settle.ts
+            }
+        );
         assert!(!view.final_at(settle.ts), "not final at settlement time");
         assert!(
             view.final_at(settle.ts + stoa::DISPUTE_WINDOW_SECS),
@@ -1525,7 +1620,10 @@ mod tests {
         )
         .unwrap();
         mesh.connect(payee_id, payee_addr).await.expect("connect");
-        assert!(mesh.stream_payment(payee_id, 1, b"after-settle".to_vec()).await.is_err());
+        assert!(mesh
+            .stream_payment(payee_id, 1, b"after-settle".to_vec())
+            .await
+            .is_err());
         mesh.shutdown().await.expect("shutdown");
     }
 
@@ -1547,13 +1645,9 @@ mod tests {
             .await
             .expect("recipient publishes identity");
 
-        let env = send_mail(
-            recipient_id,
-            recipient_addr,
-            b"step-4 mail body".to_vec(),
-        )
-        .await
-        .expect("send mail");
+        let env = send_mail(recipient_id, recipient_addr, b"step-4 mail body".to_vec())
+            .await
+            .expect("send mail");
 
         assert_eq!(env.to, recipient_id);
         assert!(!env.ct.is_empty(), "body is encrypted, not plaintext");
@@ -1608,7 +1702,12 @@ mod tests {
         // envelope must survive the node's death in the store.
         tokio::time::timeout(std::time::Duration::from_secs(30), async {
             loop {
-                if recipient_mesh.poll_mail(env.from).await.expect("poll").is_some() {
+                if recipient_mesh
+                    .poll_mail(env.from)
+                    .await
+                    .expect("poll")
+                    .is_some()
+                {
                     break;
                 }
                 tokio::time::sleep(std::time::Duration::from_millis(20)).await;
@@ -1731,13 +1830,15 @@ mod tests {
         // Target hops to the relay so the relay has a route to it.
         let target_keys = stoa::NodeKeys::generate().unwrap();
         let target_id = *target_keys.mesh_id();
-        let (target_mesh, _) = stoa::Mesh::bind(target_keys, "127.0.0.1:0".parse().unwrap()).unwrap();
+        let (target_mesh, _) =
+            stoa::Mesh::bind(target_keys, "127.0.0.1:0".parse().unwrap()).unwrap();
         let mut listener = target_mesh.accept_relayed().await.unwrap();
         target_mesh.connect(relay_id, relay_addr).await.unwrap();
 
         // Caller dials the target through the wallet's relay.
         let caller_keys = stoa::NodeKeys::generate().unwrap();
-        let (caller_mesh, _) = stoa::Mesh::bind(caller_keys, "127.0.0.1:0".parse().unwrap()).unwrap();
+        let (caller_mesh, _) =
+            stoa::Mesh::bind(caller_keys, "127.0.0.1:0".parse().unwrap()).unwrap();
         let sess = caller_mesh
             .dial_relayed(relay_id, relay_addr, target_id)
             .await
@@ -1745,15 +1846,22 @@ mod tests {
         const HELLO: &[u8] = b"wallet relay hello";
         sess.send(HELLO).await.unwrap();
 
-        let mut target_sess = tokio::time::timeout(std::time::Duration::from_secs(30), listener.recv())
-            .await
-            .expect("no circuit")
-            .expect("listener closed");
-        let recv = tokio::time::timeout(std::time::Duration::from_secs(30), target_sess.receiver().recv())
-            .await
-            .expect("no data")
-            .expect("channel closed");
-        assert_eq!(recv, HELLO, "payload must arrive intact through the wallet relay");
+        let mut target_sess =
+            tokio::time::timeout(std::time::Duration::from_secs(30), listener.recv())
+                .await
+                .expect("no circuit")
+                .expect("listener closed");
+        let recv = tokio::time::timeout(
+            std::time::Duration::from_secs(30),
+            target_sess.receiver().recv(),
+        )
+        .await
+        .expect("no data")
+        .expect("channel closed");
+        assert_eq!(
+            recv, HELLO,
+            "payload must arrive intact through the wallet relay"
+        );
     }
 
     #[tokio::test]
@@ -1822,10 +1930,11 @@ mod tests {
         // A's side runs concurrently: accept the circuit, read the frame,
         // and reply while B's --wait-reply is awaiting.
         let a_task = tokio::spawn(async move {
-            let mut sess = tokio::time::timeout(std::time::Duration::from_secs(30), listener.recv())
-                .await
-                .expect("no circuit")
-                .expect("listener closed");
+            let mut sess =
+                tokio::time::timeout(std::time::Duration::from_secs(30), listener.recv())
+                    .await
+                    .expect("no circuit")
+                    .expect("listener closed");
             let got =
                 tokio::time::timeout(std::time::Duration::from_secs(30), sess.receiver().recv())
                     .await
@@ -1930,10 +2039,11 @@ mod tests {
         // A's side runs concurrently: accept the chain circuit, read the
         // frame, and reply while B's --wait-reply is awaiting.
         let a_task = tokio::spawn(async move {
-            let mut sess = tokio::time::timeout(std::time::Duration::from_secs(30), listener.recv())
-                .await
-                .expect("no circuit")
-                .expect("listener closed");
+            let mut sess =
+                tokio::time::timeout(std::time::Duration::from_secs(30), listener.recv())
+                    .await
+                    .expect("no circuit")
+                    .expect("listener closed");
             let got =
                 tokio::time::timeout(std::time::Duration::from_secs(30), sess.receiver().recv())
                     .await
@@ -1958,7 +2068,10 @@ mod tests {
         )
         .await
         .expect("chain chat");
-        assert!(outcome.tier == "relayed", "chain stays relayed (never direct)");
+        assert!(
+            outcome.tier == "relayed",
+            "chain stays relayed (never direct)"
+        );
         let reply = outcome.reply.expect("wait_reply must capture the reply");
         assert_eq!(reply, b"got it");
         a_task.await.expect("A's side of the chat");
@@ -2062,10 +2175,11 @@ mod tests {
             .expect("validation close failed");
 
         let a_task = tokio::spawn(async move {
-            let mut sess = tokio::time::timeout(std::time::Duration::from_secs(30), listener.recv())
-                .await
-                .expect("no circuit")
-                .expect("listener closed");
+            let mut sess =
+                tokio::time::timeout(std::time::Duration::from_secs(30), listener.recv())
+                    .await
+                    .expect("no circuit")
+                    .expect("listener closed");
             let got =
                 tokio::time::timeout(std::time::Duration::from_secs(30), sess.receiver().recv())
                     .await
@@ -2144,9 +2258,16 @@ mod tests {
             stoa::Mesh::bind(payee_keys, "127.0.0.1:0".parse().unwrap()).unwrap();
 
         // A pays B on the native rail; B ingests the receipt via gossip.
-        pay_native(&mut payer, payee_id, payee_addr, 555, b"sync test".to_vec(), None)
-            .await
-            .expect("pay");
+        pay_native(
+            &mut payer,
+            payee_id,
+            payee_addr,
+            555,
+            b"sync test".to_vec(),
+            None,
+        )
+        .await
+        .expect("pay");
         tokio::time::timeout(std::time::Duration::from_secs(30), async {
             loop {
                 if !payee_mesh.ledger_snapshot().await.is_empty() {
@@ -2163,7 +2284,11 @@ mod tests {
             .await
             .expect("sync");
         assert_eq!(summary.peer, payee_id);
-        assert_ne!(summary.sync_lag_secs, u64::MAX, "the checkpoint exchange landed");
+        assert_ne!(
+            summary.sync_lag_secs,
+            u64::MAX,
+            "the checkpoint exchange landed"
+        );
         assert_eq!(
             summary.ledger_entries, 2,
             "A's chain (channel open + receipt) was pulled from B's checkpoint"

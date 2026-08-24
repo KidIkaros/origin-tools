@@ -43,8 +43,8 @@ impl Address {
         address_type: AddressType,
         network: Network,
     ) -> Self {
-        use sha2::{Digest, Sha256};
         use ripemd::Ripemd160;
+        use sha2::{Digest, Sha256};
 
         let pubkey_bytes = pk.as_bytes();
         let sha_hash = Sha256::digest(pubkey_bytes);
@@ -89,7 +89,8 @@ impl Address {
 
     /// Decode address from Bech32 string.
     pub fn from_bech32(s: &str) -> Result<Self> {
-        let (hrp, data) = bech32::decode(s).map_err(|e| WalletError::InvalidAddress(e.to_string()))?;
+        let (hrp, data) =
+            bech32::decode(s).map_err(|e| WalletError::InvalidAddress(e.to_string()))?;
 
         if data.len() != 20 {
             return Err(WalletError::InvalidAddress(
@@ -115,8 +116,8 @@ impl Address {
 
     /// Encode address as Base58Check string.
     pub fn to_base58check(&self) -> String {
-        use sha2::{Digest, Sha256};
         use base58::ToBase58;
+        use sha2::{Digest, Sha256};
 
         // Version byte
         let version = match self.network {
@@ -143,10 +144,12 @@ impl Address {
 
     /// Decode address from Base58Check string.
     pub fn from_base58check(s: &str) -> Result<Self> {
-        use sha2::{Digest, Sha256};
         use base58::FromBase58;
+        use sha2::{Digest, Sha256};
 
-        let decoded = s.from_base58().map_err(|_| WalletError::InvalidAddress("Invalid Base58".into()))?;
+        let decoded = s
+            .from_base58()
+            .map_err(|_| WalletError::InvalidAddress("Invalid Base58".into()))?;
 
         if decoded.len() != 25 {
             return Err(WalletError::InvalidAddress(
@@ -169,7 +172,12 @@ impl Address {
         let network = match version {
             0x00 => Network::Mainnet,
             0x6F => Network::Testnet,
-            _ => return Err(WalletError::InvalidAddress(format!("Unknown version: {}", version))),
+            _ => {
+                return Err(WalletError::InvalidAddress(format!(
+                    "Unknown version: {}",
+                    version
+                )))
+            }
         };
 
         let mut hash = [0u8; 20];
@@ -202,7 +210,11 @@ impl std::fmt::Display for Address {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self.address_type {
             AddressType::Bech32 | AddressType::Bech32m => {
-                write!(f, "{}", self.to_bech32().unwrap_or_else(|_| "invalid".to_string()))
+                write!(
+                    f,
+                    "{}",
+                    self.to_bech32().unwrap_or_else(|_| "invalid".to_string())
+                )
             }
             AddressType::Base58Check => {
                 write!(f, "{}", self.to_base58check())

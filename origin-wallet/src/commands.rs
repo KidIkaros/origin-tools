@@ -52,9 +52,7 @@ pub fn execute(cli: super::Cli) -> Result<(), Box<dyn std::error::Error>> {
             let target = match (to, service) {
                 (Some(to), None) => PayTarget::Counterparty(to.parse()?),
                 (None, Some(service)) => PayTarget::Service(service.parse()?),
-                (None, None) => {
-                    return Err("--to (or --service) is required".into())
-                }
+                (None, None) => return Err("--to (or --service) is required".into()),
                 (Some(_), Some(_)) => {
                     return Err("--to and --service are mutually exclusive".into())
                 }
@@ -233,7 +231,10 @@ fn cmd_accounts(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
 }
 
 /// Account management commands.
-fn cmd_account(path: &Path, command: super::AccountCommands) -> Result<(), Box<dyn std::error::Error>> {
+fn cmd_account(
+    path: &Path,
+    command: super::AccountCommands,
+) -> Result<(), Box<dyn std::error::Error>> {
     match command {
         super::AccountCommands::Derive { name, index } => {
             if !path.exists() {
@@ -328,10 +329,7 @@ fn cmd_backup(
     let passphrase = prompt_passphrase("Enter passphrase: ")?;
     let wallet = Wallet::open(path, &passphrase)?;
 
-    println!(
-        "Creating {} shards with threshold {}...",
-        shards, threshold
-    );
+    println!("Creating {} shards with threshold {}...", shards, threshold);
     let backup_shards = wallet.backup(shards, threshold)?;
 
     // Create output directory
@@ -415,7 +413,10 @@ fn cmd_recover(shards_dir: &Path, output: &Path) -> Result<(), Box<dyn std::erro
 }
 
 /// Recovery phrase commands.
-fn cmd_phrase(path: &Path, command: super::PhraseCommands) -> Result<(), Box<dyn std::error::Error>> {
+fn cmd_phrase(
+    path: &Path,
+    command: super::PhraseCommands,
+) -> Result<(), Box<dyn std::error::Error>> {
     match command {
         super::PhraseCommands::Export => {
             if !path.exists() {
@@ -503,9 +504,7 @@ fn cmd_network_sync(
 
     let rt = tokio::runtime::Runtime::new()?;
     let summary = rt.block_on(origin_wallet::network::sync_from(
-        &wallet,
-        peer_id,
-        peer_addr,
+        &wallet, peer_id, peer_addr,
     ))?;
 
     println!("\n✓ Registry checkpoint pulled from {peer_id}");
@@ -568,15 +567,21 @@ fn print_policy(wallet: &mut Wallet) {
     println!("Standing spend policy (SPEC §10.2):");
     println!(
         "  per-tx    : {}",
-        p.per_tx.map(|v| v.to_string()).unwrap_or_else(|| "unset".into())
+        p.per_tx
+            .map(|v| v.to_string())
+            .unwrap_or_else(|| "unset".into())
     );
     println!(
         "  per-day   : {}",
-        p.per_day.map(|v| v.to_string()).unwrap_or_else(|| "unset".into())
+        p.per_day
+            .map(|v| v.to_string())
+            .unwrap_or_else(|| "unset".into())
     );
     println!(
         "  per-month : {}",
-        p.per_month.map(|v| v.to_string()).unwrap_or_else(|| "unset".into())
+        p.per_month
+            .map(|v| v.to_string())
+            .unwrap_or_else(|| "unset".into())
     );
     println!("  spent today  : {day_spent}");
     println!("  spent this month : {month_spent}");
@@ -691,7 +696,10 @@ fn cmd_pay(
         println!("  paid to   : {}", record.payment);
         println!("  entry hash: {}", hex::encode(entry.entry_hash()));
         println!("  amount    : {}", entry.amount);
-        println!("  history   : {} transactions in the wallet MMR", wallet.transaction_count());
+        println!(
+            "  history   : {} transactions in the wallet MMR",
+            wallet.transaction_count()
+        );
         return Ok(());
     }
 
@@ -722,9 +730,7 @@ fn cmd_pay(
         (None, Some(relay_addr)) => {
             return Err(format!("--relay-addr {relay_addr} requires --relay").into())
         }
-        (Some(_), None) => {
-            return Err("--relay requires --relay-addr".into())
-        }
+        (Some(_), None) => return Err("--relay requires --relay-addr".into()),
         // Direct pay: dial the counterparty itself.
         (None, None) => {
             let peer_addr = flags
@@ -751,7 +757,10 @@ fn cmd_pay(
     println!("  entry hash : {}", hex::encode(entry.entry_hash()));
     println!("  amount     : {}", entry.amount);
     println!("  counterparty: {}", entry.counterparty);
-    println!("  history    : {} transactions in the wallet MMR", wallet.transaction_count());
+    println!(
+        "  history    : {} transactions in the wallet MMR",
+        wallet.transaction_count()
+    );
 
     Ok(())
 }
@@ -780,7 +789,10 @@ fn cmd_settle(
     println!("  counterparty : {}", entry.counterparty);
     println!("  total paid   : {}", entry.amount);
     println!("  settle hash  : {}", hex::encode(entry.entry_hash()));
-    println!("  finality     : {} s with no counter-evidence (SPEC §10.3)", stoa::DISPUTE_WINDOW_SECS);
+    println!(
+        "  finality     : {} s with no counter-evidence (SPEC §10.3)",
+        stoa::DISPUTE_WINDOW_SECS
+    );
 
     Ok(())
 }
@@ -837,9 +849,7 @@ fn cmd_discover(
         println!("     profile : {}", hit.profile);
         println!(
             "     cosine  : {:.3}   trust: {:.3}   score: {:.3}",
-            hit.cosine,
-            hit.trust,
-            hit.score
+            hit.cosine, hit.trust, hit.score
         );
         println!("               (score = cosine × trust — the ranking key)");
     }
@@ -852,7 +862,10 @@ fn cmd_discover(
     // (INTEGRATION.md §5 — a discovered provider becomes a contact).
     if let Some(label) = save {
         origin_wallet::network::save_top_contact(path, &hits, &label)?;
-        println!("\n✓ Saved top hit as contact '{label}' → {}", hits[0].service);
+        println!(
+            "\n✓ Saved top hit as contact '{label}' → {}",
+            hits[0].service
+        );
     }
 
     Ok(())
@@ -935,7 +948,11 @@ fn cmd_mail_inbox(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
 
-    println!("\nInbox ({} message{}):", inbox.len(), if inbox.len() == 1 { "" } else { "s" });
+    println!(
+        "\nInbox ({} message{}):",
+        inbox.len(),
+        if inbox.len() == 1 { "" } else { "s" }
+    );
     println!("{:-<72}", "");
     for m in &inbox {
         println!("  from : {}", m.from);
@@ -993,9 +1010,7 @@ fn cmd_chat(path: &Path, command: super::ChatCommands) -> Result<(), Box<dyn std
                 (Some(r), None) => {
                     return Err(format!("--relay {r} needs --relay-addr <host:port>").into())
                 }
-                (None, Some(_)) => {
-                    return Err("--relay-addr given without --relay <meshid>".into())
-                }
+                (None, Some(_)) => return Err("--relay-addr given without --relay <meshid>".into()),
                 (None, None) => None,
             };
             // Chain relays (RELAY.md §13): the circuit runs
@@ -1079,17 +1094,15 @@ fn cmd_chat_listen(
     };
     let via_relay = match (via_relay, relay_addr) {
         (Some(r), Some(a)) => Some((r.parse::<stoa::MeshId>()?, a)),
-        (Some(_), None) => {
-            return Err("--via-relay requires --relay-addr <host:port>".into())
-        }
-        (None, Some(_)) => {
-            return Err("--relay-addr given without --via-relay <meshid>".into())
-        }
+        (Some(_), None) => return Err("--via-relay requires --relay-addr <host:port>".into()),
+        (None, Some(_)) => return Err("--relay-addr given without --via-relay <meshid>".into()),
         (None, None) => None,
     };
     let bind = addr.unwrap_or_else(|| "127.0.0.1:0".parse().expect("valid loopback"));
     let rt = tokio::runtime::Runtime::new()?;
-    let msg = rt.block_on(origin_wallet::network::chat_listen(&wallet, peer, via_relay, bind, padding))?;
+    let msg = rt.block_on(origin_wallet::network::chat_listen(
+        &wallet, peer, via_relay, bind, padding,
+    ))?;
 
     println!("\n✉ chat from {}", msg.from);
     println!("  {}", String::from_utf8_lossy(&msg.data));
@@ -1123,24 +1136,14 @@ fn cmd_chat_repl(
     };
     let via_relay = match (via_relay, relay_addr) {
         (Some(r), Some(a)) => Some((r.parse::<stoa::MeshId>()?, a)),
-        (Some(_), None) => {
-            return Err("--via-relay requires --relay-addr <host:port>".into())
-        }
-        (None, Some(_)) => {
-            return Err("--relay-addr given without --via-relay <meshid>".into())
-        }
+        (Some(_), None) => return Err("--via-relay requires --relay-addr <host:port>".into()),
+        (None, Some(_)) => return Err("--relay-addr given without --via-relay <meshid>".into()),
         (None, None) => None,
     };
     let bind = addr.unwrap_or_else(|| "127.0.0.1:0".parse().expect("valid loopback"));
     let rt = tokio::runtime::Runtime::new()?;
     rt.block_on(origin_wallet::network::chat_repl(
-        &wallet,
-        &contacts,
-        peer,
-        peer_addr,
-        via_relay,
-        bind,
-        padding,
+        &wallet, &contacts, peer, peer_addr, via_relay, bind, padding,
     ))?;
     Ok(())
 }
@@ -1160,7 +1163,8 @@ fn padding_config(
     Ok(Some(stoa::relay::PaddingConfig {
         interval: std::time::Duration::from_millis(pad_interval),
     }))
-}/// Serve this wallet's node as a circuit relay (INTEGRATION.md step 5 —
+}
+/// Serve this wallet's node as a circuit relay (INTEGRATION.md step 5 —
 /// the "help the network" toggle, off by default): unlock, bind the node
 /// derived from the wallet seed, serve the relay role with the given PoW
 /// difficulty, start the punch-refresh loop, and run until Ctrl-C. The
@@ -1208,11 +1212,7 @@ fn cmd_relay_serve(
     println!("Serving as a circuit relay...");
     let rt = tokio::runtime::Runtime::new()?;
     let mesh = rt.block_on(origin_wallet::network::serve_relay_full(
-        &wallet,
-        difficulty,
-        stun_addr,
-        bind_addr,
-        directory,
+        &wallet, difficulty, stun_addr, bind_addr, directory,
     ))?;
 
     println!("\n✓ Relay serving (help the network)");
@@ -1221,9 +1221,14 @@ fn cmd_relay_serve(
     println!("  pow     : {difficulty} bits (cookie gate, RELAY.md §9)");
     println!("  chain   : yes (advertised chain-capable, RELAY.md §13.2)");
     println!("  stun    : {stun_server} (punch-candidate refresh)");
-    println!("  store   : {}", doctor_home().join("nodes").join(mesh.local_mesh_id().to_string()).display());
+    println!(
+        "  store   : {}",
+        doctor_home()
+            .join("nodes")
+            .join(mesh.local_mesh_id().to_string())
+            .display()
+    );
     println!("Press Ctrl-C to stop. Peers dial through this node only while it runs.");
-
 
     // Park until interrupted; the mesh handle keeps the actor + loops alive.
     let _mesh = mesh;
@@ -1236,10 +1241,7 @@ fn cmd_relay_serve(
 /// circuits served, no hint published), run `f` against the live mesh, and
 /// shut down cleanly (persisting any relay-state change) — the shared
 /// shape of the relay management commands.
-fn with_relay_mesh<F, Fut>(
-    path: &Path,
-    f: F,
-) -> Result<(), Box<dyn std::error::Error>>
+fn with_relay_mesh<F, Fut>(path: &Path, f: F) -> Result<(), Box<dyn std::error::Error>>
 where
     F: FnOnce(stoa::Mesh) -> Fut,
     Fut: std::future::Future<Output = Result<(), Box<dyn std::error::Error>>>,
@@ -1270,7 +1272,10 @@ fn cmd_relay_stats(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
     with_relay_mesh(path, |mesh| async move {
         let stats = mesh.relay_stats().await;
         println!("\nRelay abuse-control state (RELAY.md §9)");
-        println!("  serving          : {}", if stats.enabled { "yes" } else { "no" });
+        println!(
+            "  serving          : {}",
+            if stats.enabled { "yes" } else { "no" }
+        );
         println!("  live circuits    : {}", stats.circuits);
         println!("  validated clients: {}", stats.validated);
         println!("  eviction set     : {} clients", stats.evicted);

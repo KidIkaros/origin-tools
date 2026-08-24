@@ -46,6 +46,18 @@ tools that compose.
               (end-to-end composability)
 ```
 
+### origin-payments (payment backend)
+
+`origin-payments` composes the suite into a payment backend (design:
+[PAYMENT_SYSTEM_DESIGN.md](PAYMENT_SYSTEM_DESIGN.md)): payment events and
+orders with an idempotent status machine, a double-entry journal
+(hash-chained, sum-zero batches), a native-rail executor over
+`origin-wallet`, identity-signed orders and envelopes (`origin-identity`
+via the SDK's Ed25519 + Falcon-1024 hybrid bundle), and reconciliation
+against PSP settlement files. It depends on every suite crate plus the
+SDK; the Stoa pay surface is reached through `origin-wallet` (which owns
+`stoa` as its embedded mesh).
+
 ## Design Principles
 
 ### 1. One Identity

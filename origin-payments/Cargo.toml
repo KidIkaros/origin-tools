@@ -1,0 +1,75 @@
+[package]
+name = "origin-payments"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Payment backend for the Origin economy: events/orders, double-entry journal, reconciliation (design: PAYMENT_SYSTEM_DESIGN.md)"
+
+[[bin]]
+name = "origin-payments"
+path = "src/main.rs"
+
+[dependencies]
+# Chief dependency — the sole crypto provider.
+origin-crypto-sdk = { workspace = true }
+# Sibling composition crates.
+origin-common     = { workspace = true }
+origin-identity   = { workspace = true }
+origin-seal       = { workspace = true }
+origin-seed       = { workspace = true }
+origin-shard      = { workspace = true }
+origin-proof      = { workspace = true }
+origin-stealth    = { workspace = true }
+origin-schnorr    = { workspace = true }
+origin-entropy    = { workspace = true }
+origin-pass       = { workspace = true }
+origin-attest     = { workspace = true }
+origin-channel    = { workspace = true }
+origin-network    = { workspace = true }
+origin-provenance = { workspace = true }
+origin-secrets    = { path = "../origin-secrets" }   # K-of-N custody (P7)
+origin-wallet     = { path = "../origin-wallet" }   # the Stoa pay surface
+# Stoa — not imported directly. The native mesh rail, MeshId/Mesh types,
+# and ledger-entry encoding are reached entirely through origin-wallet
+# (the origin-suite "Stoa pay surface": origin-wallet re-exports
+# MeshId/Mesh/LedgerEntry + encode_ledger_entry). The hybrid-signature
+# wire format (HybridSig) lives in origin-crypto-sdk (signing::wire) —
+# the sole crypto provider. No stoa dependency here anymore.
+
+# External (same set the suite already uses).
+clap = { workspace = true }
+clap_complete = "4"
+base64 = "0.22"
+serde = { workspace = true }
+serde_json = { workspace = true }
+uuid = { version = "1", features = ["v4"] }
+chrono = "0.4"
+hex = "0.4"
+zeroize = { version = "1", features = ["derive"] }
+thiserror = "1"
+tokio = { workspace = true }
+async-trait = "0.1"
+toml = "0.8"
+# TLS for https:// x402 endpoints + facilitators. Optional (feature `tls`):
+# rustls 0.23 is already in the workspace lockfile (origin-network's quic
+# feature uses it), so enabling this adds no new crates. Off by default —
+# the std client stays dependency-light and only speaks http:// unless the
+# operator opts into real-world TLS.
+rustls = { version = "0.23", default-features = false, features = ["ring", "std"], optional = true }
+# System root certificates for https verification (already in the lockfile
+# via origin-network's quic/rustls-platform-verifier chain).
+rustls-native-certs = { version = "0.8", optional = true }
+
+[dev-dependencies]
+tempfile = "3"
+# Self-signed cert generation for the TLS loopback test (already in the
+# workspace lockfile via origin-network's quic feature).
+rcgen = "0.14"
+
+[features]
+default = []
+# Real-world TLS for the x402 HTTP client (https:// resource endpoints
+# and facilitator URLs). When off, https:// URLs are rejected with a
+# clear "TLS not enabled" error.
+tls = ["dep:rustls", "dep:rustls-native-certs"]

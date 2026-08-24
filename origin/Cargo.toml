@@ -24,4 +24,5 @@ origin-schnorr.workspace = true
 origin-channel.workspace = true
 origin-provenance.workspace = true
 origin-archive.workspace = true
+origin-payments = { path = "../origin-payments" }
 clap.workspace = true

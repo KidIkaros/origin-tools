@@ -32,7 +32,10 @@ fn free_port() -> u16 {
 /// address (pinned via `--addr`, so no stdout parsing). The relay's
 /// MeshId is derived from the relay wallet's seed — the same identity
 /// the wallet library computes — so the caller already knows it.
-fn spawn_relay_cli(relay_wallet: &str, passphrase: &str) -> (Child, stoa::MeshId, std::net::SocketAddr) {
+fn spawn_relay_cli(
+    relay_wallet: &str,
+    passphrase: &str,
+) -> (Child, stoa::MeshId, std::net::SocketAddr) {
     let bin = env!("CARGO_BIN_EXE_origin-wallet");
     let relay_addr: std::net::SocketAddr = format!("127.0.0.1:{}", free_port()).parse().unwrap();
 
@@ -58,8 +61,8 @@ fn spawn_relay_cli(relay_wallet: &str, passphrase: &str) -> (Child, stoa::MeshId
 
     // The relay MeshId is seed-derived: the wallet library computes the
     // same identity the CLI serves under.
-    let relay_wallet = Wallet::open(std::path::Path::new(relay_wallet), passphrase)
-        .expect("open relay wallet");
+    let relay_wallet =
+        Wallet::open(std::path::Path::new(relay_wallet), passphrase).expect("open relay wallet");
     let relay_id = *relay_wallet.stoa_node_keys().expect("node keys").mesh_id();
 
     // Give the child a moment to bind before the test dials it.
@@ -84,14 +87,15 @@ async fn e2e_relayed_pay_across_the_cli_relay_process() {
     let payee_wallet = dir.join("payee.dat");
     let payer_wallet = dir.join("payer.dat");
     for w in [&relay_wallet, &payee_wallet, &payer_wallet] {
-        Wallet::create("e2e-pass").expect("create").save(w, "e2e-pass").expect("save");
+        Wallet::create("e2e-pass")
+            .expect("create")
+            .save(w, "e2e-pass")
+            .expect("save");
     }
 
     // Process 1: the real relay CLI binary.
-    let (relay_child, relay_id, relay_addr) = spawn_relay_cli(
-        relay_wallet.to_str().unwrap(),
-        "e2e-pass",
-    );
+    let (relay_child, relay_id, relay_addr) =
+        spawn_relay_cli(relay_wallet.to_str().unwrap(), "e2e-pass");
 
     // Process 2 (this test): the payee's node + the payer's wallet.
     let payee = Wallet::open(&payee_wallet, "e2e-pass").expect("open payee");
@@ -99,7 +103,10 @@ async fn e2e_relayed_pay_across_the_cli_relay_process() {
     let payee_id = *payee_keys.mesh_id();
     let (payee_mesh, _) = stoa::Mesh::bind(payee_keys, "127.0.0.1:0".parse().unwrap()).unwrap();
     // The payee hops to the relay so it has a route and syncs with it.
-    payee_mesh.connect(relay_id, relay_addr).await.expect("payee → relay");
+    payee_mesh
+        .connect(relay_id, relay_addr)
+        .await
+        .expect("payee → relay");
 
     let mut payer = Wallet::open(&payer_wallet, "e2e-pass").expect("open payer");
     let entry = pay_native_via_relay(
@@ -138,7 +145,11 @@ async fn e2e_relayed_pay_across_the_cli_relay_process() {
     .await
     .expect("payee never ingested the relayed receipt");
     assert!(
-        payee_mesh.ledger_snapshot().await.iter().any(|e| e.amount == 999),
+        payee_mesh
+            .ledger_snapshot()
+            .await
+            .iter()
+            .any(|e| e.amount == 999),
         "the payee's ledger holds the receipt paid through the CLI relay"
     );
 
@@ -165,10 +176,8 @@ async fn e2e_relay_cli_advertises_chain_capability() {
         .save(&relay_wallet, "e2e-pass")
         .expect("save");
 
-    let (relay_child, relay_id, relay_addr) = spawn_relay_cli(
-        relay_wallet.to_str().unwrap(),
-        "e2e-pass",
-    );
+    let (relay_child, relay_id, relay_addr) =
+        spawn_relay_cli(relay_wallet.to_str().unwrap(), "e2e-pass");
 
     // A probe node resolves the relay's hint across the mesh (a FindValue
     // to the relay, not the relay reading its own local store).
@@ -226,7 +235,10 @@ fn run_network_sync_cli(
         ])
         .output()
         .expect("spawn network sync CLI");
-    (out.status.success(), String::from_utf8_lossy(&out.stdout).into_owned())
+    (
+        out.status.success(),
+        String::from_utf8_lossy(&out.stdout).into_owned(),
+    )
 }
 
 /// Parse the CLI summary's `ledger : N entries` line.
@@ -255,14 +267,15 @@ async fn e2e_relayed_pay_pulled_on_demand_by_network_sync_cli() {
     let payee_wallet = dir.join("payee.dat");
     let payer_wallet = dir.join("payer.dat");
     for w in [&relay_wallet, &payee_wallet, &payer_wallet] {
-        Wallet::create("e2e-pass").expect("create").save(w, "e2e-pass").expect("save");
+        Wallet::create("e2e-pass")
+            .expect("create")
+            .save(w, "e2e-pass")
+            .expect("save");
     }
 
     // Process 1: the real relay CLI binary.
-    let (relay_child, relay_id, relay_addr) = spawn_relay_cli(
-        relay_wallet.to_str().unwrap(),
-        "e2e-pass",
-    );
+    let (relay_child, relay_id, relay_addr) =
+        spawn_relay_cli(relay_wallet.to_str().unwrap(), "e2e-pass");
 
     // The payer pays the payee through the relay. The payee's node is
     // never bound in this test — its wallet file is all that exists.
@@ -288,7 +301,10 @@ async fn e2e_relayed_pay_pulled_on_demand_by_network_sync_cli() {
     {
         let probe_keys = stoa::NodeKeys::generate().unwrap();
         let (probe, _) = stoa::Mesh::bind(probe_keys, "127.0.0.1:0".parse().unwrap()).unwrap();
-        probe.connect(relay_id, relay_addr).await.expect("probe → relay");
+        probe
+            .connect(relay_id, relay_addr)
+            .await
+            .expect("probe → relay");
         tokio::time::timeout(Duration::from_secs(30), async {
             loop {
                 let _ = probe.sync_registries().await;
@@ -345,19 +361,23 @@ async fn e2e_relayed_pay_then_settle_through_the_cli_relay() {
     let payee_wallet = dir.join("payee.dat");
     let payer_wallet = dir.join("payer.dat");
     for w in [&relay_wallet, &payee_wallet, &payer_wallet] {
-        Wallet::create("e2e-pass").expect("create").save(w, "e2e-pass").expect("save");
+        Wallet::create("e2e-pass")
+            .expect("create")
+            .save(w, "e2e-pass")
+            .expect("save");
     }
 
-    let (relay_child, relay_id, relay_addr) = spawn_relay_cli(
-        relay_wallet.to_str().unwrap(),
-        "e2e-pass",
-    );
+    let (relay_child, relay_id, relay_addr) =
+        spawn_relay_cli(relay_wallet.to_str().unwrap(), "e2e-pass");
 
     let payee = Wallet::open(&payee_wallet, "e2e-pass").expect("open payee");
     let payee_keys = payee.stoa_node_keys().unwrap();
     let payee_id = *payee_keys.mesh_id();
     let (payee_mesh, _) = stoa::Mesh::bind(payee_keys, "127.0.0.1:0".parse().unwrap()).unwrap();
-    payee_mesh.connect(relay_id, relay_addr).await.expect("payee → relay");
+    payee_mesh
+        .connect(relay_id, relay_addr)
+        .await
+        .expect("payee → relay");
 
     let mut payer = Wallet::open(&payer_wallet, "e2e-pass").expect("open payer");
     let entry = pay_native_via_relay(
@@ -375,7 +395,9 @@ async fn e2e_relayed_pay_then_settle_through_the_cli_relay() {
 
     // The payer settles the channel toward the payee (the CLI `settle`
     // path): the ENTRY_SETTLE records the 500 paid out.
-    let settle = settle_channel_with(&payer, payee_id, None).await.expect("settle");
+    let settle = settle_channel_with(&payer, payee_id, None)
+        .await
+        .expect("settle");
     assert_eq!(settle.amount, 500);
     assert_eq!(settle.counterparty, payee_id);
 
@@ -390,7 +412,10 @@ async fn e2e_relayed_pay_then_settle_through_the_cli_relay() {
     };
     assert_eq!(
         view.state,
-        stoa::channel::ChannelState::Settled { total: 500, ts: settle.ts }
+        stoa::channel::ChannelState::Settled {
+            total: 500,
+            ts: settle.ts
+        }
     );
     assert!(!view.final_at(settle.ts), "not final at settlement time");
     assert!(

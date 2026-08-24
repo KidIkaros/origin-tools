@@ -4,6 +4,7 @@ members = [
     "origin-common",
     "origin-identity",
     "origin-pass",
+    "origin-payments",
     "origin-seal",
     "origin-seed",
     "origin-shard",

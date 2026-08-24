@@ -43,8 +43,8 @@ impl Contacts {
             });
         }
         let raw = std::fs::read_to_string(&path)?;
-        let mut table: Self = serde_json::from_str(&raw)
-            .map_err(|e| WalletError::Serialization(e.to_string()))?;
+        let mut table: Self =
+            serde_json::from_str(&raw).map_err(|e| WalletError::Serialization(e.to_string()))?;
         table.path = path;
         Ok(table)
     }
