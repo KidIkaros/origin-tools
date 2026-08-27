@@ -1,0 +1,17 @@
+[package]
+name = "origin-crawler"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Polite BFS web crawler — URL frontier, robots.txt compliance, per-host politeness, BLAKE3 content dedup"
+
+[dependencies]
+origin-crypto-sdk.workspace = true
+clap.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio = { workspace = true, features = ["fs"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "gzip"] }
+zstd = "0.13"
+url = "2"

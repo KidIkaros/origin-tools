@@ -149,7 +149,17 @@ async fn main() {
             allowlist,
             external_addr,
             no_sandbox,
-        } => serve(listen, home, max_forwardings, allowlist, external_addr, no_sandbox).await,
+        } => {
+            serve(
+                listen,
+                home,
+                max_forwardings,
+                allowlist,
+                external_addr,
+                no_sandbox,
+            )
+            .await
+        }
         Commands::Evict { fingerprint, home } => {
             let fp = parse_fp(&fingerprint);
             let home = expand_home(&home);
@@ -238,14 +248,10 @@ async fn serve(
         allowlist_count = load_allowlist(&path, &mut resolver)?;
     }
     let resolver = Arc::new(resolver);
-    let server = Arc::new(
-        RelayServer::new(state, eviction, resolver, seed)
-            .map_err(|e| e.to_string())?,
-    );
+    let server =
+        Arc::new(RelayServer::new(state, eviction, resolver, seed).map_err(|e| e.to_string())?);
 
-    let addr: std::net::SocketAddr = listen
-        .parse()
-        .map_err(|e| format!("bad listen: {e}"))?;
+    let addr: std::net::SocketAddr = listen.parse().map_err(|e| format!("bad listen: {e}"))?;
     let transport = TcpTransport::listen(addr)
         .await
         .map_err(|e| e.to_string())?;
@@ -314,10 +320,8 @@ async fn serve(
         let shutdown_ev = server.eviction().clone();
         let shutdown_save = eviction_path(&home);
         let shutdown_signal = async move {
-            let mut sigterm = signal(SignalKind::terminate())
-                .expect("SIGTERM handler");
-            let mut sigint = signal(SignalKind::interrupt())
-                .expect("SIGINT handler");
+            let mut sigterm = signal(SignalKind::terminate()).expect("SIGTERM handler");
+            let mut sigint = signal(SignalKind::interrupt()).expect("SIGINT handler");
             tokio::select! {
                 _ = sigterm.recv() => {
                     println!("\nsignal: SIGTERM — shutting down");

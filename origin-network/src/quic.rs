@@ -109,7 +109,7 @@ impl rustls::client::danger::ServerCertVerifier for NoVerifier {
 
 /// QUIC transport: listener or connector over `quinn::Endpoint`.
 pub struct QuicTransport {
-    endpoint: quinn::Endpoint,
+    endpoint: Arc<quinn::Endpoint>,
     listener: bool,
     local: SocketAddr,
 }
@@ -124,7 +124,7 @@ impl QuicTransport {
             .local_addr()
             .map_err(|e| NetworkError::Transport(format!("quic local_addr: {e}")))?;
         Ok(Self {
-            endpoint,
+            endpoint: Arc::new(endpoint),
             listener: true,
             local,
         })
@@ -140,7 +140,7 @@ impl QuicTransport {
             .local_addr()
             .map_err(|e| NetworkError::Transport(format!("quic local_addr: {e}")))?;
         Ok(Self {
-            endpoint,
+            endpoint: Arc::new(endpoint),
             listener: false,
             local,
         })
@@ -161,7 +161,7 @@ impl Transport for QuicTransport {
             .map_err(|e| NetworkError::Transport(format!("quic connect: {e}")))?
             .await
             .map_err(|e| NetworkError::Transport(format!("quic handshake: {e}")))?;
-        QuicFrameConn::initiator(conn)
+        QuicFrameConn::initiator(conn, self.endpoint.clone())
             .await
             .map(|c| Box::new(c) as Box<dyn FrameConn>)
     }
@@ -179,7 +179,7 @@ impl Transport for QuicTransport {
             .ok_or_else(|| NetworkError::Transport("quic listener closed".into()))?
             .await
             .map_err(|e| NetworkError::Transport(format!("quic accept: {e}")))?;
-        Ok(Box::new(QuicFrameConn::responder(conn)) as Box<dyn FrameConn>)
+        Ok(Box::new(QuicFrameConn::responder(conn, self.endpoint.clone())) as Box<dyn FrameConn>)
     }
 
     /// QUIC's effective per-stream limit; we cap frames below it so a
@@ -202,9 +202,21 @@ impl Transport for QuicTransport {
 /// initiator writes on it, so blocking in `accept_bi` at accept time
 /// would deadlock (client hasn't sent msg1 yet). This matches TCP
 /// semantics — `accept()` returns after the handshake, reads wait.
+///
+/// The connection handle is kept (as a cheap Arc clone) for [close]: quinn's
+/// driver task lives on the runtime, so a graceful teardown must send a real
+/// CONNECTION_CLOSE and wait for the driver to process it — merely dropping
+/// the endpoint while buffered frames or the FIN are in flight would kill the
+/// peer's read.
 pub struct QuicFrameConn {
+    /// Connection handle, retained for graceful close.
+    conn: quinn::Connection,
+    /// Endpoint handle: the driver task lives on the runtime, so a graceful
+    /// teardown must send a real CONNECTION_CLOSE and keep the runtime alive
+    /// (via [`quinn::Endpoint::wait_idle`]) until it is flushed. See [shutdown].
+    endpoint: Arc<quinn::Endpoint>,
     /// Held by the responder until the first frame operation.
-    conn: Option<quinn::Connection>,
+    pending_conn: Option<quinn::Connection>,
     send: Option<quinn::SendStream>,
     recv: Option<quinn::RecvStream>,
     peer: SocketAddr,
@@ -213,14 +225,16 @@ pub struct QuicFrameConn {
 
 impl QuicFrameConn {
     /// Initiator side: open the control stream now.
-    async fn initiator(conn: quinn::Connection) -> Result<Self> {
+    async fn initiator(conn: quinn::Connection, endpoint: Arc<quinn::Endpoint>) -> Result<Self> {
         let peer = conn.remote_address();
         let (send, recv) = conn
             .open_bi()
             .await
             .map_err(|e| NetworkError::Transport(format!("quic open_bi: {e}")))?;
         Ok(Self {
-            conn: None,
+            conn: conn.clone(),
+            endpoint,
+            pending_conn: None,
             send: Some(send),
             recv: Some(recv),
             peer,
@@ -229,10 +243,12 @@ impl QuicFrameConn {
     }
 
     /// Responder side: defer the stream until data arrives.
-    fn responder(conn: quinn::Connection) -> Self {
+    fn responder(conn: quinn::Connection, endpoint: Arc<quinn::Endpoint>) -> Self {
         let peer = conn.remote_address();
         Self {
-            conn: Some(conn),
+            conn: conn.clone(),
+            endpoint,
+            pending_conn: Some(conn),
             send: None,
             recv: None,
             peer,
@@ -243,7 +259,7 @@ impl QuicFrameConn {
     /// Establish the stream on first use (responder path).
     async fn ensure_stream(&mut self) -> Result<()> {
         if self.recv.is_none() {
-            let conn = self.conn.take().ok_or_else(|| {
+            let conn = self.pending_conn.take().ok_or_else(|| {
                 NetworkError::Transport("quic stream lost before establishment".into())
             })?;
             let (send, recv) = conn
@@ -314,6 +330,24 @@ impl FrameConn for QuicFrameConn {
         if let Some(send) = self.send.as_mut() {
             let _ = send.finish();
         }
+        Ok(())
+    }
+
+    /// Graceful teardown: finish the send stream, then send a real
+    /// CONNECTION_CLOSE and keep the runtime alive until the connection
+    /// fully closes. QUIC frames are flushed by a driver task that lives on
+    /// this runtime; returning from the caller's `run()` would drop the
+    /// runtime and kill the driver before the close (or buffered data) is
+    /// transmitted, forcing the peer to wait out its idle timeout.
+    /// `wait_idle` completes when the close handshake finishes, so both
+    /// peers exit promptly.
+    async fn shutdown(&mut self) -> Result<()> {
+        if let Some(send) = self.send.as_mut() {
+            let _ = send.finish();
+        }
+        // Real CONNECTION_CLOSE, then wait for the handshake to complete.
+        self.conn.close(0u32.into(), b"origin-vcs done");
+        self.endpoint.wait_idle().await;
         Ok(())
     }
 }

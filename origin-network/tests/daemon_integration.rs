@@ -61,7 +61,12 @@ fn write_eviction(path: &PathBuf, fps: &[Fingerprint]) {
 /// Sets up the home directory (including seed) but does NOT spawn the daemon
 /// until after `post_setup` callback runs. This allows callers to pre-write
 /// eviction files etc. before the daemon starts.
-fn spawn_relay<F>(home: &PathBuf, allowlist: Option<&PathBuf>, port: u16, post_setup: F) -> (SocketAddr, Child)
+fn spawn_relay<F>(
+    home: &PathBuf,
+    allowlist: Option<&PathBuf>,
+    port: u16,
+    post_setup: F,
+) -> (SocketAddr, Child)
 where
     F: FnOnce(&PathBuf),
 {
@@ -109,7 +114,9 @@ async fn connect_client(addr: SocketAddr, seed: [u8; 32]) -> Result<RelayClient,
     let relay_keys = PeerKeys::from_seed(&relay_seed(), 0).unwrap();
     let transport: std::sync::Arc<dyn Transport> = std::sync::Arc::new(TcpTransport::connector());
     let taddr = TransportAddr::Tcp(addr);
-    RelayClient::connect(seed, 0, &transport, &taddr, &relay_keys).await.map_err(|e| e.to_string())
+    RelayClient::connect(seed, 0, &transport, &taddr, &relay_keys)
+        .await
+        .map_err(|e| e.to_string())
 }
 
 #[tokio::test]
@@ -176,9 +183,15 @@ async fn daemon_rejects_unknown_peer() {
     let result = connect_client(addr, alice_seed()).await;
     kill_relay(child);
 
-    assert!(result.is_err(), "client with no PeerKeys record should be rejected");
+    assert!(
+        result.is_err(),
+        "client with no PeerKeys record should be rejected"
+    );
     let err = result.unwrap_err();
-    assert!(err.contains("unknown peer"), "expected 'unknown peer' error, got: {err}");
+    assert!(
+        err.contains("unknown peer"),
+        "expected 'unknown peer' error, got: {err}"
+    );
 }
 
 #[tokio::test]
@@ -204,7 +217,10 @@ async fn daemon_eviction_prevents_registration() {
 
     assert!(result.is_err(), "evicted peer should be rejected");
     let err = result.unwrap_err().to_string();
-    assert!(err.contains("evicted"), "expected 'evicted' error, got: {err}");
+    assert!(
+        err.contains("evicted"),
+        "expected 'evicted' error, got: {err}"
+    );
 }
 
 #[tokio::test]
@@ -224,7 +240,13 @@ async fn daemon_status_command_works() {
     kill_relay(child);
 
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("eviction set"), "status output should mention eviction set: {stdout}");
-    assert!(stdout.contains("0 entries"), "should start with 0 revoked entries: {stdout}");
+    assert!(
+        stdout.contains("eviction set"),
+        "status output should mention eviction set: {stdout}"
+    );
+    assert!(
+        stdout.contains("0 entries"),
+        "should start with 0 revoked entries: {stdout}"
+    );
     let _ = addr;
 }

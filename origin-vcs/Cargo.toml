@@ -1,0 +1,29 @@
+[package]
+name = "origin-vcs"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Git-like file versioning — signed commits, encrypted-at-rest objects, MMR audit log"
+
+[dependencies]
+origin-common = { path = "../origin-common" }
+origin-channel = { path = "../origin-channel" }
+origin-crypto-sdk.workspace = true
+origin-network = { path = "../origin-network", features = ["quic"] }
+clap.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+hex.workspace = true
+thiserror = "2"
+zeroize = { version = "1.8", features = ["derive"] }
+ed25519-dalek.workspace = true
+sha3 = "0.10"
+tokio = { workspace = true }
+async-trait.workspace = true
+libc = "0.2"
+
+[dev-dependencies]
+tempfile = "3"
+origin-proof = { path = "../origin-proof" }
+origin-provenance = { path = "../origin-provenance" }

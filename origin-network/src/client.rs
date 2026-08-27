@@ -34,7 +34,8 @@ use crate::relay_server::{AdvertFetchResponse, InboxPullResponse, ProbeResponse}
 use crate::transport::{FrameConn, Transport, TransportAddr};
 use crate::wire::{
     decode_payload, encode_payload, Advert, AdvertFetch, AdvertPublish, AuthOk, AuthReject,
-    InboxPull, InboxPush, PresenceEvent, PresenceSubscribe, Probe, WireError, WireType,
+    InboxPull, InboxPush, PresenceEvent, PresenceSubscribe, Probe, RelayData, SessionClose,
+    SessionOpen, SessionOpenAck, WireError, WireType,
 };
 
 /// Shared connection state behind the client's mutex.
@@ -343,6 +344,108 @@ impl RelayClient {
         Ok(PresenceStream {
             state: Arc::clone(&self.state),
         })
+    }
+
+    // ── Live session + data forwarding (spec §5.2) ──────────────────────
+    //
+    // These drive the relay's "dumb byte forwarder": `session_open` pairs
+    // us with a target peer, `relay_send` pushes opaque frames into the
+    // pair, and `relay_recv` reads the peer's frames off the same
+    // connection (buffering any interleaved presence events). Used by
+    // origin-vcs to tunnel its pack protocol through the relay.
+
+    /// Open a live forwarding pair to `target`. Returns the relay-issued
+    /// `pair_id` that both endpoints use for `relay_send`/`relay_recv`.
+    /// Fails (Error frame) if the target is not registered/online.
+    pub async fn session_open(&self, target: &Fingerprint) -> Result<u64> {
+        let mut state = self.state.lock().await;
+        state
+            .conn
+            .send_frame(
+                WireType::SessionOpen.to_u8(),
+                &encode_payload(&SessionOpen {
+                    target_fp: target.0,
+                })?,
+            )
+            .await?;
+        let ack: SessionOpenAck = state.read_response(WireType::SessionOpenAck).await?;
+        Ok(ack.pair_id)
+    }
+
+    /// Tear down a forwarding pair.
+    pub async fn session_close(&self, pair_id: u64) -> Result<()> {
+        let mut state = self.state.lock().await;
+        state
+            .conn
+            .send_frame(
+                WireType::SessionClose.to_u8(),
+                &encode_payload(&SessionClose { pair_id })?,
+            )
+            .await?;
+        Ok(())
+    }
+
+    /// Push one opaque frame into a live pair (forwarded verbatim to the
+    /// peer). The frame is bounded by the relay's frame-size cap.
+    pub async fn relay_send(&self, pair_id: u64, seq: u64, frame: Vec<u8>) -> Result<()> {
+        let mut state = self.state.lock().await;
+        state
+            .conn
+            .send_frame(
+                WireType::RelayData.to_u8(),
+                &encode_payload(&RelayData {
+                    pair_id,
+                    seq,
+                    frame,
+                })?,
+            )
+            .await
+    }
+
+    /// Receive the next live `RelayData` frame forwarded from a paired
+    /// peer. Presence events that interleave are buffered for the
+    /// `PresenceStream`; a `WireError` frame (e.g. "peer not connected") is
+    /// surfaced as an error. Returns `None` when the connection is closed.
+    pub async fn relay_recv(&self) -> Result<Option<RelayData>> {
+        let mut state = self.state.lock().await;
+        // Frames a PresenceStream read already stashed for us come first.
+        if let Some(pos) = state
+            .pending_frames
+            .iter()
+            .position(|(t, _)| *t == WireType::RelayData.to_u8())
+        {
+            let (_, body) = state.pending_frames.remove(pos).unwrap();
+            return decode_payload(&body).map(Some);
+        }
+        loop {
+            let (rtag, body) = match state.conn.recv_frame().await {
+                Ok(f) => f,
+                Err(_) => return Ok(None),
+            };
+            match WireType::from_u8(rtag) {
+                Some(WireType::PresenceEvent) => {
+                    let evt: PresenceEvent = match decode_payload(&body) {
+                        Ok(e) => e,
+                        Err(_) => continue,
+                    };
+                    state.buffered_events.push_back(evt);
+                }
+                Some(WireType::RelayData) => return decode_payload(&body).map(Some),
+                Some(WireType::Error) => {
+                    let err: WireError = decode_payload(&body)?;
+                    return Err(NetworkError::RelayFull(format!(
+                        "{}: {}",
+                        err.code, err.detail
+                    )));
+                }
+                other => {
+                    // Not ours: stash for request/response callers.
+                    state
+                        .pending_frames
+                        .push_back((other.map(|w| w.to_u8()).unwrap_or(rtag), body));
+                }
+            }
+        }
     }
 }
 

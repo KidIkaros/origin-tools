@@ -83,6 +83,13 @@ pub trait FrameConn: Send + Sync {
     fn peer_addr(&self) -> TransportAddr;
     /// Close the connection.
     async fn close(&mut self) -> Result<()>;
+    /// Gracefully shut the connection down and wait for the peer to observe
+    /// it. Transports whose close is buffered (e.g. QUIC, where the driver
+    /// task must stay alive to flush a real CONNECTION_CLOSE) override this;
+    /// the default is a plain [close](Self::close).
+    async fn shutdown(&mut self) -> Result<()> {
+        self.close().await
+    }
 }
 
 // ── TCP transport ───────────────────────────────────────────────────────

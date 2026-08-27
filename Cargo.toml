@@ -21,6 +21,8 @@ members = [
     "origin-cross-tests",
     "origin-wallet",
     "origin-canary",
+    "origin-crawler",
+    "origin-vcs",
 ]
 exclude = ["fuzz"]
 resolver = "2"
@@ -54,6 +56,8 @@ origin-provenance = { path = "origin-provenance" }
 origin-attest = { path = "origin-attest" }
 origin-network = { path = "origin-network" }
 origin-archive = { path = "origin-archive" }
+origin-crawler = { path = "origin-crawler" }
+origin-vcs = { path = "origin-vcs" }
 # Async runtime — origin-network is the workspace's first async crate.
 # Async-native internals + blocking facade (spec REV 3 §6.5).
 tokio = { version = "1", features = ["rt", "rt-multi-thread", "net", "io-util", "sync", "time", "macros"] }
