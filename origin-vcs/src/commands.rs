@@ -3761,16 +3761,30 @@ pub fn cmd_bisect(args: crate::cli::BisectArgs, cwd: &Path) -> Result<(), String
         }
         crate::cli::BisectAction::Run { script } => {
             let mut state = load_bisect_state(&store)?;
+            // Maintain a single good/bad window. `lo` is the newest commit we
+            // know is good (or the original good boundary) and `hi` the newest
+            // known-bad boundary; every classification shrinks the window so
+            // the midpoint moves each iteration and the search terminates.
+            let mut lo: [u8; 32] = *state
+                .goods
+                .last()
+                .unwrap_or(state.bads.first().expect("bisect has no state"));
+            let mut hi: [u8; 32] = *state.bads.last().expect("bisect has no bad");
+            let mut skipped: BTreeSet<[u8; 32]> = state.skipped.iter().copied().collect();
             loop {
-                let candidates: Vec<[u8; 32]> = bisect_candidates(
-                    &store,
-                    *state.bads.first().unwrap(),
-                    &state.goods.iter().copied().collect(),
-                    &state.skipped.iter().copied().collect(),
-                );
+                // Interior commits strictly between the good (lo) and bad (hi)
+                // boundaries. `bisect_candidates` walks hi's ancestors but
+                // stops at lo; we drop hi itself (already classified) and lo so
+                // the midpoint always picks a fresh, untested commit.
+                let mut candidates: Vec<[u8; 32]> =
+                    bisect_candidates(&store, hi, &BTreeSet::from([lo]), &skipped)
+                        .into_iter()
+                        .filter(|id| *id != hi)
+                        .collect();
                 if candidates.is_empty() {
                     break;
                 }
+                candidates.reverse(); // oldest-first
                 let mid = candidates[candidates.len() / 2];
                 // Checkout mid
                 let head_branch = store.head_branch()?.ok_or("no HEAD")?;
@@ -3788,10 +3802,12 @@ pub fn cmd_bisect(args: crate::cli::BisectArgs, cwd: &Path) -> Result<(), String
                     .status();
                 match status {
                     Ok(s) if s.success() => {
+                        lo = mid;
                         state.goods.push(mid);
                         println!("bisect: {} is GOOD", short(&mid));
                     }
                     Ok(s) => {
+                        hi = mid;
                         state.bads.push(mid);
                         println!(
                             "bisect: {} is BAD (exit {})",
@@ -3800,31 +3816,14 @@ pub fn cmd_bisect(args: crate::cli::BisectArgs, cwd: &Path) -> Result<(), String
                         );
                     }
                     Err(e) => {
+                        skipped.insert(mid);
                         state.skipped.push(mid);
                         println!("bisect: {} skipped (script error: {e})", short(&mid));
                     }
                 }
-                if !state.goods.is_empty() && !state.bads.is_empty() {
-                    let next = bisect_next(
-                        &store,
-                        &state.goods.iter().copied().collect(),
-                        &state.bads.iter().copied().collect(),
-                        &state.skipped.iter().copied().collect(),
-                    )?;
-                    if next == *state.bads.last().unwrap() || next == *state.goods.last().unwrap() {
-                        break;
-                    }
-                } else {
-                    break;
-                }
             }
             save_bisect_state(&store, &state)?;
-            if let Some(&bad) = state.bads.last() {
-                if let Some(&_good) = state.goods.last() {
-                    // Find the merge-base of the first good and the last bad to report
-                    println!("bisect: first bad commit is {}", short(&bad));
-                }
-            }
+            println!("bisect: first bad commit is {}", short(&hi));
         }
     }
     Ok(())

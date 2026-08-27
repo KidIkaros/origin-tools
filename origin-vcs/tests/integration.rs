@@ -4417,6 +4417,90 @@ fn bisect_finds_regression_commit() {
     );
 }
 
+/// `bisect run <script>` must converge to the first bad commit instead of
+/// re-testing the same midpoint forever. Regression test for the infinite
+/// loop that occurred when the search window never narrowed.
+#[test]
+fn bisect_run_converges_on_first_bad_commit() {
+    let fix = Fixture::new();
+    ok!(init_args(&fix, None));
+
+    write(fix.dir.path(), "base.txt", b"base\n");
+    ok!(add_args(&fix, vec!["base.txt"]));
+    ok!(commit_args(&fix, "c0 base"));
+
+    // Monotonic regression in a file that always exists: file.txt holds v<i>,
+    // and v4 onward is the regression. This avoids stale-file artifacts when
+    // `bisect run` checks each midpoint out and the script inspects the tree.
+    for i in 1..=7 {
+        write(fix.dir.path(), "file.txt", format!("v{i}\n").as_bytes());
+        ok!(add_args(&fix, vec!["file.txt"]));
+        ok!(commit_args(&fix, &format!("c{i}")));
+    }
+
+    let store = open_fixture_store(&fix);
+    let head = store.read_ref("heads", "main").unwrap();
+    let mut ids = Vec::new();
+    let mut cur = head;
+    for _ in 0..8 {
+        ids.push(cur);
+        let c = store.read_commit(&cur).unwrap();
+        if c.parents.is_empty() {
+            break;
+        }
+        cur = c.parents[0];
+    }
+    ids.reverse(); // ids[0]=c0 .. ids[7]=c7
+    let good = ids[3]; // c3: value v3, good
+    let bad = ids[7]; // c7: value v7, bad
+    drop(store);
+
+    ok!(Commands::Bisect(origin_vcs::cli::BisectArgs {
+        action: origin_vcs::cli::BisectAction::Start {
+            good: hex::encode(good),
+            bad: Some(hex::encode(bad)),
+        },
+        seed: Some(SEED.to_string()),
+        identity: false,
+        passphrase_file: None,
+        store: Some(fix.store()),
+    }));
+
+    // The script exits 0 (GOOD) while file.txt's value is v1..v3 and non-zero
+    // (BAD) from v4 onward. `bisect run` must CONVERGE (terminate, not loop
+    // forever on the same midpoint) and narrow to c4 as the first bad commit.
+    let script = "grep -q 'v[1-3]' file.txt".to_string();
+    ok!(Commands::Bisect(origin_vcs::cli::BisectArgs {
+        action: origin_vcs::cli::BisectAction::Run { script },
+        seed: Some(SEED.to_string()),
+        identity: false,
+        passphrase_file: None,
+        store: Some(fix.store()),
+    }));
+
+    // After run, c4 (the first v4 commit) must be among the bad commits.
+    let state_bytes =
+        std::fs::read(fix.dir.path().join(".origin-vcs").join("BISECT_STATE")).unwrap();
+    let state: serde_json::Value = serde_json::from_slice(&state_bytes).unwrap();
+    let bads_arr = state["bads"].as_array().unwrap();
+    let bad_ids: Vec<[u8; 32]> = bads_arr
+        .iter()
+        .map(|v| {
+            let arr = v.as_array().unwrap();
+            let mut id = [0u8; 32];
+            for (i, byte_val) in arr.iter().enumerate() {
+                id[i] = byte_val.as_u64().unwrap() as u8;
+            }
+            id
+        })
+        .collect();
+    assert!(
+        bad_ids.contains(&ids[4]),
+        "bisect run should identify c4 as the first bad commit; bads: {:?}",
+        bad_ids.iter().map(hex::encode).collect::<Vec<_>>()
+    );
+}
+
 /// Sync --branch: sync a specific branch instead of the HEAD branch.
 #[test]
 fn sync_specific_branch() {
