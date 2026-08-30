@@ -7,8 +7,9 @@
 
 use origin_common::{read_input, resolve_passphrase, tier_from_byte, tier_from_str};
 use origin_crypto_sdk::{
-    compress_encrypt, decompress_decrypt,
-    compressed::{Compressor as SdkCompressor, HEADER_LEN, MAGIC, VERSION, CHUNK_TAG_SIZE},
+    compress_encrypt,
+    compressed::{Compressor as SdkCompressor, CHUNK_TAG_SIZE, HEADER_LEN, MAGIC, VERSION},
+    decompress_decrypt,
 };
 
 use crate::cli::{ArchiveArgs, Cli, Commands, Compressor, InspectArgs, UnarchiveArgs};
@@ -137,7 +138,10 @@ pub fn cmd_inspect(args: InspectArgs) -> Result<(), String> {
     let body_len = container.len() - HEADER_LEN;
 
     println!("origin-archive container header:");
-    println!("  magic:          {}", String::from_utf8_lossy(&container[..4]));
+    println!(
+        "  magic:          {}",
+        String::from_utf8_lossy(&container[..4])
+    );
     println!("  version:        {}", version);
     println!("  tier:           {:?}", tier);
     println!("  compressor:     {:?}", compressor);
@@ -146,10 +150,7 @@ pub fn cmd_inspect(args: InspectArgs) -> Result<(), String> {
     println!("  salt (hex):     {}", hex::encode(salt));
     println!("  nonce (hex):    {}", hex::encode(base_nonce));
     println!("  body_len:       {} bytes", body_len);
-    println!(
-        "  tag_size/chunk: {} bytes (BLAKE3-MAC)",
-        CHUNK_TAG_SIZE
-    );
+    println!("  tag_size/chunk: {} bytes (BLAKE3-MAC)", CHUNK_TAG_SIZE);
 
     Ok(())
 }

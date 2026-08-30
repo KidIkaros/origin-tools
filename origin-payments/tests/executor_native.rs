@@ -1,57 +1,47 @@
 // SPDX-License-Identifier: Apache-2.0
 
-//! P3: the executor settles NOT_STARTED orders over the native rail —
-//! real loopback Stoa meshes via `origin-wallet::network::pay_native`
-//! (mirrors the wallet's own integration tests).
-
-use std::time::Duration;
+//! P3: the executor settles NOT_STARTED orders over the native rail via
+//! the wallet's **rail seam** ([`origin_wallet::NativeRail`]). The seam is
+//! backed today by the offline [`origin_wallet::LocalNativeRail`] (the
+//! external **stoa** project is expected to implement the trait for the
+//! real mesh rail later), so these tests exercise settlement without a
+//! peer address or a live node.
 
 use origin_payments::event::{OrderStatus, PaymentOrder};
 use origin_payments::executor;
 use origin_payments::journal;
 use origin_payments::store::PaymentStore;
-use origin_wallet::Wallet;
+use origin_wallet::{LocalNativeRail, Wallet};
 
-/// A payer wallet file + a payee node bound on loopback.
-fn payer_and_payee(
-    dir: &tempfile::TempDir,
-) -> (
-    std::path::PathBuf,
-    origin_wallet::MeshId,
-    origin_wallet::Mesh,
-    std::net::SocketAddr,
-) {
+/// A funded payer wallet on disk + a deterministic payee node id. The
+/// payee id is the "to" on a native order (a `MeshId`-shaped hex string);
+/// no counterparty node is required to settle offline.
+fn payer_and_payee(dir: &tempfile::TempDir, funding: u64) -> (std::path::PathBuf, String) {
     let payer = Wallet::create("payer-pass").unwrap();
     let wallet_path = dir.path().join("payer.wallet");
     payer.save(&wallet_path, "payer-pass").unwrap();
 
-    let payee = Wallet::create("payee-pass").unwrap();
-    let payee_keys = payee.stoa_node_keys().unwrap();
-    let payee_id = *payee_keys.mesh_id();
-    let (payee_mesh, payee_addr) =
-        origin_wallet::Mesh::bind(payee_keys, "127.0.0.1:0".parse().unwrap()).unwrap();
-    (wallet_path, payee_id, payee_mesh, payee_addr)
+    // Open and pre-fund account 0 so the offline rail can debit it.
+    let mut payer = Wallet::open(&wallet_path, "payer-pass").unwrap();
+    payer.derive_account(0).unwrap();
+    payer.update_balance(0, funding).unwrap();
+    payer.save(&wallet_path, "payer-pass").unwrap();
+
+    (wallet_path, hex::encode([0x5A; 32]))
 }
 
 #[tokio::test]
 async fn executor_settles_order_over_native_rail() {
     let dir = tempfile::tempdir().unwrap();
-    let (wallet_path, payee_id, payee_mesh, payee_addr) = payer_and_payee(&dir);
+    let (wallet_path, payee_id) = payer_and_payee(&dir, 10_000_000);
 
     let store = PaymentStore::open(&dir.path().join("payments")).unwrap();
-    let order = PaymentOrder::new("checkout-1", &payee_id.to_string(), "7.77", "USD");
+    let order = PaymentOrder::new("checkout-1", &payee_id, "7.77", "USD");
     store.insert_order(&order).unwrap();
 
-    let summary = executor::run_once(
-        &store,
-        &wallet_path,
-        "payer-pass",
-        Some(payee_addr),
-        None,
-        None,
-    )
-    .await
-    .unwrap();
+    let summary = executor::run_once(&store, &wallet_path, "payer-pass", &LocalNativeRail, None)
+        .await
+        .unwrap();
     assert_eq!(summary.ready, 1);
     assert_eq!(summary.executed, 1);
 
@@ -66,45 +56,30 @@ async fn executor_settles_order_over_native_rail() {
         "executing_since set before the rail call"
     );
 
+    // The payer wallet was debited by the offline rail.
+    let wallet = Wallet::open(&wallet_path, "payer-pass").unwrap();
+    assert_eq!(wallet.get_balance(0).unwrap(), 10_000_000 - 777);
+    assert_eq!(wallet.transaction_count(), 1, "one MMR leaf recorded");
+
     // Double-entry journal posted and balanced.
     let nets = journal::balance(&store, None).unwrap();
     assert_eq!(nets, vec![("USD".to_string(), 0)]);
-
-    // The payee's node ingests the signed receipt via gossip.
-    tokio::time::timeout(Duration::from_secs(30), async {
-        loop {
-            if !payee_mesh.ledger_snapshot().await.is_empty() {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(20)).await;
-        }
-    })
-    .await
-    .expect("payee never ingested the receipt");
-    assert_eq!(payee_mesh.ledger_snapshot().await[0].amount, 777);
 }
 
 #[tokio::test]
 async fn executor_dlqs_terminal_failures() {
     let dir = tempfile::tempdir().unwrap();
-    let (wallet_path, payee_id, _payee_mesh, _payee_addr) = payer_and_payee(&dir);
+    let (wallet_path, payee_id) = payer_and_payee(&dir, 10_000_000);
 
     let store = PaymentStore::open(&dir.path().join("payments")).unwrap();
     // A terminal (non-retryable) failure: an unparseable amount is refused
     // before any rail call → FAILED + DLQ directly.
-    let mut order = PaymentOrder::new("checkout-2", &payee_id.to_string(), "not-an-amount", "USD");
+    let order = PaymentOrder::new("checkout-2", &payee_id, "not-an-amount", "USD");
     store.insert_order(&order).unwrap();
 
-    let summary = executor::run_once(
-        &store,
-        &wallet_path,
-        "payer-pass",
-        Some("127.0.0.1:1".parse().unwrap()),
-        None,
-        None,
-    )
-    .await
-    .unwrap();
+    let summary = executor::run_once(&store, &wallet_path, "payer-pass", &LocalNativeRail, None)
+        .await
+        .unwrap();
     assert_eq!(summary.executed, 0);
     assert_eq!(summary.retried, 0, "terminal failures are not retried");
 
@@ -119,23 +94,18 @@ async fn executor_dlqs_terminal_failures() {
 #[tokio::test]
 async fn executor_requeues_and_settles_after_retry() {
     let dir = tempfile::tempdir().unwrap();
-    let (wallet_path, payee_id, _payee_mesh, payee_addr) = payer_and_payee(&dir);
+    // Start UNFUNDED so the first pass hits insufficient funds (retryable),
+    // then fund and reconcile on the second pass.
+    let (wallet_path, payee_id) = payer_and_payee(&dir, 0);
 
     let store = PaymentStore::open(&dir.path().join("payments")).unwrap();
-    let order = PaymentOrder::new("checkout-3", &payee_id.to_string(), "2.50", "USD");
+    let order = PaymentOrder::new("checkout-3", &payee_id, "2.50", "USD");
     store.insert_order(&order).unwrap();
 
-    // First pass fails (unreachable) → FAILED + DLQ.
-    let summary = executor::run_once(
-        &store,
-        &wallet_path,
-        "payer-pass",
-        Some("127.0.0.1:1".parse().unwrap()),
-        None,
-        None,
-    )
-    .await
-    .unwrap();
+    // First pass fails (insufficient funds → retryable) → FAILED + backoff.
+    let summary = executor::run_once(&store, &wallet_path, "payer-pass", &LocalNativeRail, None)
+        .await
+        .unwrap();
     assert_eq!(summary.executed, 0);
     assert_eq!(
         summary.retried, 1,
@@ -147,21 +117,17 @@ async fn executor_requeues_and_settles_after_retry() {
         OrderStatus::Failed
     );
 
-    // Requeue (FAILED -> NOT_STARTED) and settle for real.
+    // Fund the wallet, requeue (FAILED -> NOT_STARTED) and settle for real.
+    let mut wallet = Wallet::open(&wallet_path, "payer-pass").unwrap();
+    wallet.update_balance(0, 10_000_000).unwrap();
+    wallet.save(&wallet_path, "payer-pass").unwrap();
     let mut requeued = store.get_order(&order.payment_order_id).unwrap();
     requeued.transition(OrderStatus::NotStarted).unwrap();
     store.update_order(&requeued).unwrap();
 
-    let summary = executor::run_once(
-        &store,
-        &wallet_path,
-        "payer-pass",
-        Some(payee_addr),
-        None,
-        None,
-    )
-    .await
-    .unwrap();
+    let summary = executor::run_once(&store, &wallet_path, "payer-pass", &LocalNativeRail, None)
+        .await
+        .unwrap();
     assert_eq!(summary.executed, 1);
     assert_eq!(
         store.get_order(&order.payment_order_id).unwrap().status,
@@ -171,77 +137,26 @@ async fn executor_requeues_and_settles_after_retry() {
     assert_eq!(store.postings().unwrap().len(), 2);
 }
 
-/// The dogfood credit finding: the mesh credit is cumulative (`remaining =
-/// limit − sent`), so without a standing line the *second* order in a pass
-/// re-opens a fresh channel whose limit is already exhausted → "payment
-/// exceeds credit limit".
+/// With the offline rail there is no cumulative mesh credit line (each
+/// payment debits the wallet independently), so multiple orders in one
+/// pass all settle — the mesh credit-cap finding no longer applies.
 #[tokio::test]
-async fn executor_second_order_exceeds_per_order_credit() {
+async fn executor_settles_multiple_orders_offline() {
     let dir = tempfile::tempdir().unwrap();
-    let (wallet_path, payee_id, _payee_mesh, payee_addr) = payer_and_payee(&dir);
+    let (wallet_path, payee_id) = payer_and_payee(&dir, 10_000_000);
 
     let store = PaymentStore::open(&dir.path().join("payments")).unwrap();
-    let a = PaymentOrder::new("credit-a", &payee_id.to_string(), "7.77", "USD");
-    let b = PaymentOrder::new("credit-b", &payee_id.to_string(), "10.00", "USD");
-    store.insert_order(&a).unwrap();
-    store.insert_order(&b).unwrap();
-
-    // No standing credit: exactly one order settles, the other is refused
-    // on the cumulative credit line and scheduled for a backoff retry.
-    let summary = executor::run_once(
-        &store,
-        &wallet_path,
-        "payer-pass",
-        Some(payee_addr),
-        None,
-        None,
-    )
-    .await
-    .unwrap();
-    assert_eq!(
-        summary.executed, 1,
-        "only one order fits the per-order credit"
-    );
-    assert_eq!(summary.retried, 1, "credit refusal schedules a retry");
-
-    let statuses: Vec<OrderStatus> = [&a, &b]
-        .iter()
-        .map(|o| store.get_order(&o.payment_order_id).unwrap().status)
-        .collect();
-    assert!(statuses.contains(&OrderStatus::Success));
-    assert!(statuses.contains(&OrderStatus::Failed));
-}
-
-/// The fix: a standing credit line (`--peer-credit`) pre-funds one channel
-/// so both orders settle against a single `ENTRY_OPEN` limit.
-#[tokio::test]
-async fn executor_standing_credit_settles_multiple_orders() {
-    let dir = tempfile::tempdir().unwrap();
-    let (wallet_path, payee_id, payee_mesh, payee_addr) = payer_and_payee(&dir);
-
-    let store = PaymentStore::open(&dir.path().join("payments")).unwrap();
-    let a = PaymentOrder::new("credit-c", &payee_id.to_string(), "7.77", "USD");
-    let b = PaymentOrder::new("credit-d", &payee_id.to_string(), "10.00", "USD");
+    let a = PaymentOrder::new("credit-a", &payee_id, "7.77", "USD");
+    let b = PaymentOrder::new("credit-b", &payee_id, "10.00", "USD");
     let a_id = a.payment_order_id.clone();
     let b_id = b.payment_order_id.clone();
     store.insert_order(&a).unwrap();
     store.insert_order(&b).unwrap();
 
-    // Standing credit of 20.00 covers 17.77 of payments.
-    let summary = executor::run_once(
-        &store,
-        &wallet_path,
-        "payer-pass",
-        Some(payee_addr),
-        Some(2000),
-        None,
-    )
-    .await
-    .unwrap();
-    assert_eq!(
-        summary.executed, 2,
-        "both orders settle against the standing credit line"
-    );
+    let summary = executor::run_once(&store, &wallet_path, "payer-pass", &LocalNativeRail, None)
+        .await
+        .unwrap();
+    assert_eq!(summary.executed, 2, "both orders settle offline");
     assert_eq!(summary.retried, 0);
     assert_eq!(store.get_order(&a_id).unwrap().status, OrderStatus::Success);
     assert_eq!(store.get_order(&b_id).unwrap().status, OrderStatus::Success);
@@ -250,15 +165,7 @@ async fn executor_standing_credit_settles_multiple_orders() {
     let nets = journal::balance(&store, None).unwrap();
     assert_eq!(nets, vec![("USD".to_string(), 0)]);
 
-    // The payee ingests both signed receipts via gossip.
-    tokio::time::timeout(Duration::from_secs(30), async {
-        loop {
-            if payee_mesh.ledger_snapshot().await.len() >= 2 {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(20)).await;
-        }
-    })
-    .await
-    .expect("payee never ingested both receipts");
+    // The payer wallet was debited for both.
+    let wallet = Wallet::open(&wallet_path, "payer-pass").unwrap();
+    assert_eq!(wallet.get_balance(0).unwrap(), 10_000_000 - 777 - 1000);
 }

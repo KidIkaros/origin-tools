@@ -67,9 +67,3 @@ impl From<bincode::Error> for WalletError {
         WalletError::Serialization(err.to_string())
     }
 }
-
-impl From<stoa::StoaError> for WalletError {
-    fn from(err: stoa::StoaError) -> Self {
-        WalletError::Network(err.to_string())
-    }
-}

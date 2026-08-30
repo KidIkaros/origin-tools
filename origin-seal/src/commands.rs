@@ -14,13 +14,11 @@ use origin_common::{
 };
 use origin_crypto_sdk::{
     aead::XChaCha20Poly1305,
-    blake3,
     blob::{create_blob, recover_seed},
-    compression, hmac_sha3_256,
+    compression,
     kdf::hkdf::hkdf_blake3,
     kdf::Argon2idBuilder,
     pqc::falcon1024,
-    sha3_256, sha3_512,
     signing::{classical::Ed25519Signer, hybrid::HybridSigningKeyBundle},
 };
 
@@ -69,17 +67,19 @@ fn resolve_key(key: &Option<String>, key_file: &Option<String>) -> Result<Vec<u8
 pub fn cmd_hash(args: HashArgs) -> Result<(), String> {
     let data = read_input(args.input.as_deref())?;
 
-    let digest: Vec<u8> = match args.algo {
-        HashAlgo::Sha3_256 => sha3_256(&data).to_vec(),
-        HashAlgo::Sha3_512 => sha3_512(&data).to_vec(),
-        HashAlgo::Blake3 => blake3::hash(&data).as_bytes().to_vec(),
-        HashAlgo::HmacSha3_256 => {
-            let key = resolve_key(&args.key, &args.key_file)?;
-            hmac_sha3_256(&key, &data)
-                .map_err(|e| format!("HMAC failed: {e:?}"))?
-                .to_vec()
-        }
+    let kind = match args.algo {
+        HashAlgo::Sha3_256 => crate::api::HashKind::Sha3_256,
+        HashAlgo::Sha3_512 => crate::api::HashKind::Sha3_512,
+        HashAlgo::Blake3 => crate::api::HashKind::Blake3,
+        HashAlgo::HmacSha3_256 => crate::api::HashKind::HmacSha3_256,
     };
+    let key = if args.algo == HashAlgo::HmacSha3_256 {
+        Some(resolve_key(&args.key, &args.key_file)?)
+    } else {
+        None
+    };
+    let digest = crate::api::hash(kind, &data, key.as_deref())
+        .map_err(|e| e.to_string())?;
 
     if args.raw {
         write_output(None, &digest)
@@ -777,7 +777,7 @@ pub fn cmd_kdf(args: KdfArgs) -> Result<(), String> {
 pub fn cmd_mac(args: MacArgs) -> Result<(), String> {
     let data = read_input(args.input.as_deref())?;
     let key = resolve_key(&args.key, &args.key_file)?;
-    let mac = hmac_sha3_256(&key, &data).map_err(|e| format!("HMAC failed: {e:?}"))?;
+    let mac = crate::api::mac(&key, &data).map_err(|e| e.to_string())?;
 
     if args.raw {
         write_output(None, &mac)?;

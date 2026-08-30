@@ -1,0 +1,55 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout origin-secrets
+        uses: actions/checkout@v4
+
+      - name: Checkout origin-crypto-sdk
+        uses: actions/checkout@v4
+        with:
+          repository: KidIkaros/OriginSDK
+          path: origin-crypto-sdk
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-musl
+
+      - name: Install musl
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+
+      - name: Build
+        run: cargo build --release --target x86_64-unknown-linux-musl
+
+      - name: Package
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n 1)"
+          stage="origin-secrets-v${version}-x86_64-unknown-linux-musl"
+          mkdir -p "${stage}/man"
+          cp "target/x86_64-unknown-linux-musl/release/origin-secrets" "${stage}/"
+          cp README.md SECURITY.md CHANGELOG.md "${stage}/"
+          cp man/origin-secrets.1 "${stage}/man/"
+          printf 'origin-secrets %s\n' "${version}" > "${stage}/VERSION"
+          tar -czf "${stage}.tar.gz" "${stage}"
+          sha256sum "${stage}.tar.gz" > "${stage}.tar.gz.sha256"
+
+      - name: Publish release assets
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            origin-secrets-v*.tar.gz
+            origin-secrets-v*.tar.gz.sha256
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

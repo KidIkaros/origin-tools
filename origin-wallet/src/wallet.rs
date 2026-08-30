@@ -571,29 +571,6 @@ impl Wallet {
         self.accounts.iter().map(|a| a.balance()).sum()
     }
 
-    /// Derive this wallet's Stoa node identity (INTEGRATION.md §2).
-    ///
-    /// The node is a pure function of the master seed, domain-separated from
-    /// account keys — so the `MeshId` (and the at-rest store key that lets a
-    /// node re-decrypt its own `$STOA_HOME` state) are stable across unlock
-    /// cycles. This is step 1 of the embedding: prove key derivation is
-    /// stable; binding a `Mesh` comes later.
-    pub fn stoa_node_keys(&self) -> Result<stoa::NodeKeys> {
-        let seed = self
-            .seed_handle
-            .as_bytes()
-            .ok_or(WalletError::SeedExpired)?;
-        if seed.len() != 32 {
-            return Err(WalletError::KeyDerivation(format!(
-                "Stoa node identity requires a 32-byte seed, got {}",
-                seed.len()
-            )));
-        }
-        let mut arr = [0u8; 32];
-        arr.copy_from_slice(seed);
-        stoa::NodeKeys::from_seed(&arr).map_err(|e| WalletError::KeyDerivation(e.to_string()))
-    }
-
     /// Generate a transaction proof for a specific leaf in the MMR.
     pub fn prove_transaction(&self, leaf_index: u64) -> Result<origin_proof::mmr::MembershipProof> {
         if leaf_index >= self.history.leaf_count {
@@ -1130,69 +1107,5 @@ mod tests {
         // Membership proofs must still verify against the restored MMR
         let proof = loaded.prove_transaction(3).unwrap();
         assert!(loaded.verify_transaction_proof(&proof).unwrap());
-    }
-
-    #[test]
-    fn test_stoa_node_identity_stable_across_unlock() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("wallet.dat");
-
-        // Unlock 1: derive the node identity, then lock (save + drop).
-        let wallet = Wallet::create("test-passphrase").unwrap();
-        let first = wallet.stoa_node_keys().unwrap();
-        let first_id = *first.mesh_id();
-        wallet.save(&path, "test-passphrase").unwrap();
-        drop(wallet);
-
-        // Unlock 2: re-open and re-derive — the identity (and store key,
-        // which gates re-decrypting the node's own persisted state) must
-        // be identical, or the node could never read its own $STOA_HOME.
-        let reopened = Wallet::open(&path, "test-passphrase").unwrap();
-        let second = reopened.stoa_node_keys().unwrap();
-        assert_eq!(second.mesh_id(), &first_id);
-        assert_eq!(second.store_key(), first.store_key());
-        assert_eq!(second.public_keys(), first.public_keys());
-    }
-
-    #[test]
-    fn test_stoa_node_identity_differs_per_wallet() {
-        let a = Wallet::create("pass-a").unwrap();
-        let b = Wallet::create("pass-b").unwrap();
-        assert_ne!(
-            a.stoa_node_keys().unwrap().mesh_id(),
-            b.stoa_node_keys().unwrap().mesh_id()
-        );
-    }
-
-    #[tokio::test]
-    async fn test_stoa_node_binds_and_reports_metrics() {
-        // INTEGRATION.md step 2: unlock → derive node keys → bind a Mesh →
-        // read live metrics. The bound node's identity must match the
-        // wallet's derived identity (stable across unlocks), and the
-        // metrics API must round-trip real actor state.
-        let wallet = Wallet::create("test-passphrase").unwrap();
-        let keys = wallet.stoa_node_keys().unwrap();
-        let (mesh, _addr) = stoa::Mesh::bind(keys, "127.0.0.1:0".parse().unwrap()).expect("bind");
-
-        // The bound node is this wallet's node — same MeshId.
-        let again = wallet.stoa_node_keys().unwrap();
-        assert_eq!(mesh.local_mesh_id(), *again.mesh_id());
-
-        // Fresh node: zeroed health signals.
-        let before = mesh.metrics().await;
-        assert_eq!(before.connected_peers, 0);
-        assert_eq!(before.dht_records, 0);
-        assert_eq!(before.sync_lag_secs, u64::MAX, "never synced");
-        assert_eq!(before.gossip_received, 0);
-
-        // A heartbeat lands in the live set; the metrics reflect it.
-        mesh.publish_pulse().await.expect("pulse");
-        let after = mesh.metrics().await;
-        assert!(after.pulse_live >= 1, "self heartbeat counted live");
-        assert_eq!(
-            after.sync_lag_secs,
-            u64::MAX,
-            "still never synced (no peers)"
-        );
     }
 }

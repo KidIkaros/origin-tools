@@ -3,6 +3,14 @@
 use std::path::Path;
 
 use crate::cli::{Commands, RecoverArgs, SplitArgs};
+use crate::error::ShardError;
+
+impl From<ShardError> for String {
+    fn from(e: ShardError) -> Self {
+        e.to_string()
+    }
+}
+use crate::api;
 use origin_common::read_input;
 use origin_crypto_sdk::error_correction::ReedSolomonCodec;
 
@@ -27,10 +35,7 @@ fn cmd_split(args: SplitArgs) -> Result<(), String> {
     }
 
     let total = args.data_shards + args.parity_shards;
-    let codec = ReedSolomonCodec::new(args.data_shards, args.parity_shards);
-    let shards = codec
-        .encode_shards(&data)
-        .map_err(|e| format!("RS encode failed: {e}"))?;
+    let shards = api::split(&data, args.data_shards, args.parity_shards)?;
 
     std::fs::create_dir_all(&args.output)
         .map_err(|e| format!("cannot create '{}': {e}", args.output))?;
@@ -119,10 +124,7 @@ fn cmd_recover(args: RecoverArgs) -> Result<(), String> {
         ));
     }
 
-    let codec = ReedSolomonCodec::new(args.data_shards, args.parity_shards);
-    let decoded = codec
-        .decode_shards(&shards, original_data_len)
-        .map_err(|e| format!("RS decode failed: {e}"))?;
+    let decoded = api::recover(&shards, args.data_shards, args.parity_shards, original_data_len)?;
 
     origin_common::write_output(args.output.as_deref(), &decoded)?;
     eprintln!(

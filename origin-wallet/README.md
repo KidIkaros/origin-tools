@@ -74,14 +74,24 @@ origin-wallet phrase export
 origin-wallet phrase recover --phrase "your recovery phrase here"
 ```
 
-## The Stoa network (the embedded P2P node)
+## The mesh rail (now the separate **stoa** project)
 
-Each wallet derives a **Stoa node identity** from its master seed
-(`Wallet::stoa_node_keys`), so the node's `MeshId` is stable across
-unlocks and distinct per wallet. The node is the wallet's presence on the
-mesh: it gossips heartbeats, syncs registries, and carries payments,
-discovery, and mail. There is no separate daemon — the node lives for the
-duration of each command.
+> **2026-08-28 — moved out.** `origin-wallet` no longer embeds a Stoa
+> node. The mesh lives in the separate **stoa** project (which *uses*
+> these foundational crates). In the wallet, native payment is now a lean
+> **trait seam** — [`NativeRail`](src/native_rail.rs) with an offline
+> [`LocalNativeRail`](src/native_rail.rs) default (debit an account, record
+> an MMR transaction, return a signed receipt — no peer address, no node).
+> The mesh command surface below (`pay`, `mail`, `chat`, `relay`,
+> `discover`, `network`) shipped with stoa and is **not** in this crate
+> anymore; the sections are retained for stoa's own documentation.
+
+Each wallet used to derive a **Stoa node identity** from its master seed
+(`Wallet::stoa_node_keys`), so the node's `MeshId` was stable across
+unlocks and distinct per wallet. The node was the wallet's presence on
+the mesh: it gossiped heartbeats, synced registries, and carried
+payments, discovery, and mail. There was no separate daemon — the node
+lived for the duration of each command.
 
 > **Automation**: every command accepts `--passphrase <p>` to skip the
 > interactive prompt (`rpassword` reads the TTY, so scripts and spawned

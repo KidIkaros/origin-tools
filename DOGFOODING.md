@@ -1,9 +1,10 @@
 # Origin Payments — Dogfood Walkthrough
 
-**Date:** August 23, 2026
+**Date:** August 23, 2026 (updated August 28 — native rail now settles
+through the offline `NativeRail` seam; no Stoa node required)
 **Binary:** `origin-payments` (CLI + lib), exercising the full operator
-lifecycle through the real binary against a live payer wallet and a standing
-payee Stoa node — no mocks below the rail layer.
+lifecycle through the real binary against a payer wallet — no mocks below
+the rail layer.
 
 This is the canonical end-to-end smoke test. Run it after any change that
 touches the executor, journal, settlement, reconciliation, audit, or admin
@@ -21,17 +22,15 @@ DF=/tmp/do-origin
 mkdir -p "$DF"
 ```
 
-The executor's native rail pays from a payer wallet file to a payee
-**MeshId** over a loopback Stoa mesh. You need:
+The executor's native rail pays from a payer wallet file through
+`origin-wallet`'s **`NativeRail` trait seam** — the offline
+`LocalNativeRail` default (debit an account, record an MMR transaction,
+return a signed receipt; no peer address, no node). The external **stoa**
+project implements the trait later for the real mesh rail. You need:
 
 1. A **payer wallet** (`origin-wallet` CLI) — the executor opens it with
    `-p <passphrase-file>`.
-2. A **standing payee node** bound at a known loopback address. The wallet
-   CLI binds nodes ephemerally per command, so for a durable payee use the
-   same pattern as `origin-payments/tests/executor_native.rs`
-   (`payer_and_payee`): `stoa::Mesh::bind` with the payee's node keys,
-   then poll `ledger_snapshot()` in a loop to drive the mesh's I/O.
-3. A **payments identity** for signed orders (optional; unsigned orders
+2. A **payments identity** for signed orders (optional; unsigned orders
    still flow through the full lifecycle with `signed: false`).
 
 ---
@@ -72,29 +71,15 @@ Both are idempotent on the order id and roll up into a `PaymentEvent`.
 ```bash
 origin-payments executor-run \
     --wallet "$DF/payer.wallet" \
-    --peer-addr 127.0.0.1:19000 \
     -p "$DF/payer.passphrase"
 ```
 
 The FX order settles as a **multi-currency batch** — the journal shows
 `USD +10.00 / EUR −9.00` (10.00 USD @ 0.9), the P9 FX conversion working
-end-to-end through the real binary + real mesh.
-
-**Credit note:** the mesh credit is *cumulative* (`remaining = limit −
-sent`), and without a standing line each order re-opens a fresh channel
-whose limit is already exhausted by prior payments — the second order in a
-pass fails with "payment exceeds credit limit" and retries with backoff.
-Pre-fund the line to settle many orders against one channel:
-
-```bash
-origin-payments executor-run --wallet "$DF/payer.wallet" \
-    --peer-addr 127.0.0.1:19000 -p "$DF/payer.passphrase" \
-    --peer-credit 25.00
-```
-
-`--peer-credit` opens the channel with a 25.00 `ENTRY_OPEN` limit, so
-7.77 + 10.00 both settle in one pass. `--peer-addr` is only required when
-a ready order rides the native rail — http402/card passes run without it.
+end-to-end through the real binary. The offline native rail debits the
+payer wallet and records an MMR leaf per order, and multiple orders in
+one pass all settle (each payment is an independent debit — the mesh
+credit-line semantics moved to stoa with the mesh).
 
 ---
 
@@ -188,8 +173,9 @@ origin-payments keys-backup --shards 3 --threshold 2 --totp <code> -p "$DF/custo
 
 ## 8. Failure paths that are supposed to work
 
-- **Retry with backoff + jitter** — a transient rail refusal (e.g. credit
-  limit, unreachable peer) leaves the order `FAILED`, schedules a
+- **Retry with backoff + jitter** — a transient rail refusal (e.g.
+  insufficient funds on the offline native rail, an unreachable
+  facilitator on http402/card) leaves the order `FAILED`, schedules a
   `RetryJob`, and re-attempts on later passes as deadlines lapse.
 - **DLQ at max attempts** — after `max_attempts`, the order goes terminal
   and is dead-lettered with evidence (`dlq-list`).
@@ -208,7 +194,7 @@ origin-payments keys-backup --shards 3 --threshold 2 --totp <code> -p "$DF/custo
 |---|---|
 | `admin-2fa-init` vs `admin-2fa-init` naming guess | `visible_alias = "admin-2fa-init"` — both spellings work |
 | `executor-run` without TTY failed obscurely at the prompt | clear `-p/--passphrase-file` hint when stdin is not a TTY |
-| Second order in a pass always hit the cumulative mesh credit limit | `--peer-credit <amount>` pre-funds one standing channel |
+| Second order in a pass always hit the cumulative mesh credit limit | (mesh rail moved to stoa) the offline native rail debits per order — no credit line; multiple orders settle in one pass |
 | Pulling a second currency's PSP file overwrote the first (`<date>.json` single-file key) — multi-currency days couldn't reconcile | `reconcile-pull --currency <CCY>` persists per-currency; `reconcile-run` merges every pulled file |
 | Dashboard "last reconcile" was nondeterministic among same-day runs (`read_dir` order) | runs carry `created_at`; `reconcile-list`/`status` sort by date then created_at |
 | Card rail was a stub (`enabled but not implemented`) | tokenized `POST /authorize` rail: `order-create --card-*`, `psp-configure card`, executor settle/pending/DLQ |
@@ -243,3 +229,116 @@ These shipped alongside the dogfood findings, driven by
   rustls loopback handshake test
 - `cargo clippy -p origin-payments --no-deps -- -D warnings` (both configs)
 - `cargo fmt -p origin-payments --check`
+
+---
+
+# Every Crate as a Foundational Dependency — Dogfood Walkthrough
+
+**Date:** August 28, 2026
+
+Each `origin-*` crate in the workspace is a starter-kit-style foundation that
+downstream projects can consume as a dependency. This walkthrough dogfoods all
+21 lib crates in dependency order through one runnable example per crate
+(`<crate>/examples/dogfood.rs`), exercising the public library surface (typed
+APIs, SDK paths, and `cli`+`commands` dispatch) the way a downstream consumer
+would.
+
+Run everything with:
+
+```bash
+cargo build --examples --workspace
+for c in origin-common origin-identity origin-pass origin-seal origin-seed \
+         origin-shard origin-proof origin-stealth origin-entropy \
+         origin-schnorr origin-archive origin-provenance origin-attest \
+         origin-channel origin-crawler origin-secrets origin-network \
+         origin-vcs origin-canary origin-wallet origin-payments; do
+    cargo run --quiet --example dogfood -p "$c"
+done
+```
+
+## Status
+
+| Crate | Layer | Example | Status |
+|-------|-------|---------|--------|
+| origin-common | 0 — home, identity store, envelope, I/O | `examples/dogfood.rs` | ✅ |
+| origin-identity | 1a — hybrid Ed25519+Falcon identities | `examples/dogfood.rs` | ✅ |
+| origin-pass | 1a — encrypted vault + TOTP | `examples/dogfood.rs` | ✅ |
+| origin-seal | 1a — KDF + MAC + AEAD sealing | `examples/dogfood.rs` | ✅ |
+| origin-seed | 1b — Argon2id-sealed seed blobs | `examples/dogfood.rs` | ✅ |
+| origin-shard | 1b — Reed-Solomon K-of-N sharing | `examples/dogfood.rs` | ✅ |
+| origin-proof | 1b — MMR commitments | `examples/dogfood.rs` | ✅ |
+| origin-stealth | 1b — stealth addresses + PoW | `examples/dogfood.rs` | ✅ |
+| origin-entropy | 1b — entropy audit gate | `examples/dogfood.rs` | ✅ |
+| origin-schnorr | 1b — Schnorr batch proofs | `examples/dogfood.rs` | ✅ |
+| origin-archive | 1c — encrypted archive | `examples/dogfood.rs` | ✅ |
+| origin-provenance | 1c — stamps, manifests, watermarks | `examples/dogfood.rs` | ✅ |
+| origin-attest | 1c — trust graph, audit, revocation | `examples/dogfood.rs` | ✅ |
+| origin-channel | 1c — forward-secret sessions | `examples/dogfood.rs` | ✅ |
+| origin-crawler | 1c — crawl frontier + corpus | `examples/dogfood.rs` | ✅ |
+| origin-secrets | 2 — K-of-N custody + encrypted vault | `examples/dogfood.rs` | ✅ |
+| origin-network | 2 — relay, presence, inbox | `examples/dogfood.rs` | ✅ |
+| origin-vcs | 2 — git-like DVCS | `examples/dogfood.rs` | ✅ |
+| origin-canary | 3 — canary embedding + verification | `examples/dogfood.rs` | ✅ |
+| origin-wallet | 3 — wallet + native rail seam | `examples/dogfood.rs` | ✅ |
+| origin-payments | 3 — payment backend | `examples/dogfood.rs` | ✅ |
+
+## Findings (the point of dogfooding)
+
+1. **`origin-entropy check` and `origin-stealth verify` are not embeddable.**
+   Both commands call `std::process::exit(1)` when their check fails instead of
+   returning `Err` — a downstream library consumer cannot recover from a failed
+   gate/verification; the whole process dies. The examples work around this by
+   probing the failing path in a subprocess and asserting the exit code.
+   **Suggestion:** return `Result<(), Error>` and let the binary map it to an
+   exit code.
+
+2. **`origin-entropy check` flakes on 256-byte samples.** The Shannon gate
+   (`>= 7.5 bits/byte`) rejects genuinely random 256-byte CSPRNG samples ~50%
+   of the time — the Shannon estimator is biased low at small `n`. A 4096-byte
+   sample passes consistently. **Suggestion:** require larger samples or lower
+   the threshold for small inputs.
+
+3. **`origin-network` store-and-forward is asynchronous across connections.**
+   An `inbox_pull`/`advert_fetch` issued immediately after a push on a
+   *different* connection can see zero or partial frames (ordering is only
+   guaranteed per connection). Consumers should poll. The examples use bounded
+   retry loops.
+
+4. **`origin-vcs` ref names containing `/` break the store.** `branch feature/x`
+   writes `refs/heads/feature/x`, turning `feature` into a directory; a later
+   `read ref feature` fails with `Is a directory (os error 21)`. **Suggestion:**
+   reject `/` in ref names at the CLI layer.
+
+5. **`origin-vcs` working tree did not compile** (pre-existing, uncommitted):
+   `commands.rs` used `"…" + "…"` string concatenation inside a `format!`
+   (Rust has no implicit literal concatenation). Fixed in place (one line).
+
+6. **`origin-wallet` / `origin-payments` carried a stoa dependency (removed).**
+   Both crates depended on the sibling `stoa` checkout (`../../stoa`), which
+   blocked them (and `origin-cross-tests`) from building in the workspace.
+   The wall between the foundation and stoa has since been drawn: **stoa is a
+   separate project that *uses* these crates**, so `origin-wallet` no longer
+   embeds the mesh. `origin-payments`' native rail now settles through a
+   **`NativeRail` trait seam** in `origin-wallet` with an offline
+   `LocalNativeRail` default (no peer address, no mesh); the external stoa
+   project is expected to implement that trait for the real mesh rail later.
+   Both dogfood examples run clean.
+
+7. **Workspace pin had drifted** (pre-existing): `Cargo.toml` pinned
+   `origin-crypto-sdk = "=0.7.1-rc.5"` while the sibling checkout (via
+   `[patch.crates-io]`) is `0.7.1-rc.6`, so the workspace did not resolve at
+   all. Bumped the pin to `=0.7.1-rc.6` (and updated `Cargo.lock`).
+
+8. **`origin-shard recover` needs the split manifest.** `split` writes N shard
+   files **plus** `metadata.json`; recovery reads `metadata.json` from the input
+   directory, so a subset must carry it. It does support true erasure recovery
+   (fewer than N shards present → decoded from the survivors).
+
+## Verification checklist
+
+- `cargo build --examples --workspace --exclude origin`
+- `cargo run --quiet --example dogfood -p <crate>` for each of the 21 crates above
+- `cargo test --workspace --exclude origin` (includes `origin-cross-tests`)
+- `cargo clippy --workspace --exclude origin --all-targets`
+- `cargo fmt --all --check` (clean across the whole workspace — the
+  `origin-archive` diffs were formatted with `cargo fmt -p origin-archive`)

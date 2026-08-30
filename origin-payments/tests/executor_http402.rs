@@ -161,8 +161,7 @@ async fn run_pass(store: &PaymentStore, wallet_path: &Path) -> ExecutorSummary {
         store,
         wallet_path,
         "payer-pass",
-        Some("127.0.0.1:1".parse().unwrap()),
-        None,
+        &origin_wallet::LocalNativeRail,
         None,
     )
     .await

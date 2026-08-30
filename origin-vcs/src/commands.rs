@@ -212,6 +212,13 @@ fn resolve_id(store: &Store, spec: &str) -> Result<[u8; 32], String> {
         if (4..32).contains(&bytes.len()) {
             return resolve_short_id(store, spec);
         }
+        // Decodes as hex but is not a full id nor a valid abbreviation size.
+        if bytes.len() < 4 {
+            return Err(format!(
+                "abbreviated commit id '{spec}' is too short: {} hex chars is fewer than the 8-char minimum (an abbreviation must be 4-32 bytes)",
+                spec.len()
+            ));
+        }
     }
     if store.ref_exists("heads", spec) {
         return store.read_ref("heads", spec);

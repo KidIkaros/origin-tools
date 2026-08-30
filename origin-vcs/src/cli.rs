@@ -394,13 +394,13 @@ pub struct StashArgs {
     /// Subcommand: push | apply | pop | list | drop
     #[command(subcommand)]
     pub action: StashAction,
-    #[arg(long)]
+    #[arg(long, global = true)]
     pub seed: Option<String>,
-    #[arg(long)]
+    #[arg(long, global = true)]
     pub identity: bool,
-    #[arg(short, long)]
+    #[arg(short, long, global = true)]
     pub passphrase_file: Option<String>,
-    #[arg(long)]
+    #[arg(long, global = true)]
     pub store: Option<String>,
 }
 
@@ -809,13 +809,13 @@ pub struct BisectArgs {
     /// Bisect subcommand: start | good | bad | skip | reset | run
     #[command(subcommand)]
     pub action: BisectAction,
-    #[arg(long)]
+    #[arg(long, global = true)]
     pub seed: Option<String>,
-    #[arg(long)]
+    #[arg(long, global = true)]
     pub identity: bool,
-    #[arg(short, long)]
+    #[arg(short, long, global = true)]
     pub passphrase_file: Option<String>,
-    #[arg(long)]
+    #[arg(long, global = true)]
     pub store: Option<String>,
 }
 

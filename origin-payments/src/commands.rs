@@ -704,19 +704,6 @@ fn cmd_executor_run(
             rail: "native".to_string(),
             details: "--wallet <PATH> is required for the native rail".to_string(),
         })?;
-    // --peer-addr is only needed when a ready order rides the native rail
-    // (the executor refuses a native settle without it); http402/card
-    // passes run fine without one.
-    let peer_addr = match args.peer_addr.as_deref() {
-        Some(a) => Some(
-            a.parse::<std::net::SocketAddr>()
-                .map_err(|e| Error::RailUnavailable {
-                    rail: "native".to_string(),
-                    details: format!("bad --peer-addr: {e}"),
-                })?,
-        ),
-        None => None,
-    };
     // Non-interactive runs need -p/--passphrase-file: fail with a clear
     // hint instead of letting the hidden-input prompt die obscurely.
     use std::io::IsTerminal;
@@ -736,24 +723,6 @@ fn cmd_executor_run(
                     .to_string(),
             })
         }
-    };
-
-    // Optional standing credit line toward the payee on the native rail
-    // (decimal string in minor units) — pre-funds the channel so several
-    // orders settle against one ENTRY_OPEN limit.
-    let peer_credit = match &args.peer_credit {
-        Some(s) => {
-            let minor = journal::parse_amount(s).map_err(|_| Error::WalletError {
-                details: format!("bad --peer-credit '{s}' (expected a decimal amount, e.g. 25.00)"),
-            })?;
-            if minor < 0 {
-                return Err(Error::WalletError {
-                    details: "--peer-credit must be non-negative".to_string(),
-                });
-            }
-            Some(minor as u64)
-        }
-        None => None,
     };
 
     let rt = tokio::runtime::Builder::new_current_thread()
@@ -798,8 +767,7 @@ fn cmd_executor_run(
         store,
         wallet_path,
         &passphrase,
-        peer_addr,
-        peer_credit,
+        &origin_wallet::LocalNativeRail,
         compliance_ref,
     ))?;
 

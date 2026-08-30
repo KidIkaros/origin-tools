@@ -78,7 +78,14 @@ Tools are designed to pipe together. Output formats are consistent
 (hex by default, configurable). Cross-tool workflows are tested in
 `origin-cross-tests`.
 
-### 5. Authenticated Everything
+### 5. Library-First
+Every crate ships a typed library API (`src/api.rs` with typed public
+structs/functions and a typed error type) as the primary surface; the CLI is a
+thin shell over the library — never the other way around. Each crate keeps an
+`examples/dogfood.rs` demonstrating the programmatic path. Cross-crate seams
+(like `NativeRail`) live in the lowest crate that owns the domain.
+
+### 6. Authenticated Everything
 - Envelopes use AAD to authenticate header fields.
 - Stealth PoW is identity-bound (includes identity_pk in hash).
 - MMR proofs use full authentication paths.

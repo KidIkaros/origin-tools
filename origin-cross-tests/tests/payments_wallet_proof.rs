@@ -1,43 +1,45 @@
 // SPDX-License-Identifier: Apache-2.0
 
-//! Cross-tool workflow: payments → wallet native rail → journal →
+//! Cross-tool workflow: payments → wallet native rail (seam) → journal →
 //! reconciliation checkpoint (MMR) → membership proof.
 //!
 //! Links `origin-payments` (orders, executor, double-entry journal),
-//! `origin-wallet` + Stoa (the native pay rail), and `origin-proof` (MMR
-//! as the tamper-evident reconcile checkpoint).
-
-use std::time::Duration;
+//! `origin-wallet` (the native rail seam + offline default), and
+//! `origin-proof` (MMR as the tamper-evident reconcile checkpoint).
+//! The mesh is owned by the external **stoa** project (which *uses* these
+//! foundational crates), so this chain settles offline through the seam.
 
 use origin_payments::event::{OrderStatus, PaymentOrder};
 use origin_payments::executor;
 use origin_payments::journal;
 use origin_payments::store::PaymentStore;
 use origin_proof::mmr::MmrState;
-use origin_wallet::Wallet;
+use origin_wallet::{LocalNativeRail, Wallet};
 
 #[tokio::test]
 async fn payments_wallet_proof_chain() {
     let dir = tempfile::tempdir().unwrap();
 
-    // Wallet layer: payer (merchant) + payee node on the mesh.
+    // Wallet layer: payer (merchant) wallet; pre-fund account 0 so the
+    // offline native rail can debit it. The payee is just an id on the
+    // order (no counterparty node is required offline).
     let payer = Wallet::create("payer-pass").unwrap();
     let wallet_path = dir.path().join("payer.wallet");
     payer.save(&wallet_path, "payer-pass").unwrap();
+    let mut payer = Wallet::open(&wallet_path, "payer-pass").unwrap();
+    payer.derive_account(0).unwrap();
+    payer.update_balance(0, 10_000_000).unwrap();
+    payer.save(&wallet_path, "payer-pass").unwrap();
 
-    let payee = Wallet::create("payee-pass").unwrap();
-    let payee_keys = payee.stoa_node_keys().unwrap();
-    let payee_id = *payee_keys.mesh_id();
-    let (payee_mesh, payee_addr) =
-        stoa::Mesh::bind(payee_keys, "127.0.0.1:0".parse().unwrap()).unwrap();
+    let payee_id = hex::encode([0x5A; 32]);
 
-    // Payments layer: an order to the payee, settled by the executor on
-    // the native rail.
+    // Payments layer: an order to the payee, settled by the executor over
+    // the native rail seam (offline default).
     let store = PaymentStore::open(&dir.path().join("payments")).unwrap();
-    let order = PaymentOrder::new("x-checkout", &payee_id.to_string(), "4.20", "USD");
+    let order = PaymentOrder::new("x-checkout", &payee_id, "4.20", "USD");
     store.insert_order(&order).unwrap();
 
-    let summary = executor::run_once(&store, &wallet_path, "payer-pass", Some(payee_addr), None, None)
+    let summary = executor::run_once(&store, &wallet_path, "payer-pass", &LocalNativeRail, None)
         .await
         .expect("executor run");
     assert_eq!(summary.executed, 1);
@@ -51,18 +53,10 @@ async fn payments_wallet_proof_chain() {
     assert_eq!(nets, vec![("USD".to_string(), 0)]);
     assert_eq!(store.postings().unwrap().len(), 2, "exactly one batch");
 
-    // ...and the payee's node ingested the signed receipt via gossip.
-    tokio::time::timeout(Duration::from_secs(30), async {
-        loop {
-            if !payee_mesh.ledger_snapshot().await.is_empty() {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(20)).await;
-        }
-    })
-    .await
-    .expect("payee never ingested the receipt");
-    assert_eq!(payee_mesh.ledger_snapshot().await[0].amount, 420);
+    // ...and the payer wallet was debited + recorded an MMR leaf.
+    let payer = Wallet::open(&wallet_path, "payer-pass").unwrap();
+    assert_eq!(payer.get_balance(0).unwrap(), 10_000_000 - 420);
+    assert_eq!(payer.transaction_count(), 1);
 
     // Proof layer: the reconcile checkpoint = journal head hashed into an
     // MMR; the membership proof verifies against the root.

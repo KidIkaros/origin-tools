@@ -1,5 +1,15 @@
 # Stoa Mesh API coverage — origin-wallet
 
+> **2026-08-28 — the embedded mesh is gone.** `origin-wallet` no longer
+> embeds stoa; the mesh is the separate **stoa** project (which *uses*
+> these foundational crates). The wallet's native rail is now a lean
+> **trait seam** — [`NativeRail`](src/native_rail.rs) with an offline
+> [`LocalNativeRail`](src/native_rail.rs) default — that stoa implements
+> for the real mesh. The `network.rs` surface this document mapped has
+> been **removed** from the wallet; the command surface (`mail`/`chat`/
+> `relay`/`discover`/`network status`/`network doctor`) moved with it to
+> stoa. Retained below for historical reference.
+
 Status: **audited 2026-08-16** against stoa `a419f0c` (re-audited
 2026-08-16: the Mesh API is unchanged — this round touched only stoa
 tests/docs). This is the definitive map of what the wallet's network

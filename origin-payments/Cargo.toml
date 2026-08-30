@@ -29,13 +29,13 @@ origin-channel    = { workspace = true }
 origin-network    = { workspace = true }
 origin-provenance = { workspace = true }
 origin-secrets    = { path = "../origin-secrets" }   # K-of-N custody (P7)
-origin-wallet     = { path = "../origin-wallet" }   # the Stoa pay surface
-# Stoa — not imported directly. The native mesh rail, MeshId/Mesh types,
-# and ledger-entry encoding are reached entirely through origin-wallet
-# (the origin-suite "Stoa pay surface": origin-wallet re-exports
-# MeshId/Mesh/LedgerEntry + encode_ledger_entry). The hybrid-signature
-# wire format (HybridSig) lives in origin-crypto-sdk (signing::wire) —
-# the sole crypto provider. No stoa dependency here anymore.
+origin-wallet     = { path = "../origin-wallet" }   # wallet + native rail seam
+# Stoa — not imported directly, by design. The native settlement rail is
+# reached through origin-wallet's `NativeRail` trait seam (offline
+# `LocalNativeRail` default today; the external stoa project implements
+# the trait for the real mesh rail later). The hybrid-signature wire
+# format (HybridSig) lives in origin-crypto-sdk (signing::wire) — the
+# sole crypto provider. No stoa dependency here anymore.
 
 # External (same set the suite already uses).
 clap = { workspace = true }

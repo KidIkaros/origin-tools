@@ -38,7 +38,7 @@ fn resolve_seed(
 
 fn cmd_keygen(args: KeygenArgs) -> Result<(), String> {
     let seed = resolve_seed(&args.seed, args.identity, &args.passphrase_file)?;
-    let (secret, public) = ec_schnorr::generate_keypair(&seed);
+    let (secret, public) = crate::api::keypair(&seed);
 
     println!(
         "{}",
@@ -82,8 +82,8 @@ fn cmd_prove(args: ProveArgs) -> Result<(), String> {
         (secret, public)
     };
 
-    let proof = ec_schnorr::prove(&secret, &public, &message)
-        .map_err(|e| format!("proof generation failed: {e}"))?;
+    let proof = crate::api::prove(&secret, &public, &message)
+        .map_err(|e| e.to_string())?;
 
     println!(
         "{}",
@@ -120,19 +120,12 @@ fn cmd_verify(args: VerifyArgs) -> Result<(), String> {
     let proof_json: serde_json::Value =
         serde_json::from_str(&content).map_err(|e| format!("cannot parse proof: {e}"))?;
 
-    let commitment = hex::decode(proof_json["commitment"].as_str().unwrap_or(""))
-        .map_err(|e| format!("invalid commitment: {e}"))?;
-    let response = hex::decode(proof_json["response"].as_str().unwrap_or(""))
-        .map_err(|e| format!("invalid response: {e}"))?;
+    let proof = crate::api::proof_from_json(&content).map_err(|e| e.to_string())?;
+
     let public = hex::decode(public_hex.trim()).map_err(|e| format!("invalid public key: {e}"))?;
     let message = hex::decode(args.message.trim()).map_err(|e| format!("invalid message: {e}"))?;
 
-    let proof = ec_schnorr::EcSchnorrProof {
-        commitment,
-        response,
-    };
-
-    match ec_schnorr::verify(&proof, &public, &message) {
+    match crate::api::verify(&proof, &public, &message).map_err(|e| e.to_string())? {
         Ok(true) => {
             println!("OK");
             Ok(())
@@ -150,10 +143,6 @@ fn cmd_batch_verify(args: BatchVerifyArgs) -> Result<(), String> {
         .map_err(|e| format!("cannot read '{}': {e}", args.input))?;
     let items: Vec<serde_json::Value> =
         serde_json::from_str(&content).map_err(|e| format!("cannot parse JSON array: {e}"))?;
-
-    if items.is_empty() {
-        return Err("input array is empty".to_string());
-    }
 
     let mut proofs = Vec::with_capacity(items.len());
     let mut public_keys = Vec::with_capacity(items.len());

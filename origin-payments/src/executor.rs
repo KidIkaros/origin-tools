@@ -19,7 +19,6 @@
 //!    (`RetryJob`); **terminal** errors or exhausted attempts go to the
 //!    DLQ. `REQUIRES_ACTION` (3DS etc.) waits for `order-resume`.
 
-use std::net::SocketAddr;
 use std::path::Path;
 
 use crate::audit::{self, AT_ORDER_FAILED, AT_ORDER_SETTLED};
@@ -70,8 +69,7 @@ pub async fn run_once(
     store: &PaymentStore,
     wallet_path: &Path,
     passphrase: &str,
-    peer_addr: Option<SocketAddr>,
-    peer_credit: Option<u64>,
+    rail: &dyn origin_wallet::NativeRail,
     compliance: Option<&dyn crate::compliance::ComplianceScorer>,
 ) -> Result<ExecutorSummary> {
     let mut wallet =
@@ -134,8 +132,7 @@ pub async fn run_once(
             store,
             &config,
             &mut order,
-            peer_addr,
-            peer_credit,
+            rail,
             operator.as_ref(),
             compliance,
         )
@@ -211,6 +208,15 @@ pub async fn run_once(
     if ttl_dlq > 0 {
         note = format!("{note} (TTL sweep DLQ'd {ttl_dlq} stuck order(s))");
     }
+
+    // A rail pass may mutate the wallet (the native rail debits an account
+    // and records an MMR leaf). Persist it so the change survives the pass;
+    // other rails (http402/card) leave the wallet untouched.
+    wallet
+        .save(wallet_path, passphrase)
+        .map_err(|e| Error::WalletError {
+            details: format!("saving wallet after pass: {e}"),
+        })?;
 
     Ok(ExecutorSummary {
         ready,
@@ -331,8 +337,7 @@ async fn settle(
     store: &PaymentStore,
     config: &crate::store::PaymentsConfig,
     order: &mut PaymentOrder,
-    peer_addr: Option<SocketAddr>,
-    peer_credit: Option<u64>,
+    rail: &dyn origin_wallet::NativeRail,
     signer: Option<&OperatorKeys>,
     compliance: Option<&dyn crate::compliance::ComplianceScorer>,
 ) -> std::result::Result<(), SettleOutcome> {
@@ -398,16 +403,7 @@ async fn settle(
 
     match hint {
         RailHint::Native => {
-            settle_native(
-                wallet,
-                store,
-                order,
-                peer_addr,
-                amount_minor as u64,
-                peer_credit,
-                signer,
-            )
-            .await
+            settle_native(wallet, store, order, rail, amount_minor as u64, signer).await
         }
         RailHint::Http402 => settle_http402(store, order, signer),
         RailHint::Card => settle_card(store, order, signer),
@@ -1047,43 +1043,37 @@ fn settle_ach(
     }
 }
 
-/// Execute one order on the native rail: pay from the wallet, encode the
-/// receipt, post the journal batch, and settle the order.
+/// Execute one order on the native rail: pay from the wallet over the
+/// given rail (seam), encode the receipt, post the journal batch, and
+/// settle the order. The rail is `LocalNativeRail` (offline) today;
+/// a future mesh implementation is provided through the same trait.
 async fn settle_native(
     wallet: &mut origin_wallet::Wallet,
     store: &PaymentStore,
     order: &mut PaymentOrder,
-    peer_addr: Option<SocketAddr>,
+    rail: &dyn origin_wallet::NativeRail,
     amount: u64,
-    peer_credit: Option<u64>,
     signer: Option<&OperatorKeys>,
 ) -> std::result::Result<(), SettleOutcome> {
-    // The native rail dials the payee's standing node — required for
-    // native orders only (http402/card passes never need it).
-    let peer_addr = peer_addr.ok_or_else(|| {
-        SettleOutcome::Terminal("native rail requires --peer-addr <ADDR>".to_string())
-    })?;
-    let to: origin_wallet::MeshId = order
-        .to
-        .parse()
-        .map_err(|e| SettleOutcome::Terminal(format!("order.to is not a 64-hex MeshId: {e}")))?;
+    let receipt = rail
+        .pay(
+            wallet,
+            origin_wallet::NativePayParams {
+                to: order.to.clone(),
+                amount,
+                memo: order.checkout_id.clone().into_bytes(),
+                spend_cap: Some(amount), // per-call spend cap = the amount itself
+                credit: None,
+            },
+        )
+        .await
+        .map_err(|e| SettleOutcome::Retryable(e.to_string()))?;
 
-    let entry = origin_wallet::network::pay_native_with_credit(
-        wallet,
-        to,
-        peer_addr,
-        amount,
-        order.checkout_id.clone().into_bytes(),
-        Some(amount), // per-call spend cap = the amount itself
-        peer_credit,
-    )
-    .await
-    .map_err(|e| SettleOutcome::Retryable(e.to_string()))?;
-
-    // The receipt is the encoded ENTRY_RECEIPT — verifiable against the
-    // gossiped ledger (Stoa §10.1).
-    let encoded = origin_wallet::encode_ledger_entry(&entry)
-        .map_err(|e| SettleOutcome::Terminal(format!("encoding ledger entry: {e}")))?;
+    // The receipt bytes are the self-contained native-rail evidence
+    // (equivalence of the external mesh's encoded ledger entry).
+    let encoded = receipt
+        .to_bytes()
+        .map_err(|e| SettleOutcome::Terminal(format!("encoding native receipt: {e}")))?;
 
     // Double-entry journal: every batch sums to zero. Pay-out legs mirror
     // pay-in legs (merchant balance ↔ counterparty); the direction on the

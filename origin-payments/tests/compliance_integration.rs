@@ -55,8 +55,7 @@ async fn compliance_below_threshold_proceeds() {
         &store,
         &wallet_path,
         "payer-pass",
-        Some("127.0.0.1:1".parse().unwrap()),
-        None,
+        &origin_wallet::LocalNativeRail,
         Some(&scorer),
     )
     .await
@@ -93,8 +92,7 @@ async fn compliance_flag_proceeds_with_audit_entry() {
         &store,
         &wallet_path,
         "payer-pass",
-        Some("127.0.0.1:1".parse().unwrap()),
-        None,
+        &origin_wallet::LocalNativeRail,
         Some(&scorer),
     )
     .await
@@ -136,8 +134,7 @@ async fn compliance_no_scorer_proceeds_unrestricted() {
         &store,
         &wallet_path,
         "payer-pass",
-        Some("127.0.0.1:1".parse().unwrap()),
-        None,
+        &origin_wallet::LocalNativeRail,
         None, // no compliance scorer
     )
     .await
@@ -167,8 +164,7 @@ async fn compliance_reject_sends_to_dlq() {
         &store,
         &wallet_path,
         "payer-pass",
-        Some("127.0.0.1:1".parse().unwrap()),
-        None,
+        &origin_wallet::LocalNativeRail,
         Some(&scorer),
     )
     .await

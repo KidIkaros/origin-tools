@@ -49,12 +49,14 @@ impl Contacts {
         Ok(table)
     }
 
-    /// Add or replace a contact and persist. The mesh id must parse as 64
-    /// hex chars (a `stoa::MeshId`).
+    /// Add or replace a contact and persist. The node id must be 64 hex
+    /// chars (a 32-byte `MeshId`-sized node identity).
     pub fn add(&mut self, label: &str, mesh: &str) -> Result<()> {
-        let _: stoa::MeshId = mesh
-            .parse()
-            .map_err(|e| WalletError::InvalidAddress(format!("{mesh}: {e}")))?;
+        if mesh.len() != 64 || !mesh.bytes().all(|b| (b as char).is_ascii_hexdigit()) {
+            return Err(WalletError::InvalidAddress(format!(
+                "{mesh}: expected 64 hex chars"
+            )));
+        }
         self.entries.insert(label.to_string(), mesh.to_string());
         self.save()
     }

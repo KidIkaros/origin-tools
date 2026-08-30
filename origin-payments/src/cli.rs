@@ -51,9 +51,7 @@ pub enum Commands {
     /// Resume a REQUIRES_ACTION order back to EXECUTING.
     OrderResume(OrderResumeArgs),
     /// Run the executor one pass over the native rail.
-    #[command(
-        after_help = "Example:\n  origin-payments executor-run --wallet payer.wallet --peer-addr 127.0.0.1:9000"
-    )]
+    #[command(after_help = "Example:\n  origin-payments executor-run --wallet payer.wallet")]
     ExecutorRun(ExecutorRunArgs),
     /// Double-entry balance view.
     JournalBalance(JournalBalanceArgs),
@@ -206,16 +204,6 @@ pub struct ExecutorRunArgs {
     /// Payer wallet file (required for the native rail).
     #[arg(long)]
     pub wallet: Option<PathBuf>,
-    /// Counterparty's reachable address (native rail only; required when
-    /// a ready order rides native, unused by http402/card passes).
-    #[arg(long)]
-    pub peer_addr: Option<String>,
-    /// Standing credit line toward the payee on the native rail (decimal
-    /// string, minor units) — pre-funds the channel so multiple orders
-    /// settle against one `ENTRY_OPEN` limit instead of each re-opening a
-    /// fresh (already-exhausted) line. Optional; defaults to per-order.
-    #[arg(long)]
-    pub peer_credit: Option<String>,
     /// Compliance rule JSON: {"flag_threshold_minor": N,
     /// "reject_threshold_minor": N, "allowed_counterparties": ["..."]}.
     /// When set, each order is scored before any rail call — Reject → DLQ,

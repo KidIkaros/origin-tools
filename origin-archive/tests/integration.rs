@@ -45,40 +45,42 @@ fn roundtrip(data: &[u8], passphrase: &str, tier: &str, compressor: &str) {
     std::fs::write(&pp, passphrase).unwrap();
 
     let bin = archive_bin();
-    let out = Command::new(bin).args([
-        "archive",
-        "--input",
-        &input,
-        "--output",
-        &enc,
-        "--passphrase-file",
-        &pp,
-        "--tier",
-        tier,
-        "--compressor",
-        compressor,
-    ])
-    .output()
-    .unwrap();
+    let out = Command::new(bin)
+        .args([
+            "archive",
+            "--input",
+            &input,
+            "--output",
+            &enc,
+            "--passphrase-file",
+            &pp,
+            "--tier",
+            tier,
+            "--compressor",
+            compressor,
+        ])
+        .output()
+        .unwrap();
     assert!(
         out.status.success(),
         "archive failed: {}",
         String::from_utf8_lossy(&out.stderr)
     );
 
-    let out = Command::new(bin).args([
-        "unarchive",
-        "--input",
-        &enc,
-        "--output",
-        &output,
-        "--passphrase-file",
-        &pp,
-        "--tier",
-        tier,
-    ])
-    .output()
-    .unwrap();
+    let out = Command::new(bin)
+        .args([
+            "unarchive",
+            "--input",
+            &enc,
+            "--output",
+            &output,
+            "--passphrase-file",
+            &pp,
+            "--tier",
+            tier,
+        ])
+        .output()
+        .unwrap();
     assert!(
         out.status.success(),
         "unarchive failed: {}",
@@ -105,12 +107,22 @@ fn test_roundtrip_zstd_nano() {
 
 #[test]
 fn test_roundtrip_deflate_standard() {
-    roundtrip(b"deflate + standard tier test", "test-pass-std", "standard", "deflate");
+    roundtrip(
+        b"deflate + standard tier test",
+        "test-pass-std",
+        "standard",
+        "deflate",
+    );
 }
 
 #[test]
 fn test_roundtrip_sovereign_zstd() {
-    roundtrip(b"sovereign + zstd test", "test-pass-sol", "sovereign", "zstd");
+    roundtrip(
+        b"sovereign + zstd test",
+        "test-pass-sol",
+        "sovereign",
+        "zstd",
+    );
 }
 
 #[test]
@@ -140,31 +152,37 @@ fn test_wrong_passphrase_fails() {
     std::fs::write(&pp_wrong, "wrong-pass").unwrap();
 
     let bin = archive_bin();
-    let out = Command::new(bin).args([
-        "archive",
-        "--input", &input,
-        "--output", &enc,
-        "--passphrase-file", &pp,
-        "--tier", "nano",
-    ])
-    .output()
-    .unwrap();
+    let out = Command::new(bin)
+        .args([
+            "archive",
+            "--input",
+            &input,
+            "--output",
+            &enc,
+            "--passphrase-file",
+            &pp,
+            "--tier",
+            "nano",
+        ])
+        .output()
+        .unwrap();
     assert!(out.status.success());
 
     let out_wrong = format!("{dir}/wrong_out.txt");
-    let out = Command::new(bin).args([
-        "unarchive",
-        "--input",
-        &enc,
-        "--output",
-        &out_wrong,
-        "--passphrase-file",
-        &pp_wrong,
-        "--tier",
-        "nano",
-    ])
-    .output()
-    .unwrap();
+    let out = Command::new(bin)
+        .args([
+            "unarchive",
+            "--input",
+            &enc,
+            "--output",
+            &out_wrong,
+            "--passphrase-file",
+            &pp_wrong,
+            "--tier",
+            "nano",
+        ])
+        .output()
+        .unwrap();
     assert!(!out.status.success(), "wrong passphrase should fail");
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
@@ -255,11 +273,16 @@ fn test_cross_compressor_roundtrip() {
         let out = Command::new(bin)
             .args([
                 "archive",
-                "--input", &input,
-                "--output", &enc,
-                "--passphrase-file", &pp,
-                "--tier", "nano",
-                "--compressor", compressor,
+                "--input",
+                &input,
+                "--output",
+                &enc,
+                "--passphrase-file",
+                &pp,
+                "--tier",
+                "nano",
+                "--compressor",
+                compressor,
             ])
             .output()
             .unwrap();
@@ -269,14 +292,22 @@ fn test_cross_compressor_roundtrip() {
         let out = Command::new(bin)
             .args([
                 "unarchive",
-                "--input", &enc,
-                "--output", &output,
-                "--passphrase-file", &pp,
-                "--tier", "nano",
+                "--input",
+                &enc,
+                "--output",
+                &output,
+                "--passphrase-file",
+                &pp,
+                "--tier",
+                "nano",
             ])
             .output()
             .unwrap();
-        assert!(out.status.success(), "unarchive with {compressor} failed: {}", String::from_utf8_lossy(&out.stderr));
+        assert!(
+            out.status.success(),
+            "unarchive with {compressor} failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
 
         let recovered = std::fs::read(&output).unwrap();
         assert_eq!(data, &recovered[..], "roundtrip mismatch for {compressor}");
@@ -301,11 +332,16 @@ fn test_tampered_compressor_byte_fails() {
     let out = Command::new(bin)
         .args([
             "archive",
-            "--input", &input,
-            "--output", &enc,
-            "--passphrase-file", &pp,
-            "--tier", "nano",
-            "--compressor", "zstd",
+            "--input",
+            &input,
+            "--output",
+            &enc,
+            "--passphrase-file",
+            &pp,
+            "--tier",
+            "nano",
+            "--compressor",
+            "zstd",
         ])
         .output()
         .unwrap();
@@ -320,14 +356,21 @@ fn test_tampered_compressor_byte_fails() {
     let out = Command::new(bin)
         .args([
             "unarchive",
-            "--input", &enc,
-            "--output", &out_tampered,
-            "--passphrase-file", &pp,
-            "--tier", "nano",
+            "--input",
+            &enc,
+            "--output",
+            &out_tampered,
+            "--passphrase-file",
+            &pp,
+            "--tier",
+            "nano",
         ])
         .output()
         .unwrap();
-    assert!(!out.status.success(), "tampered compressor byte should fail");
+    assert!(
+        !out.status.success(),
+        "tampered compressor byte should fail"
+    );
 }
 
 #[test]
@@ -351,12 +394,18 @@ fn test_chunk_boundary_exact_multiple() {
     let out = Command::new(bin)
         .args([
             "archive",
-            "--input", &input,
-            "--output", &enc,
-            "--passphrase-file", &pp,
-            "--tier", "nano",
-            "--compressor", "zstd",
-            "--chunk-size", &chunk_size.to_string(),
+            "--input",
+            &input,
+            "--output",
+            &enc,
+            "--passphrase-file",
+            &pp,
+            "--tier",
+            "nano",
+            "--compressor",
+            "zstd",
+            "--chunk-size",
+            &chunk_size.to_string(),
         ])
         .output()
         .unwrap();
@@ -365,14 +414,22 @@ fn test_chunk_boundary_exact_multiple() {
     let out = Command::new(bin)
         .args([
             "unarchive",
-            "--input", &enc,
-            "--output", &output,
-            "--passphrase-file", &pp,
-            "--tier", "nano",
+            "--input",
+            &enc,
+            "--output",
+            &output,
+            "--passphrase-file",
+            &pp,
+            "--tier",
+            "nano",
         ])
         .output()
         .unwrap();
-    assert!(out.status.success(), "unarchive failed: {}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "unarchive failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
 
     let recovered = std::fs::read(&output).unwrap();
     assert_eq!(data, recovered, "roundtrip mismatch at chunk boundary");
@@ -399,11 +456,16 @@ fn test_chunk_boundary_plus_one() {
     let out = Command::new(bin)
         .args([
             "archive",
-            "--input", &input,
-            "--output", &enc,
-            "--passphrase-file", &pp,
-            "--tier", "nano",
-            "--chunk-size", &chunk_size.to_string(),
+            "--input",
+            &input,
+            "--output",
+            &enc,
+            "--passphrase-file",
+            &pp,
+            "--tier",
+            "nano",
+            "--chunk-size",
+            &chunk_size.to_string(),
         ])
         .output()
         .unwrap();
@@ -412,14 +474,22 @@ fn test_chunk_boundary_plus_one() {
     let out = Command::new(bin)
         .args([
             "unarchive",
-            "--input", &enc,
-            "--output", &output,
-            "--passphrase-file", &pp,
-            "--tier", "nano",
+            "--input",
+            &enc,
+            "--output",
+            &output,
+            "--passphrase-file",
+            &pp,
+            "--tier",
+            "nano",
         ])
         .output()
         .unwrap();
-    assert!(out.status.success(), "unarchive failed: {}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "unarchive failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
 
     let recovered = std::fs::read(&output).unwrap();
     assert_eq!(data, recovered);
@@ -446,11 +516,16 @@ fn test_chunk_boundary_minus_one() {
     let out = Command::new(bin)
         .args([
             "archive",
-            "--input", &input,
-            "--output", &enc,
-            "--passphrase-file", &pp,
-            "--tier", "nano",
-            "--chunk-size", &chunk_size.to_string(),
+            "--input",
+            &input,
+            "--output",
+            &enc,
+            "--passphrase-file",
+            &pp,
+            "--tier",
+            "nano",
+            "--chunk-size",
+            &chunk_size.to_string(),
         ])
         .output()
         .unwrap();
@@ -459,14 +534,22 @@ fn test_chunk_boundary_minus_one() {
     let out = Command::new(bin)
         .args([
             "unarchive",
-            "--input", &enc,
-            "--output", &output,
-            "--passphrase-file", &pp,
-            "--tier", "nano",
+            "--input",
+            &enc,
+            "--output",
+            &output,
+            "--passphrase-file",
+            &pp,
+            "--tier",
+            "nano",
         ])
         .output()
         .unwrap();
-    assert!(out.status.success(), "unarchive failed: {}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "unarchive failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
 
     let recovered = std::fs::read(&output).unwrap();
     assert_eq!(data, recovered);
@@ -493,11 +576,16 @@ fn test_tiny_chunk_size() {
     let out = Command::new(bin)
         .args([
             "archive",
-            "--input", &input,
-            "--output", &enc,
-            "--passphrase-file", &pp,
-            "--tier", "nano",
-            "--chunk-size", &chunk_size.to_string(),
+            "--input",
+            &input,
+            "--output",
+            &enc,
+            "--passphrase-file",
+            &pp,
+            "--tier",
+            "nano",
+            "--chunk-size",
+            &chunk_size.to_string(),
         ])
         .output()
         .unwrap();
@@ -506,14 +594,22 @@ fn test_tiny_chunk_size() {
     let out = Command::new(bin)
         .args([
             "unarchive",
-            "--input", &enc,
-            "--output", &output,
-            "--passphrase-file", &pp,
-            "--tier", "nano",
+            "--input",
+            &enc,
+            "--output",
+            &output,
+            "--passphrase-file",
+            &pp,
+            "--tier",
+            "nano",
         ])
         .output()
         .unwrap();
-    assert!(out.status.success(), "unarchive failed: {}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "unarchive failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
 
     let recovered = std::fs::read(&output).unwrap();
     assert_eq!(data, recovered);
@@ -536,10 +632,14 @@ fn test_stdin_stdout_pipeline() {
     let mut child = Command::new(bin)
         .args([
             "archive",
-            "--input", "-",
-            "--output", &enc_path,
-            "--passphrase-file", &pp,
-            "--tier", "nano",
+            "--input",
+            "-",
+            "--output",
+            &enc_path,
+            "--passphrase-file",
+            &pp,
+            "--tier",
+            "nano",
         ])
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::null())
@@ -554,14 +654,25 @@ fn test_stdin_stdout_pipeline() {
     let status = Command::new(bin)
         .args([
             "unarchive",
-            "--input", &enc_path,
-            "--output", "-",
-            "--passphrase-file", &pp,
-            "--tier", "nano",
+            "--input",
+            &enc_path,
+            "--output",
+            "-",
+            "--passphrase-file",
+            &pp,
+            "--tier",
+            "nano",
         ])
         .output()
         .unwrap();
-    assert!(status.status.success(), "unarchive via stdout failed: {}", String::from_utf8_lossy(&status.stderr));
+    assert!(
+        status.status.success(),
+        "unarchive via stdout failed: {}",
+        String::from_utf8_lossy(&status.stderr)
+    );
 
-    assert_eq!(data, status.stdout, "stdin/stdout pipeline roundtrip mismatch");
+    assert_eq!(
+        data, status.stdout,
+        "stdin/stdout pipeline roundtrip mismatch"
+    );
 }

@@ -1,0 +1,41 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout origin-secrets
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      - name: Check release metadata
+        shell: bash
+        run: |
+          set -euo pipefail
+          package_version="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n 1)"
+          man_version="$(sed -n 's/.*Origin Secrets v\([0-9.]*\).*/\1/p' man/origin-secrets.1 | head -n 1)"
+          binary_version="$(cargo run -q -- --version)"
+          test "${package_version}" = "${man_version}"
+          test "${binary_version}" = "origin-secrets ${package_version}"
+
+      - name: Run clippy
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: Run tests
+        run: cargo test --release

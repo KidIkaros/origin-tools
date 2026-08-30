@@ -10,7 +10,6 @@ origin-common = { path = "../origin-common" }
 origin-proof = { path = "../origin-proof" }
 origin-wallet = { path = "../origin-wallet" }
 origin-payments = { path = "../origin-payments" }
-stoa = { path = "../../stoa" }
 tokio = { workspace = true }
 hex = { workspace = true }
 tempfile = "3"
