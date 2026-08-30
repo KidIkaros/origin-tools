@@ -85,6 +85,25 @@ thin shell over the library — never the other way around. Each crate keeps an
 `examples/dogfood.rs` demonstrating the programmatic path. Cross-crate seams
 (like `NativeRail`) live in the lowest crate that owns the domain.
 
+#### The dogfood example convention
+
+Every crate's `examples/dogfood.rs` is the copy-paste entry point for an app
+builder — it must demonstrate the *programmatic* path, not the CLI:
+
+- **Call the typed API directly** (`origin_shard::split`,
+  `origin_schnorr::prove`), never `Cli::parse_from` + `commands::dispatch`.
+- **Assert on typed errors** (`matches!(err, ShardError::NotEnoughShards(_))`),
+  never on process exit codes or stdout text.
+- **In-memory bytes only** — no scratch files, no temp dirs, no subprocess
+  probes; storage is the caller's concern.
+- **Cover the negative paths** (tampered input, wrong key, exhausted budget)
+  so the example doubles as a behavioral contract.
+- **End with the standard line**
+  `origin-<crate> dogfood OK — usable as a foundational dependency`.
+
+Run any of them with `cargo run -p origin-<crate> --example dogfood`; CI runs
+them as regression gates for the library surface.
+
 ### 6. Authenticated Everything
 - Envelopes use AAD to authenticate header fields.
 - Stealth PoW is identity-bound (includes identity_pk in hash).
