@@ -17,36 +17,28 @@
 //! The handshake transcript is hashed for session ID derivation and
 //! downgrade protection.
 
-use x25519_dalek::{PublicKey, StaticSecret};
 use zeroize::Zeroize;
 
 use origin_crypto_sdk::hkdf_sha3_256;
 use origin_crypto_sdk::sha3_256;
 
+use crate::dh::{DhPublic, DhSecret};
 use crate::error::{ChannelError, Result};
 use crate::message::{HandshakeMessage, MSG_HANDSHAKE_1, MSG_HANDSHAKE_2, MSG_HANDSHAKE_3};
 use crate::types::SessionId;
-
-/// Generate a random X25519 static secret using the SDK's CSPRNG wrapper.
-fn random_static_secret() -> Result<StaticSecret> {
-    let mut bytes = [0u8; 32];
-    origin_crypto_sdk::fill_random(&mut bytes)
-        .map_err(|_| ChannelError::Handshake("OS CSPRNG failed".into()))?;
-    Ok(StaticSecret::from(bytes))
-}
 
 /// Domain label for shared secret derivation.
 const SS_LABEL: &str = "origin-channel:handshake:ss:v1";
 /// Handshake state machine.
 pub struct Handshake {
     /// Our static X25519 key (long-term identity key).
-    static_secret: StaticSecret,
+    static_secret: DhSecret,
     /// Our ephemeral X25519 key (generated per handshake).
-    ephemeral_secret: Option<StaticSecret>,
+    ephemeral_secret: Option<DhSecret>,
     /// Peer's static public key (known for IK pattern).
-    peer_static_pk: Option<PublicKey>,
+    peer_static_pk: Option<DhPublic>,
     /// Peer's ephemeral public key (received during handshake).
-    peer_ephemeral_pk: Option<PublicKey>,
+    peer_ephemeral_pk: Option<DhPublic>,
     /// Running transcript hash.
     transcript: Vec<u8>,
     /// Whether we are the initiator.
@@ -60,7 +52,7 @@ impl Handshake {
     /// `static_secret`: our long-term X25519 identity key.
     /// `peer_static_pk`: the peer's long-term public key (required for IK).
     /// `is_initiator`: true if we start the handshake.
-    pub fn new(static_secret: StaticSecret, peer_static_pk: PublicKey, is_initiator: bool) -> Self {
+    pub fn new(static_secret: DhSecret, peer_static_pk: DhPublic, is_initiator: bool) -> Self {
         Handshake {
             static_secret,
             ephemeral_secret: None,
@@ -80,8 +72,8 @@ impl Handshake {
             ));
         }
 
-        let eph_secret = random_static_secret()?;
-        let eph_public = PublicKey::from(&eph_secret);
+        let eph_secret = DhSecret::generate()?;
+        let eph_public = eph_secret.public();
 
         // Transcript: e_initiator
         self.transcript.extend_from_slice(eph_public.as_bytes());
@@ -111,13 +103,13 @@ impl Handshake {
         }
 
         // Record initiator's ephemeral key
-        let peer_eph = PublicKey::from(msg.ephemeral_pk);
+        let peer_eph = DhPublic::from_bytes(msg.ephemeral_pk);
         self.peer_ephemeral_pk = Some(peer_eph);
         self.transcript.extend_from_slice(&msg.ephemeral_pk);
 
         // Generate our ephemeral key
-        let eph_secret = random_static_secret()?;
-        let eph_public = PublicKey::from(&eph_secret);
+        let eph_secret = DhSecret::generate()?;
+        let eph_public = eph_secret.public();
         self.transcript.extend_from_slice(eph_public.as_bytes());
         self.ephemeral_secret = Some(eph_secret);
 
@@ -144,7 +136,7 @@ impl Handshake {
             )));
         }
 
-        let peer_eph = PublicKey::from(msg.ephemeral_pk);
+        let peer_eph = DhPublic::from_bytes(msg.ephemeral_pk);
         self.peer_ephemeral_pk = Some(peer_eph);
         self.transcript.extend_from_slice(&msg.ephemeral_pk);
 
@@ -196,7 +188,7 @@ impl Handshake {
             .peer_static_pk
             .ok_or(ChannelError::Handshake("no peer static key".into()))?;
 
-        // IK pattern: four DH operations
+        // IK pattern: four DH operations (via the crate's single X25519 seam)
         let dh_ee = eph_secret.diffie_hellman(&peer_eph);
         let dh_es = if self.is_initiator {
             eph_secret.diffie_hellman(&peer_static)
@@ -210,12 +202,13 @@ impl Handshake {
         };
         let dh_ss = self.static_secret.diffie_hellman(&peer_static);
 
-        // Concatenate all DH outputs + transcript
+        // Concatenate all DH outputs + transcript (DH outputs are raw
+        // 32-byte shared secrets from the dh seam)
         let mut ikm = Vec::with_capacity(128 + self.transcript.len());
-        ikm.extend_from_slice(dh_ee.as_bytes());
-        ikm.extend_from_slice(dh_es.as_bytes());
-        ikm.extend_from_slice(dh_se.as_bytes());
-        ikm.extend_from_slice(dh_ss.as_bytes());
+        ikm.extend_from_slice(&dh_ee);
+        ikm.extend_from_slice(&dh_es);
+        ikm.extend_from_slice(&dh_se);
+        ikm.extend_from_slice(&dh_ss);
         ikm.extend_from_slice(&self.transcript);
 
         let mut okm = [0u8; 32];
@@ -251,9 +244,9 @@ impl Handshake {
 mod tests {
     use super::*;
 
-    fn make_keypair() -> (StaticSecret, PublicKey) {
-        let secret = random_static_secret().unwrap();
-        let public = PublicKey::from(&secret);
+    fn make_keypair() -> (DhSecret, DhPublic) {
+        let secret = DhSecret::generate().unwrap();
+        let public = secret.public();
         (secret, public)
     }
 
@@ -294,7 +287,7 @@ mod tests {
         let (_carol_static, carol_pk) = make_keypair();
 
         // Alice-Bob handshake
-        let mut ab_alice = Handshake::new(random_static_secret().unwrap(), bob_pk, true);
+        let mut ab_alice = Handshake::new(DhSecret::generate().unwrap(), bob_pk, true);
         let mut ab_bob = Handshake::new(bob_static, alice_pk, false);
         let m1 = ab_alice.start().unwrap();
         let m2 = ab_bob.process_msg1(&m1).unwrap();
@@ -303,7 +296,7 @@ mod tests {
         let (ss_ab, _) = ab_alice.finalize().unwrap();
 
         // Alice-Carol handshake (different ephemeral, different peer)
-        let mut ac_alice = Handshake::new(random_static_secret().unwrap(), carol_pk, true);
+        let mut ac_alice = Handshake::new(DhSecret::generate().unwrap(), carol_pk, true);
         let m1c = ac_alice.start().unwrap();
         // We can't complete without Carol, but the secret would differ
         // Just verify the handshake state is different

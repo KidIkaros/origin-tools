@@ -4,25 +4,17 @@
 
 use std::path::PathBuf;
 
-use x25519_dalek::{PublicKey, StaticSecret};
-
 use origin_crypto_sdk::sha3_256;
 
 use crate::cli::{Commands, DemoArgs, FingerprintArgs, KeygenArgs};
 use crate::codec;
+use crate::dh::DhSecret;
 use crate::handshake::Handshake;
 use crate::message::{ChannelMessage, MSG_DATA};
 use crate::ratchet;
 use crate::session::RatchetedSession;
 use crate::types::ChannelState;
 use crate::usage_limit::AeadLimits;
-
-/// Generate a random X25519 static secret using the SDK's CSPRNG wrapper.
-fn random_x25519_secret() -> Result<StaticSecret, String> {
-    let mut bytes = [0u8; 32];
-    origin_crypto_sdk::fill_random(&mut bytes).map_err(|_| "OS CSPRNG failed".to_string())?;
-    Ok(StaticSecret::from(bytes))
-}
 
 pub fn dispatch(cli: crate::cli::Cli) -> Result<(), String> {
     match cli.command {
@@ -55,8 +47,8 @@ fn cmd_keygen(args: KeygenArgs) -> Result<(), String> {
             .map_err(|e| format!("cannot create {}: {e}", parent.display()))?;
     }
 
-    let secret = random_x25519_secret()?;
-    let public = PublicKey::from(&secret);
+    let secret = DhSecret::generate().map_err(|e| e.to_string())?;
+    let public = secret.public();
 
     let out = serde_json::json!({
         "version": 1,
@@ -100,11 +92,11 @@ fn cmd_fingerprint(args: FingerprintArgs) -> Result<(), String> {
 fn cmd_demo(args: DemoArgs) -> Result<(), String> {
     eprintln!("=== origin-channel handshake demo ===\n");
 
-    // Generate two identity keypairs
-    let alice_secret = random_x25519_secret()?;
-    let alice_pk = PublicKey::from(&alice_secret);
-    let bob_secret = random_x25519_secret()?;
-    let bob_pk = PublicKey::from(&bob_secret);
+    // Generate two identity keypairs (via the crate's single X25519 seam)
+    let alice_secret = DhSecret::generate().map_err(|e| e.to_string())?;
+    let alice_pk = alice_secret.public();
+    let bob_secret = DhSecret::generate().map_err(|e| e.to_string())?;
+    let bob_pk = bob_secret.public();
 
     eprintln!("Alice X25519: {}", hex::encode(alice_pk.as_bytes()));
     eprintln!("Bob   X25519: {}", hex::encode(bob_pk.as_bytes()));

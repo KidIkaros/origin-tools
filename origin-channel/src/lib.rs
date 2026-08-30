@@ -10,6 +10,7 @@
 pub mod cli;
 pub mod codec;
 pub mod commands;
+pub mod dh;
 pub mod error;
 pub mod handshake;
 pub mod message;
