@@ -117,8 +117,6 @@ fn cmd_verify(args: VerifyArgs) -> Result<(), String> {
 
     let content = std::fs::read_to_string(&args.proof)
         .map_err(|e| format!("cannot read '{}': {e}", args.proof))?;
-    let proof_json: serde_json::Value =
-        serde_json::from_str(&content).map_err(|e| format!("cannot parse proof: {e}"))?;
 
     let proof = crate::api::proof_from_json(&content).map_err(|e| e.to_string())?;
 
@@ -126,15 +124,14 @@ fn cmd_verify(args: VerifyArgs) -> Result<(), String> {
     let message = hex::decode(args.message.trim()).map_err(|e| format!("invalid message: {e}"))?;
 
     match crate::api::verify(&proof, &public, &message).map_err(|e| e.to_string())? {
-        Ok(true) => {
+        true => {
             println!("OK");
             Ok(())
         }
-        Ok(false) => {
+        false => {
             println!("INVALID");
             std::process::exit(1);
         }
-        Err(e) => Err(format!("verification error: {e}")),
     }
 }
 

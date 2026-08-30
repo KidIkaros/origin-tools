@@ -2,92 +2,44 @@
 
 //! Dogfood: `origin-schnorr` as a foundational dependency.
 //!
-//! EC-Schnorr zero-knowledge proofs through the public `cli` +
-//! `commands` dispatch: keygen → prove (knowledge of a secret over a
-//! message) → verify, plus a batch-verify path. Negative verification
-//! is checked through the SDK (`ec_schnorr::verify`) because the CLI
-//! exits on invalid proofs by design.
+//! EC-Schnorr zero-knowledge proofs through the typed library API
+//! (`origin_schnorr::api`): keygen → prove (knowledge of a secret over a
+//! message) → verify, plus batch-verify and JSON round-trip. Negative
+//! paths return typed results — no process exits, no stdout parsing.
 //!
 //! Run with: `cargo run -p origin-schnorr --example dogfood`
 
-use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, Ordering};
-
-use clap::Parser;
-use origin_crypto_sdk::ec_schnorr;
-use origin_schnorr::cli::Cli;
-use origin_schnorr::commands;
-
-static COUNTER: AtomicU64 = AtomicU64::new(0);
-
-fn scratch(label: &str) -> PathBuf {
-    let base = std::env::temp_dir().join("origin-dogfood-schnorr");
-    let dir = base.join(format!(
-        "{label}-{}-{}",
-        std::process::id(),
-        COUNTER.fetch_add(1, Ordering::Relaxed)
-    ));
-    std::fs::create_dir_all(&dir).expect("create scratch dir");
-    dir
-}
-
-fn dispatch(args: &[&str]) -> Result<(), String> {
-    let cli = Cli::parse_from(args);
-    commands::dispatch(cli)
-}
+use origin_schnorr::{batch_verify, keypair, proof_from_json, prove, verify};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let dir = scratch("run");
+    let message = b"knowledge-of-secret message";
 
-    // Deterministic keypair from a seed.
-    let (secret, public) = ec_schnorr::generate_keypair(&[0x42u8; 32]);
-    let secret_hex = hex::encode(secret);
-    let public_hex = hex::encode(&public);
+    // ── keygen: deterministic from a 32-byte seed ─────────────────────
+    let (secret, public) = keypair(&[0x42u8; 32]);
+    let (secret2, public2) = keypair(&[0x42u8; 32]);
+    assert_eq!(secret, secret2, "keygen must be deterministic");
+    assert_eq!(public, public2);
+    println!("✓ keypair (deterministic from seed, 33-byte compressed public key)");
 
-    // ── keygen: same seed → same keypair ─────────────────────────────
-    dispatch(&[
-        "origin-schnorr",
-        "keygen",
-        "--seed=4242424242424242424242424242424242424242424242424242424242424242",
-    ])?;
-    println!("✓ keygen (deterministic from seed)");
-
-    // ── prove → verify round-trip ────────────────────────────────────
-    let msg_path = dir.join("msg.bin");
-    std::fs::write(&msg_path, b"knowledge-of-secret message")?;
-    dispatch(&[
-        "origin-schnorr",
-        "prove",
-        &format!("--secret={secret_hex}"),
-        &format!("--public={public_hex}"),
-        &format!("--input={}", msg_path.display()),
-    ])?;
-    println!("✓ prove (ZK proof printed above)");
-
-    // Rebuild the proof via the SDK (what cmd_prove calls internally)
-    // so we can hand cmd_verify a real proof file.
-    let proof = ec_schnorr::prove(&secret, &public, b"knowledge-of-secret message")
-        .map_err(|e| e.to_string())?;
-    let proof_json = serde_json::json!({
-        "commitment": hex::encode(&proof.commitment),
-        "response": hex::encode(&proof.response),
-        "public_key": public_hex,
-    });
-    let proof_file = dir.join("proof.json");
-    std::fs::write(&proof_file, serde_json::to_string_pretty(&proof_json)?)?;
-
-    // cmd_verify takes the message as HEX.
-    dispatch(&[
-        "origin-schnorr",
-        "verify",
-        &format!("--proof={}", proof_file.display()),
-        &format!("--public={public_hex}"),
-        &format!("--message={}", hex::encode(b"knowledge-of-secret message")),
-    ])?;
+    // ── prove → verify round-trip ─────────────────────────────────────
+    let proof = prove(&secret, &public, message)?;
+    assert!(verify(&proof, &public, message)?, "proof must verify");
     println!("✓ prove → verify round-trip");
 
-    // ── negative path (SDK-level, since the CLI exits on invalid) ────
-    let tampered = ec_schnorr::EcSchnorrProof {
+    // ── JSON round-trip (the wire shape the CLI writes) ───────────────
+    let json = serde_json::json!({
+        "commitment": hex::encode(&proof.commitment),
+        "response": hex::encode(&proof.response),
+        "public_key": hex::encode(&public),
+    });
+    let parsed = proof_from_json(&json.to_string())?;
+    assert_eq!(parsed.commitment, proof.commitment);
+    assert_eq!(parsed.response, proof.response);
+    assert!(verify(&parsed, &public, message)?);
+    println!("✓ proof_from_json round-trip verifies");
+
+    // ── negative paths are typed results, not exits ───────────────────
+    let tampered = origin_crypto_sdk::ec_schnorr::EcSchnorrProof {
         commitment: proof.commitment.clone(),
         response: {
             let mut r = proof.response.clone();
@@ -95,36 +47,30 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             r
         },
     };
-    assert!(
-        !ec_schnorr::verify(&tampered, &public, b"knowledge-of-secret message").unwrap(),
-        "tampered proof must not verify"
-    );
-    assert!(
-        !ec_schnorr::verify(&proof, &public, b"a different message").unwrap(),
-        "wrong message must not verify"
-    );
-    println!("✓ tampered proof / wrong message rejected (SDK verify)");
+    assert!(!verify(&tampered, &public, message)?, "tampered proof must not verify");
+    assert!(!verify(&proof, &public, b"a different message")?, "wrong message must not verify");
+    let (_, pk2) = keypair(&[0x07u8; 32]);
+    assert!(!verify(&proof, &pk2, message)?, "wrong key must not verify");
+    println!("✓ tampered proof / wrong message / wrong key all rejected (Ok(false))");
 
-    // ── batch verify (3 proofs, all valid) ───────────────────────────
-    let mut items = Vec::new();
+    // ── batch verify (3 proofs, all valid) ────────────────────────────
+    let mut proofs = Vec::new();
+    let mut keys = Vec::new();
+    let mut msgs = Vec::new();
     for i in 0..3u8 {
-        let (sk, pk) = ec_schnorr::generate_keypair(&[i; 32]);
+        let (sk, pk) = keypair(&[i; 32]);
         let msg = format!("batch message {i}").into_bytes();
-        let p = ec_schnorr::prove(&sk, &pk, &msg).map_err(|e| e.to_string())?;
-        items.push(serde_json::json!({
-            "proof": { "commitment": hex::encode(&p.commitment), "response": hex::encode(&p.response) },
-            "public_key": hex::encode(&pk),
-            "message": hex::encode(&msg),
-        }));
+        proofs.push(prove(&sk, &pk, &msg)?);
+        keys.push(pk);
+        msgs.push(msg);
     }
-    let batch_file = dir.join("batch.json");
-    std::fs::write(&batch_file, serde_json::to_string(&items)?)?;
-    dispatch(&[
-        "origin-schnorr",
-        "batch-verify",
-        &format!("--input={}", batch_file.display()),
-    ])?;
-    println!("✓ batch-verify (3 proofs)");
+    assert!(batch_verify(&proofs, &keys, &msgs)?, "batch must verify");
+    println!("✓ batch_verify (3 proofs, single call)");
+
+    // ── typed validation errors ───────────────────────────────────────
+    let err = batch_verify(&proofs, &keys, &[]).unwrap_err();
+    assert!(err.to_string().contains("length mismatch"));
+    println!("✓ length mismatch rejected → SchnorrError::Validation");
 
     println!("\norigin-schnorr dogfood OK — usable as a foundational dependency");
     Ok(())
