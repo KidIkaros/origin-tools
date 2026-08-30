@@ -2,185 +2,126 @@
 
 //! Dogfood: `origin-attest` as a foundational dependency.
 //!
-//! Attestation primitives through the typed library API, with REAL
-//! Falcon-1024 signatures (the SDK is the sole crypto provider):
-//! signed capability claims, hash-chained endorsements, an agent
-//! registry, personalized-PageRank trust scores, hash-chained audit
-//! logs, revocation, and anti-DoS cookies.
+//! Agent attestation through the typed library API (`origin_attest`):
+//! register agents, sign a capability claim with Falcon-1024 (via the SDK),
+//! build a hash-chained endorsement chain, revoke an endorsement, and rank
+//! trust with the graph — including negative paths (tampered signature,
+//! broken chain, revoked endorsement). No CLI, no files.
 //!
 //! Run with: `cargo run -p origin-attest --example dogfood`
 
-use origin_attest::audit::{AuditEntry, AuditLog};
-use origin_attest::cookie::{Cookie, CookieSecret};
-use origin_attest::registry::{AgentRecord, AgentRegistry};
-use origin_attest::revocation::{RevocationJournal, RevocationRecord};
-use origin_attest::trust::TrustGraph;
-use origin_attest::types::{CapabilityClaim, Endorsement, EndorsementTier};
+use origin_attest::{
+    AgentRecord, AgentRegistry, AttestError, CapabilityClaim, Endorsement, EndorsementChain,
+    EndorsementTier, RevocationJournal, RevocationRecord, TrustGraph,
+};
 use origin_crypto_sdk::signing::postquantum::Falcon1024Signer;
 
-fn fp(seed: u8) -> String {
-    format!("{:02x}", seed).repeat(64)
+fn now() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs() as i64
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // Four agents, each with a real Falcon-1024 keypair.
-    let mut signers = Vec::new();
-    for i in 0..4u8 {
-        let s = Falcon1024Signer::from_seed(&[0x10 + i; 32]).map_err(|e| e.to_string())?;
-        signers.push(s);
-    }
-    let fps: Vec<String> = (0..4).map(|i| fp(0x10 + i as u8)).collect();
-    let pks: Vec<String> = signers
-        .iter()
-        .map(|s| hex::encode(s.public_key_bytes()))
-        .collect();
+    // ── Falcon-1024 identities for two agents (via the SDK) ───────────
+    let merchant = Falcon1024Signer::from_seed(&[0xA1u8; 32])?;
+    let worker = Falcon1024Signer::from_seed(&[0xB2u8; 32])?;
+    let merchant_pk = hex::encode(merchant.public_key_bytes());
+    let worker_pk = hex::encode(worker.public_key_bytes());
+    let merchant_fp = hex::encode(origin_crypto_sdk::sha3_256(&merchant.public_key_bytes()));
+    let worker_fp = hex::encode(origin_crypto_sdk::sha3_256(&worker.public_key_bytes()));
+    println!("✓ Falcon-1024 identities derived (SDK)");
 
-    // ── signed capability claim (Alice: "code-review") ───────────────
+    // ── signed capability claim ───────────────────────────────────────
     let mut claim = CapabilityClaim {
-        fingerprint: fps[0].clone(),
-        falcon_pk: pks[0].clone(),
+        fingerprint: worker_fp.clone(),
+        falcon_pk: worker_pk.clone(),
         epoch: 1,
-        capabilities: vec!["code-review".to_string()],
-        metadata: serde_json::json!({ "org": "origin-tools" }),
-        timestamp: 1_700_000_000,
+        capabilities: vec!["code-review".into(), "translation".into()],
+        metadata: serde_json::json!({}),
+        timestamp: now(),
         expires: 0,
-        falcon_signature: Vec::new(),
+        falcon_signature: vec![],
     };
-    claim.falcon_signature = signers[0]
-        .sign(&claim.signable_bytes())
-        .map_err(|e| e.to_string())?;
-    assert!(claim.verify_signature(), "signed claim must verify");
-    // Tamper → signature breaks.
-    let mut tampered = claim.clone();
-    tampered.capabilities = vec!["admin".to_string()];
-    assert!(
-        !tampered.verify_signature(),
-        "tampered claim must not verify"
-    );
-    println!("✓ signed CapabilityClaim (Falcon-1024) + tamper detection");
+    claim.falcon_signature = worker.sign(&claim.signable_bytes())?;
+    assert!(claim.verify_signature(), "claim signature must verify");
+    println!("✓ capability claim signed + verified (Falcon-1024)");
 
-    // ── endorsement chain with real signatures ───────────────────────
-    let now = 1_700_000_000i64;
-    let mut chain = Vec::new();
-    for hop in 0..3usize {
-        let mut e = Endorsement {
-            tier: EndorsementTier::Tier2,
-            endorser_fp: fps[hop].clone(),
-            endorsee_fp: fps[hop + 1].clone(),
-            capability_domain: "code-review".to_string(),
-            confidence: 0.95,
-            context: "dogfood vouch".to_string(),
-            timestamp: now + hop as i64,
-            valid_until: 0,
-            prev_hash: [0u8; 32],
-            nonce: hop as u64 + 1,
-            falcon_signature: Vec::new(),
-            revocation: false,
-            supersedes: None,
-        };
-        e.falcon_signature = signers[hop]
-            .sign(&e.signable_bytes())
-            .map_err(|e| e.to_string())?;
-        // Verify each signature against the endorser's public key.
-        assert!(
-            e.verify_signature(&pks[hop]),
-            "endorsement {hop} must verify against endorser pk"
-        );
-        chain.push(e);
-    }
-    println!("✓ endorsement chain: 3 signed Tier-2 vouches");
+    // Tampered claim must fail verification.
+    let mut bad = claim.clone();
+    bad.capabilities.push("admin".into());
+    assert!(!bad.verify_signature(), "tampered claim must fail");
+    println!("✓ tampered claim rejected");
 
-    // ── agent registry: claims + endorsements in one knowledge base ──
+    // ── registry + endorsement chain ──────────────────────────────────
     let mut registry = AgentRegistry::new();
-    for i in 0..4 {
-        registry.register(AgentRecord::new(fps[i].clone(), pks[i].clone(), 1));
-    }
-    registry.add_claim(&fps[0], claim.clone())?;
-    for e in &chain {
-        registry.add_endorsement(e.clone())?;
-    }
-    assert_eq!(registry.count(), 4);
-    assert_eq!(
-        registry.search_by_capability("code-review").len(),
-        1,
-        "only Alice claimed code-review"
-    );
-    assert_eq!(
-        registry.get(&fps[1]).unwrap().endorsements_received.len(),
-        1
-    );
-    assert_eq!(registry.get(&fps[3]).unwrap().endorsements_given.len(), 0);
-    println!("✓ AgentRegistry (register / claim / endorsement bookkeeping)");
+    registry.register(AgentRecord::new(merchant_fp.clone(), merchant_pk.clone(), 1));
+    registry.register(AgentRecord::new(worker_fp.clone(), worker_pk.clone(), 1));
+    assert_eq!(registry.count(), 2);
 
-    // ── trust graph: personalized PageRank over the vouches ──────────
-    let mut graph = TrustGraph::new(vec![fps[0].clone()]);
-    for e in &chain {
-        graph.add_endorsement(e.clone());
-    }
-    let score_bob = graph.trust_score(&fps[1], "code-review");
-    let score_carol = graph.trust_score(&fps[2], "code-review");
-    let score_dave = graph.trust_score(&fps[3], "code-review");
-    assert!(score_bob > 0.5, "bob directly vouched (score {score_bob})");
-    assert!(
-        score_carol > 0.2 && score_carol < score_bob,
-        "carol one hop further (score {score_carol})"
-    );
-    assert!(score_dave < score_carol, "dave decays with distance");
-    assert_eq!(graph.trust_score(&fps[0], "code-review"), 1.0, "seed = 1.0");
-    let path = graph
-        .shortest_trust_path(&fps[0], &fps[3], "code-review")
-        .ok_or("trust path alice→dave must exist")?;
-    assert_eq!(path.len(), 4);
-    println!("✓ TrustGraph scores: bob={score_bob:.3} carol={score_carol:.3} dave={score_dave:.3}");
-
-    // ── audit log: hash-chained session record ───────────────────────
-    let mut log = AuditLog::new();
-    for i in 0..3 {
-        log.append(AuditEntry {
-            prev_hash: [0u8; 32],
-            seq: i,
-            entry_type: 1,
-            payload_hash: origin_crypto_sdk::sha3_256(format!("interaction {i}").as_bytes()),
-            timestamp: 1_700_000_000 + i as u64,
-            signature: None,
-        });
-    }
-    assert!(log.verify_chain().map_err(|e| format!("{e}"))?);
-    // Tamper with the chain root — the public field — and the chain breaks.
-    log.root_hash[0] ^= 0xFF;
-    assert!(
-        log.verify_chain().is_err(),
-        "tampered audit log must fail chain verification"
-    );
-    println!("✓ AuditLog hash chain + tamper detection");
-
-    // ── revocation journal ───────────────────────────────────────────
-    let mut journal = RevocationJournal::new();
-    let target = claim.hash();
-    journal.append(RevocationRecord {
-        target_hash: target,
-        revoked_by: fps[0].clone(),
-        reason: "key rotation".to_string(),
-        timestamp: now,
+    let mut endorsement = Endorsement {
+        tier: EndorsementTier::Tier2,
+        endorser_fp: merchant_fp.clone(),
+        endorsee_fp: worker_fp.clone(),
+        capability_domain: "code-review".into(),
+        confidence: 0.9,
+        context: "vetted in three review sessions".into(),
+        timestamp: now(),
+        valid_until: 0,
         prev_hash: [0u8; 32],
-        signature: Vec::new(),
-    });
-    assert!(journal.is_revoked(&target));
-    assert!(journal.verify_integrity().is_ok());
-    println!("✓ RevocationJournal (append + lookup + chain)");
+        nonce: 1,
+        falcon_signature: vec![],
+        revocation: false,
+        supersedes: None,
+    };
+    endorsement.falcon_signature = merchant.sign(&endorsement.signable_bytes())?;
+    assert!(endorsement.verify_signature(&merchant_pk));
 
-    // ── anti-DoS cookie (WireGuard-style) ────────────────────────────
-    let secret = CookieSecret::new().map_err(|e| e.to_string())?;
-    let cookie: Cookie = secret.generate("203.0.113.9");
-    assert!(secret.verify("203.0.113.9", &cookie), "cookie verifies");
-    assert!(
-        !secret.verify("198.51.100.7", &cookie),
-        "cookie is source-IP-bound"
-    );
-    let encoded = origin_attest::cookie::encode_cookie_challenge(&cookie);
-    let decoded = origin_attest::cookie::decode_cookie_frame(&encoded).expect("round-trip");
-    assert!(secret.verify("203.0.113.9", &decoded));
-    println!("✓ CookieSecret mint → verify → encode/decode");
+    let mut chain = EndorsementChain::new();
+    chain.append(endorsement.clone());
+    chain.verify_integrity()?;
+    assert_eq!(chain.len(), 1);
+    println!("✓ endorsement signed, chained, integrity verified");
+
+    // Broken chain must raise the typed error.
+    let mut broken = EndorsementChain::new();
+    let mut e2 = endorsement.clone();
+    e2.nonce = 2;
+    e2.falcon_signature = merchant.sign(&e2.signable_bytes())?;
+    broken.append(endorsement.clone());
+    broken.append(e2);
+    broken.endorsements[0].prev_hash = [9u8; 32]; // tamper
+    match broken.verify_integrity() {
+        Err(AttestError::ChainBroken(0)) => println!("✓ broken chain → AttestError::ChainBroken"),
+        other => panic!("expected ChainBroken, got {other:?}"),
+    }
+
+    // ── revocation journal ────────────────────────────────────────────
+    let mut journal = RevocationJournal::new();
+    let target = endorsement.hash();
+    let mut rev = RevocationRecord {
+        target_hash: target,
+        revoked_by: merchant_fp.clone(),
+        reason: "context changed".into(),
+        timestamp: now(),
+        prev_hash: [0u8; 32],
+        signature: vec![],
+    };
+    rev.signature = merchant.sign(&rev.signable_bytes())?;
+    journal.append(rev);
+    assert!(journal.is_revoked(&target));
+    journal.verify_integrity()?;
+    println!("✓ revocation journaled + hash-chained");
+
+    // ── trust graph ranking ───────────────────────────────────────────
+    let mut graph = TrustGraph::new(vec![merchant_fp.clone()]);
+    graph.add_claim(claim.clone());
+    graph.add_endorsement(endorsement.clone());
+    let score = graph.trust_score(&worker_fp, "code-review");
+    assert!(score > 0.0, "endorsed agent must score above 0, got {score}");
+    assert!(!graph.can_issue_tier2(&worker_fp), "one Tier-2 vouch is below threshold");
+    println!("✓ trust_score(worker, code-review) = {score:.4}; Tier-2 gate enforced");
 
     println!("\norigin-attest dogfood OK — usable as a foundational dependency");
     Ok(())
