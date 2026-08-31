@@ -327,8 +327,8 @@ impl RelayServer {
         initiator_pk.copy_from_slice(&msg1.payload[..32]);
 
         let mut hs = origin_channel::handshake::Handshake::new(
-            self.relay_static.clone(),
-            x25519_dalek::PublicKey::from(initiator_pk),
+            origin_channel::dh::DhSecret::from_bytes(self.relay_static.to_bytes()),
+            origin_channel::dh::DhPublic::from_bytes(initiator_pk),
             false,
         );
         let mut msg2 = hs

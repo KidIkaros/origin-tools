@@ -17,7 +17,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use tokio::sync::Mutex;
-use x25519_dalek::{PublicKey, StaticSecret};
+use x25519_dalek::StaticSecret;
 
 use origin_channel::handshake::Handshake;
 use origin_channel::message::HandshakeMessage;
@@ -239,8 +239,12 @@ impl Endpoint {
         is_initiator: bool,
     ) -> Result<SecurePipe> {
         let (hs, msg1_bytes, msg2_bytes, msg3_bytes) = if is_initiator {
-            let peer_pk = PublicKey::from(peer_hint.transport_pk_bytes()?);
-            let mut hs = Handshake::new(self.static_secret.clone(), peer_pk, true);
+            let peer_pk = origin_channel::dh::DhPublic::from_bytes(peer_hint.transport_pk_bytes()?);
+            let mut hs = Handshake::new(
+                origin_channel::dh::DhSecret::from_bytes(self.static_secret.to_bytes()),
+                peer_pk,
+                true,
+            );
 
             // msg1: start, then embed our static key for the responder.
             let mut msg1 = hs
@@ -280,8 +284,8 @@ impl Endpoint {
 
             let initiator_static = initiator_static_from_msg1(&msg1)?;
             let mut hs = Handshake::new(
-                self.static_secret.clone(),
-                PublicKey::from(initiator_static),
+                origin_channel::dh::DhSecret::from_bytes(self.static_secret.to_bytes()),
+                origin_channel::dh::DhPublic::from_bytes(initiator_static),
                 false,
             );
             let msg2 = hs
@@ -560,6 +564,7 @@ mod backoff_tests {
 mod tests {
     use super::*;
     use crate::transport::TcpTransport;
+    use x25519_dalek::PublicKey;
 
     fn seed_a() -> [u8; 32] {
         [0xA1; 32]

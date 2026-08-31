@@ -176,8 +176,8 @@ impl RelayClient {
         let secret = crate::identity::derive_transport_secret(&seed, device_index)?;
         let relay_pk = relay_keys.transport_pk_bytes()?;
         let mut hs = origin_channel::handshake::Handshake::new(
-            secret.clone(),
-            x25519_dalek::PublicKey::from(relay_pk),
+            origin_channel::dh::DhSecret::from_bytes(secret.to_bytes()),
+            origin_channel::dh::DhPublic::from_bytes(relay_pk),
             true,
         );
         let mut msg1 = hs
