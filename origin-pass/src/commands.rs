@@ -5,25 +5,26 @@
 //! Each `cmd_*` function returns `Result<(), String>` and is wired to
 //! the matching CLI subcommand in `main.rs`.
 //!
-//! # In-memory vault state
+//! # Unlock model (v0.5)
 //!
-//! v0.4.x uses a per-process `Mutex<Option<Vault>>` for cross-command
-//! state (set by `cmd_unlock`, cleared by `cmd_lock`). The
-//! `--session-token` flag is currently a no-op (the persisted token
-//! model is followup work — see `DESIGN.md` §6). Each command that
-//! needs the vault will re-unlock automatically if the in-process state
-//! is empty.
+//! There is **no in-process vault state**. Every command that needs the
+//! vault unlocks it fresh from disk via [`unlock_vault_with_args`] using
+//! either `--passphrase-file` or a persisted `--session-token` (written
+//! by `unlock`, revoked by `lock`). This keeps each CLI invocation
+//! self-contained and safe to script; the session token is the only
+//! cross-process credential.
 
-use std::path::PathBuf;
-use std::sync::Mutex;
+use std::path::{Path, PathBuf};
 
 use origin_common::{resolve_passphrase, MemoryTier};
 
 use crate::cli::{
-    AddArgs, ChangePassphraseArgs, CodeArgs, ExportQrArgs, GetArgs, ImportQrArgs, InitArgs,
-    ListArgs, LockArgs, RmArgs, UnlockArgs,
+    AddArgs, ChangePassphraseArgs, CodeArgs, ExportQrArgs, GenerateArgs, GetArgs, ImportQrArgs,
+    InitArgs, ListArgs, LockAllArgs, LockArgs, RmArgs, TokensArgs, TokensCommand, TokensFormat,
+    UnlockArgs,
 };
 use crate::vault::{self, EntryPayload, Vault};
+use crate::{generate, ledger, ocra_suite, session};
 
 /// Conversion from the CLI-facing `HashAlgorithm` enum (clap ValueEnum)
 /// to the SDK's `drbg::otp::HashAlgorithm`. Both share the same variants
@@ -44,31 +45,6 @@ impl From<crate::cli::HashAlgorithm> for origin_crypto_sdk::drbg::otp::HashAlgor
 }
 
 // ──────────────────────────────────────────────────────────────────────
-// In-process vault state (set by `cmd_unlock`, cleared by `cmd_lock`)
-// ──────────────────────────────────────────────────────────────────────
-
-static CURRENT_VAULT: Mutex<Option<Vault>> = Mutex::new(None);
-
-/// Helper: take the in-process unlocked vault, returning Err if absent.
-fn take_vault() -> Result<Vault, String> {
-    let mut guard = CURRENT_VAULT
-        .lock()
-        .map_err(|e| format!("vault state mutex poisoned: {e}"))?;
-    guard.take().ok_or_else(|| {
-        "vault is not unlocked in this process — run `origin-pass unlock` first (DESIGN.md §6 step 3)".to_string()
-    })
-}
-
-/// Helper: stash the unlocked vault back into process-global state.
-fn put_vault(v: Vault) -> Result<(), String> {
-    let mut guard = CURRENT_VAULT
-        .lock()
-        .map_err(|e| format!("vault state mutex poisoned: {e}"))?;
-    *guard = Some(v);
-    Ok(())
-}
-
-// ──────────────────────────────────────────────────────────────────────
 // Passphrase + path helpers
 // ──────────────────────────────────────────────────────────────────────
 
@@ -76,6 +52,79 @@ fn put_vault(v: Vault) -> Result<(), String> {
 /// reading interactively (used by `cmd_init` and `cmd_change_passphrase`).
 pub fn resolve_passphrase_confirm(file: &Option<String>) -> Result<String, String> {
     origin_common::resolve_passphrase_confirm(file.as_deref())
+}
+
+/// Value of `$ORIGIN_PASS_TOKEN`, if set and non-empty. Explicit
+/// `--session-token` / `--passphrase-file` flags always win over it
+/// (see [`unlock_vault_with_args`] and [`cmd_lock`]).
+fn session_token_env() -> Option<String> {
+    std::env::var("ORIGIN_PASS_TOKEN")
+        .ok()
+        .filter(|s| !s.is_empty())
+}
+
+/// True when a session token is available from the flag or from
+/// `$ORIGIN_PASS_TOKEN`. Used by pre-flight checks that must reject
+/// tokenless invocations before hitting the interactive prompt.
+fn session_token_available(flag: Option<&Path>) -> bool {
+    flag.is_some() || session_token_env().is_some()
+}
+
+/// Unlock the vault using either a passphrase or a persisted session
+/// token. Clap enforces the mutual exclusion between `--passphrase-file`
+/// and `--session-token`; this helper is the single place both sources
+/// are turned into an unlocked `Vault`. `$ORIGIN_PASS_TOKEN` is used as
+/// a fallback token source when neither flag is given (explicit flags
+/// win). When the token carries an auto-rotate policy and is running
+/// low on lifetime, it is refreshed in place as a side effect of use.
+fn unlock_vault_with_args(
+    vault_raw: &str,
+    passphrase_file: Option<&str>,
+    session_token: Option<&Path>,
+) -> Result<Vault, String> {
+    let path = resolve_vault_path(vault_raw)?;
+    // Explicit flags win over the env var: --passphrase-file suppresses
+    // the env fallback, and the clap conflict handles flag-vs-flag.
+    let token = match session_token {
+        Some(p) => Some(p.to_path_buf()),
+        None if passphrase_file.is_some() => None,
+        None => session_token_env().map(PathBuf::from),
+    };
+    match token {
+        Some(token_raw) => {
+            // Bare names resolve into ~/.origin/tokens (see session.rs).
+            let raw = token_raw.to_string_lossy();
+            let token_path = session::resolve_token_path(&raw)?;
+            let master = session::read_session_token(&token_path)?;
+            // Auto-rotate on use (if the token's policy says so), so a
+            // long-running workflow never dies mid-session.
+            session::maybe_auto_rotate(&token_path)?;
+            vault::unlock_vault_with_key(&path, master.as_ref())
+        }
+        None => {
+            let passphrase = resolve_passphrase(passphrase_file)?;
+            vault::unlock_vault(&path, &passphrase)
+        }
+    }
+}
+
+/// Build the auto-rotate policy from `unlock` flags. Errors when the
+/// policy-specific flags are given without `--auto-rotate`.
+fn build_auto_rotate(args: &UnlockArgs) -> Result<Option<session::AutoRotateConfig>, String> {
+    if !args.auto_rotate {
+        if args.auto_rotate_threshold.is_some() || args.auto_rotate_ttl.is_some() {
+            return Err(
+                "--auto-rotate-threshold and --auto-rotate-ttl require --auto-rotate".to_string(),
+            );
+        }
+        return Ok(None);
+    }
+    Ok(Some(session::AutoRotateConfig {
+        threshold: args
+            .auto_rotate_threshold
+            .unwrap_or(session::DEFAULT_AUTO_ROTATE_THRESHOLD_SECS),
+        ttl: args.auto_rotate_ttl.unwrap_or(args.session_ttl),
+    }))
 }
 
 /// Resolve `--vault <path>` with `~/` expansion against `$HOME`.
@@ -271,12 +320,10 @@ pub fn cmd_init(args: InitArgs) -> Result<(), String> {
     Ok(())
 }
 
-/// Unlock the vault into in-process session memory.
-///
-/// **Note**: v0.4.x has no persisted session tokens; this just verifies
-/// the passphrase and primes the in-process state. Any subsequent
-/// command in the same process can operate on the unlocked vault.
-/// `--session-token` is currently accepted but ignored.
+/// Unlock the vault. Verifies the passphrase and, with
+/// `--session-token <path>`, writes a persisted session token file that
+/// lets other processes unlock without the passphrase until it expires
+/// (see `session.rs`). Nothing is retained in-process.
 pub fn cmd_unlock(args: UnlockArgs) -> Result<(), String> {
     // Validate the user-supplied tier string for early failure on typo;
     // the on-disk header is authoritative so this value is unused.
@@ -285,18 +332,37 @@ pub fn cmd_unlock(args: UnlockArgs) -> Result<(), String> {
     let passphrase = resolve_passphrase(args.passphrase_file.as_deref())?;
     let vault_obj = vault::unlock_vault(&path, &passphrase)?;
 
+    if let Some(token_raw) = args.session_token.as_ref() {
+        let auto_rotate = build_auto_rotate(&args)?;
+        let token_path = session::resolve_token_path(&token_raw.to_string_lossy())?;
+        session::write_session_token(
+            &token_path,
+            &vault_obj.master_key,
+            args.session_ttl,
+            Some(&path),
+            auto_rotate,
+        )?;
+        eprintln!(
+            "session token written: {} (ttl={}s{})",
+            token_path.display(),
+            args.session_ttl,
+            if auto_rotate.is_some() {
+                ", auto-rotate"
+            } else {
+                ""
+            },
+        );
+    }
+
     let entry_count = vault_obj.entries.len();
     let tier = match vault_obj.header.kdf_tier {
         MemoryTier::Nano => "nano",
         MemoryTier::Standard => "standard",
         MemoryTier::Sovereign => "sovereign",
     };
-    if args.session_token.is_some() {
-        eprintln!(
-            "warning: --session-token is not yet implemented in v0.4.x; unlock is per-process only"
-        );
-    }
-    put_vault(vault_obj)?;
+    // Nothing is retained in-process; `unlock` only verifies the
+    // passphrase and optionally writes a session token.
+    drop(vault_obj);
     eprintln!(
         "unlocked {} (tier={}, {entry_count} entries)",
         path.display(),
@@ -305,12 +371,338 @@ pub fn cmd_unlock(args: UnlockArgs) -> Result<(), String> {
     Ok(())
 }
 
-/// Drop the in-process unlocked vault. v0.4.x has no persisted state
-/// to clear (unlock is per-process).
-pub fn cmd_lock(_args: LockArgs) -> Result<(), String> {
-    take_vault()?; // drops it
-    eprintln!("vault state cleared (no persisted state in v0.4.x — unlock again to operate)");
+/// Revoke a persisted session token file. Since v0.5 there is no
+/// in-process vault state to drop — the session token is the only
+/// cross-process credential, so `lock` without one has nothing to do
+/// and errors rather than silently no-oping.
+pub fn cmd_lock(args: LockArgs) -> Result<(), String> {
+    // The token comes from the flag or, failing that, $ORIGIN_PASS_TOKEN
+    // (the env var makes `lock` usable in scripts that never name a token).
+    let token_raw = args
+        .session_token
+        .as_ref()
+        .map(|p| p.to_string_lossy().to_string())
+        .or_else(session_token_env)
+        .ok_or_else(|| {
+            "nothing to lock: v0.5 keeps no in-process vault state. \
+             Pass --session-token <path> (or set $ORIGIN_PASS_TOKEN) to revoke a \
+             persisted session token."
+                .to_string()
+        })?;
+    let token_path = session::resolve_token_path(&token_raw)?;
+    session::revoke_session_token(&token_path)?;
+    eprintln!("session token revoked: {}", token_path.display());
     Ok(())
+}
+
+/// Revoke every persisted session token in the store, optionally only
+/// those bound to a specific vault (`--vault <path>`). Like bare
+/// `lock`, this errors when nothing was revoked rather than silently
+/// no-oping, so scripts can't mistake "nothing happened" for success.
+pub fn cmd_lock_all(args: LockAllArgs) -> Result<(), String> {
+    let dir = session::resolve_store_dir(&args.dir)?;
+    let tokens = session::list_tokens(&dir)?;
+    let vault_filter = args.vault.as_deref().map(resolve_vault_path).transpose()?;
+
+    let mut revoked = 0usize;
+    for t in &tokens {
+        if let Some(target) = &vault_filter {
+            let bound = t.vault.as_deref().map(Path::new);
+            if bound != Some(target.as_path()) {
+                continue;
+            }
+        }
+        session::revoke_session_token(&t.path)?;
+        revoked += 1;
+    }
+
+    if revoked == 0 {
+        return Err(match &vault_filter {
+            Some(v) => format!(
+                "nothing to lock: no session tokens bound to {} in {}",
+                v.display(),
+                dir.display()
+            ),
+            None => format!("nothing to lock: no session tokens in {}", dir.display()),
+        });
+    }
+    eprintln!("locked: revoked {revoked} session token(s)");
+    Ok(())
+}
+
+/// Manage persisted session tokens without touching the vault:
+/// `tokens list|revoke|revoke-all`. The token store defaults to
+/// `~/.origin/tokens` and is overridable with `--dir` (mirroring the
+/// `origin-identity` store convention). No unlock is required — the
+/// commands only read/delete token files.
+pub fn cmd_tokens(args: TokensArgs) -> Result<(), String> {
+    match args.command {
+        TokensCommand::List(list) => {
+            let dir = session::resolve_store_dir(&list.dir)?;
+            let all = session::list_tokens(&dir)?;
+            let now = unix_now();
+            // With `--remaining <mins>`, keep only tokens that expire
+            // within the window (expired tokens always match); unreadable
+            // files have no expiry and are excluded from the filter.
+            let tokens: Vec<&session::TokenInfo> = match list.remaining {
+                Some(mins) => all
+                    .iter()
+                    .filter(|t| expires_within(t, now, mins))
+                    .collect(),
+                None => all.iter().collect(),
+            };
+            match list.format {
+                TokensFormat::Json => {
+                    let rows: Vec<serde_json::Value> = tokens
+                        .iter()
+                        .map(|t| {
+                            serde_json::json!({
+                                "name": t.name,
+                                "token_id": t.token_id,
+                                "created_at": t.created_at,
+                                "expires_at": t.expires_at,
+                                "expires_in_secs": if t.unreadable {
+                                    serde_json::Value::Null
+                                } else {
+                                    serde_json::json!(t.expires_at - now)
+                                },
+                                "vault": t.vault,
+                                "status": token_status(t),
+                                "auto_rotate": t.auto_rotate,
+                                "auto_rotate_threshold": t.auto_rotate_threshold,
+                                "auto_rotate_ttl": t.auto_rotate_ttl,
+                                "unreadable": t.unreadable,
+                            })
+                        })
+                        .collect();
+                    println!(
+                        "{}",
+                        serde_json::to_string_pretty(&rows)
+                            .map_err(|e| format!("cannot serialize token listing: {e}"))?
+                    );
+                }
+                TokensFormat::Table => {
+                    println!(
+                        "{:<24} {:<10} {:<20} {:<20} {:<12} {:<12} {:<10} {:<10}",
+                        "name",
+                        "token_id",
+                        "created (UTC)",
+                        "expires (UTC)",
+                        "remaining",
+                        "auto",
+                        "vault",
+                        "status"
+                    );
+                    println!("{}", "-".repeat(122));
+                    for t in &tokens {
+                        let id: String = if t.unreadable {
+                            "-".to_string()
+                        } else {
+                            let full = &t.token_id;
+                            if full.len() <= 10 {
+                                full.clone()
+                            } else {
+                                format!("{}…", &full[..10])
+                            }
+                        };
+                        let vault = t.vault.as_deref().unwrap_or("-");
+                        let remaining = if t.unreadable {
+                            "-".to_string()
+                        } else {
+                            fmt_remaining(t.expires_at)
+                        };
+                        let auto = match (t.auto_rotate_threshold, t.auto_rotate_ttl) {
+                            (Some(th), Some(ttl)) => {
+                                format!("{}→{}", fmt_duration(th), fmt_duration(ttl))
+                            }
+                            _ => "-".to_string(),
+                        };
+                        let status = token_status(t);
+                        println!(
+                            "{:<24} {:<10} {:<20} {:<20} {:<12} {:<12} {:<10} {:<10}",
+                            t.name,
+                            id,
+                            fmt_utc(t.created_at),
+                            fmt_utc(t.expires_at),
+                            remaining,
+                            auto,
+                            vault,
+                            status,
+                        );
+                    }
+                }
+            }
+            if list.remaining.is_some() {
+                // Scriptable alert: nonzero exit when near-expiry tokens
+                // exist (so cron/shell can notice), zero when none.
+                if tokens.is_empty() {
+                    eprintln!(
+                        "no tokens expire within {}m in {}",
+                        list.remaining.unwrap_or(0),
+                        dir.display()
+                    );
+                    return Ok(());
+                }
+                std::process::exit(1);
+            }
+            if tokens.is_empty() {
+                eprintln!("no session tokens in {}", dir.display());
+            } else {
+                let valid = tokens.iter().filter(|t| token_status(t) == "valid").count();
+                let expired = tokens.iter().filter(|t| token_status(t) == "expired").count();
+                let unreadable = tokens.iter().filter(|t| t.unreadable).count();
+                eprintln!("summary: {valid} valid, {expired} expired, {unreadable} unreadable");
+            }
+            Ok(())
+        }
+        TokensCommand::Revoke(revoke) => {
+            let dir = session::resolve_store_dir(&revoke.dir)?;
+            let path = session::resolve_token_path_in(&dir, &revoke.name)?;
+            session::revoke_session_token(&path)?;
+            eprintln!("revoked: {}", revoke.name);
+            Ok(())
+        }
+        TokensCommand::Rotate(rotate) => {
+            let dir = session::resolve_store_dir(&rotate.dir)?;
+            let path = session::resolve_token_path_in(&dir, &rotate.name)?;
+            let token = session::rotate_session_token(&path, rotate.ttl)?;
+            eprintln!(
+                "rotated {}: token id {}, expires {} (ttl={}s)",
+                rotate.name,
+                token.token_id,
+                fmt_utc(token.expires_at),
+                token.expires_at - token.created_at,
+            );
+            Ok(())
+        }
+        TokensCommand::Renew(renew) => {
+            let dir = session::resolve_store_dir(&renew.dir)?;
+            let path = session::resolve_token_path_in(&dir, &renew.name)?;
+            let token = session::renew_session_token(&path, renew.ttl)?;
+            eprintln!(
+                "renewed {}: same bearer key, expires {} (+{}s)",
+                renew.name,
+                fmt_utc(token.expires_at),
+                renew.ttl.unwrap_or_else(|| {
+                    (token.expires_at - token.created_at).max(1) as u64
+                }),
+            );
+            Ok(())
+        }
+        TokensCommand::RevokeAll(revoke_all) => {
+            let dir = session::resolve_store_dir(&revoke_all.dir)?;
+            let revoked = session::revoke_all_tokens(&dir, revoke_all.expired_only)?;
+            if revoke_all.expired_only {
+                eprintln!("revoked {revoked} expired token(s)");
+            } else {
+                eprintln!("revoked {revoked} token(s)");
+            }
+            Ok(())
+        }
+        TokensCommand::Prune(prune) => {
+            let dir = session::resolve_store_dir(&prune.dir)?;
+            let now = unix_now();
+            // Expired tokens are dead weight; unreadable (corrupt/foreign)
+            // files can never unlock anything, so prune both. Valid tokens
+            // are never touched.
+            let all = session::list_tokens(&dir)?;
+            let doomed: Vec<&session::TokenInfo> = all
+                .iter()
+                .filter(|t| t.unreadable || now >= t.expires_at)
+                .collect();
+            if doomed.is_empty() {
+                eprintln!(
+                    "nothing to prune: no expired or unreadable tokens in {}",
+                    dir.display()
+                );
+                return Ok(());
+            }
+            for t in &doomed {
+                session::revoke_session_token(&t.path)?;
+                eprintln!(
+                    "pruned: {} ({})",
+                    t.name,
+                    if t.unreadable { "unreadable" } else { "expired" }
+                );
+            }
+            eprintln!("pruned {} token(s) from {}", doomed.len(), dir.display());
+            Ok(())
+        }
+    }
+}
+
+/// Lifecycle status of a token for `tokens list`.
+fn token_status(t: &session::TokenInfo) -> &'static str {
+    if t.unreadable {
+        return "unreadable";
+    }
+    if unix_now() >= t.expires_at {
+        "expired"
+    } else {
+        "valid"
+    }
+}
+
+/// True when the token's remaining lifetime is under `mins` minutes
+/// (expired tokens always match; unreadable files never do). The
+/// predicate behind `tokens list --remaining <mins>`.
+fn expires_within(t: &session::TokenInfo, now: i64, mins: u64) -> bool {
+    !t.unreadable && t.expires_at - now < (mins as i64) * 60
+}
+
+/// Compact human duration, e.g. `45s`, `15m`, `2h`, `8h`, `3d` — used
+/// for the auto-rotate column (`15m→8h` = threshold→fresh ttl).
+fn fmt_duration(secs: u64) -> String {
+    if secs >= 86_400 {
+        format!("{}d", secs / 86_400)
+    } else if secs >= 3600 {
+        format!("{}h", secs / 3600)
+    } else if secs >= 60 {
+        format!("{}m", secs / 60)
+    } else {
+        format!("{secs}s")
+    }
+}
+
+/// Compact human-readable time remaining until `expires_at`, e.g.
+/// `3d 4h`, `2h 5m`, `45m`, `10s`; `expired` once past it.
+fn fmt_remaining(expires_at: i64) -> String {
+    let diff = expires_at - unix_now();
+    if diff <= 0 {
+        return "expired".to_string();
+    }
+    let (d, h, m, s) = (diff / 86_400, (diff % 86_400) / 3600, (diff % 3600) / 60, diff % 60);
+    if d > 0 {
+        format!("{d}d {h}h")
+    } else if h > 0 {
+        format!("{h}h {m}m")
+    } else if m > 0 {
+        format!("{m}m {s}s")
+    } else {
+        format!("{s}s")
+    }
+}
+
+/// Format a unix timestamp as `YYYY-MM-DD HH:MM:SS` UTC without pulling
+/// in a date library (Howard Hinnant's civil-from-days algorithm).
+fn fmt_utc(ts: i64) -> String {
+    if ts == 0 {
+        return "-".to_string();
+    }
+    let days = ts.div_euclid(86_400);
+    let secs = ts.rem_euclid(86_400);
+    let (h, m, s) = (secs / 3600, (secs % 3600) / 60, secs % 60);
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z.rem_euclid(146_097);
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let mth = if mp < 10 { mp + 3 } else { mp - 9 };
+    let year = if mth <= 2 { y + 1 } else { y };
+    format!("{year:04}-{mth:02}-{d:02} {h:02}:{m:02}:{s:02}")
 }
 
 /// Add or update an entry in the vault.
@@ -332,9 +724,7 @@ pub fn cmd_add(args: AddArgs) -> Result<(), String> {
     // Defer Otp/Ocra to their dedicated flows.
     match args.r#type {
         crate::cli::EntryType::Ocra => {
-            return Err(
-                "OCRA entries must be added via the `cmd_code --ocra` flow (which seeds the entry automatically); manual `add --type ocra` is not yet wired".to_string(),
-            );
+            return cmd_add_ocra(args);
         }
         crate::cli::EntryType::Otp => {
             return cmd_add_otp(args);
@@ -343,8 +733,11 @@ pub fn cmd_add(args: AddArgs) -> Result<(), String> {
     }
 
     let path = resolve_vault_path(&args.vault)?;
-    let passphrase = resolve_passphrase(args.passphrase_file.as_deref())?;
-    let mut vault_obj = vault::unlock_vault(&path, &passphrase)?;
+    let mut vault_obj = unlock_vault_with_args(
+        &args.vault,
+        args.passphrase_file.as_deref(),
+        args.session_token.as_deref(),
+    )?;
 
     // Pre-flight: --force vs. duplicate. Refuse accidental clobbering.
     let is_overwrite = vault_obj.entries.contains_key(&args.name);
@@ -405,8 +798,11 @@ fn cmd_add_otp(args: AddArgs) -> Result<(), String> {
     }
 
     let path = resolve_vault_path(&args.vault)?;
-    let passphrase = resolve_passphrase(args.passphrase_file.as_deref())?;
-    let mut vault_obj = vault::unlock_vault(&path, &passphrase)?;
+    let mut vault_obj = unlock_vault_with_args(
+        &args.vault,
+        args.passphrase_file.as_deref(),
+        args.session_token.as_deref(),
+    )?;
 
     // Pre-flight: --force vs. duplicate.
     let is_overwrite = vault_obj.entries.contains_key(&args.name);
@@ -460,11 +856,127 @@ fn cmd_add_otp(args: AddArgs) -> Result<(), String> {
     Ok(())
 }
 
+/// Add an OCRA (RFC 6287) challenge-response entry to the vault.
+///
+/// Requires `--suite <OCRA-1:...>` (validated by `ocra_suite::parse_suite`)
+/// and a binary key via `--secret-file` / `--secret-stdin` (OCRA keys are
+/// raw bytes, so the text-oriented interactive prompt is not offered).
+/// The key must be ≥ 16 bytes (RFC 6287 §10 floor, enforced by the SDK at
+/// compute time; we check early for a clear error).
+fn cmd_add_ocra(args: AddArgs) -> Result<(), String> {
+    let suite_str = args.suite.clone().ok_or_else(|| {
+        "--type ocra requires --suite <OCRA-1:HOTP-<hash>-<digits>:<data>> (e.g. \
+         OCRA-1:HOTP-SHA1-6:QN08)"
+            .to_string()
+    })?;
+    let suite = ocra_suite::parse_suite(&suite_str)?;
+
+    // SDK limitation guard: the OCRA P slot is hashed with SHA-1 only
+    // (see `ocra_suite` module docs). Rejecting P-SHA256/512 suites up
+    // front is honest — silently computing a non-conformant P slot would
+    // produce codes the verifier rejects (or worse, codes that verify
+    // against a weak P).
+    if let Some(pin_algo) = suite.pin_algo {
+        if pin_algo != origin_crypto_sdk::drbg::otp::HashAlgorithm::Sha1 {
+            return Err(format!(
+                "suite `{suite_str}` uses P-{:?}, but origin-crypto-sdk computes the OCRA P slot \
+                 with SHA-1 only — use a P-SHA1 suite (or no PIN) for now",
+                pin_algo
+            ));
+        }
+    }
+    // Session data (S<nnn>) has no CLI input surface yet; reject rather
+    // than compute a response with an empty session the verifier expects
+    // to be populated.
+    if suite.session_len.is_some() {
+        return Err(format!(
+            "suite `{suite_str}` requires session data (S<nnn>), which the CLI does not support \
+             yet — use a suite without a session component"
+        ));
+    }
+
+    // Binary key source: OCRA keys are raw bytes, not text. Read the
+    // file/stdin as bytes, stripping one trailing newline (so keys piped
+    // via `printf '...' |` or echo'd files work like the text path).
+    let key: Vec<u8> = if let Some(file) = args.secret_file.as_deref() {
+        std::fs::read(file).map_err(|e| format!("cannot read OCRA key file {file}: {e}"))?
+    } else if args.secret_stdin {
+        let mut buf = Vec::new();
+        use std::io::Read;
+        std::io::stdin()
+            .read_to_end(&mut buf)
+            .map_err(|e| format!("cannot read OCRA key from stdin: {e}"))?;
+        buf
+    } else {
+        return Err(
+            "OCRA keys must be supplied via --secret-file <path> or --secret-stdin (raw bytes); \
+             interactive entry is not supported for binary keys"
+                .to_string(),
+        );
+    };
+    let key = key
+        .strip_suffix(b"\n")
+        .map(|k| k.strip_suffix(b"\r").unwrap_or(k).to_vec())
+        .unwrap_or(key);
+    if key.len() < 16 {
+        return Err(format!(
+            "OCRA key is {} bytes; RFC 6287 requires at least 16 bytes",
+            key.len()
+        ));
+    }
+
+    let path = resolve_vault_path(&args.vault)?;
+    let mut vault_obj = unlock_vault_with_args(
+        &args.vault,
+        args.passphrase_file.as_deref(),
+        args.session_token.as_deref(),
+    )?;
+
+    let is_overwrite = vault_obj.entries.contains_key(&args.name);
+    if is_overwrite && !args.force {
+        return Err(format!(
+            "entry already exists: {} (use --force to overwrite)",
+            args.name
+        ));
+    }
+
+    let algo = match suite.algo {
+        origin_crypto_sdk::drbg::otp::HashAlgorithm::Sha1 => "SHA1",
+        origin_crypto_sdk::drbg::otp::HashAlgorithm::Sha256 => "SHA256",
+        origin_crypto_sdk::drbg::otp::HashAlgorithm::Sha512 => "SHA512",
+    };
+    let now = unix_now();
+    let mut payload =
+        EntryPayload::ocra(&args.name, &key, &suite_str, suite.digits, algo, args.counter);
+    payload.url = args.url.clone();
+    payload.notes = args.notes.clone();
+    payload.updated_at = now;
+    if is_overwrite {
+        if let Some(prev) = vault_obj.entries.get(&args.name) {
+            payload.created_at = prev.created_at;
+        }
+    } else {
+        payload.created_at = now;
+    }
+
+    vault_obj.add_entry(payload)?;
+    vault::persist_vault(&path, &vault_obj)?;
+
+    eprintln!(
+        "{}: {} (entry: ocra, suite: {suite_str})",
+        if is_overwrite { "updated" } else { "added" },
+        args.name
+    );
+    Ok(())
+}
+
 /// Retrieve a single entry by name.
 pub fn cmd_get(args: GetArgs) -> Result<(), String> {
-    let path = resolve_vault_path(&args.vault)?;
-    let passphrase = resolve_passphrase(args.passphrase_file.as_deref())?;
-    let vault_obj = vault::unlock_vault(&path, &passphrase)?;
+    let vault_obj = unlock_vault_with_args(
+        &args.vault,
+        args.passphrase_file.as_deref(),
+        args.session_token.as_deref(),
+    )?;
 
     let entry = vault_obj
         .entries
@@ -478,9 +990,11 @@ pub fn cmd_get(args: GetArgs) -> Result<(), String> {
 
 /// List all entries (names + types, NO secrets).
 pub fn cmd_list(args: ListArgs) -> Result<(), String> {
-    let path = resolve_vault_path(&args.vault)?;
-    let passphrase = resolve_passphrase(args.passphrase_file.as_deref())?;
-    let vault_obj = vault::unlock_vault(&path, &passphrase)?;
+    let vault_obj = unlock_vault_with_args(
+        &args.vault,
+        args.passphrase_file.as_deref(),
+        args.session_token.as_deref(),
+    )?;
 
     let mut entries: Vec<_> = vault_obj.entries.iter().collect();
     entries.sort_by(|a, b| a.0.cmp(b.0));
@@ -497,8 +1011,11 @@ pub fn cmd_list(args: ListArgs) -> Result<(), String> {
 /// Remove an entry from the vault.
 pub fn cmd_rm(args: RmArgs) -> Result<(), String> {
     let path = resolve_vault_path(&args.vault)?;
-    let passphrase = resolve_passphrase(args.passphrase_file.as_deref())?;
-    let mut vault_obj = vault::unlock_vault(&path, &passphrase)?;
+    let mut vault_obj = unlock_vault_with_args(
+        &args.vault,
+        args.passphrase_file.as_deref(),
+        args.session_token.as_deref(),
+    )?;
 
     if vault_obj.entries.remove(&args.name).is_none() {
         return Err(format!("entry not found: {}", args.name));
@@ -535,16 +1052,19 @@ fn cmd_code_otp(args: CodeArgs) -> Result<(), String> {
              Pass --vault <path> --passphrase-file <path> to unlock the vault."
             .to_string());
     }
-    if args.passphrase_file.is_none() {
-        return Err("TOTP/HOTP code requires a passphrase to unlock the vault. \
-             Pass --passphrase-file <path> or run from a terminal for \
-             interactive unlock."
+    if args.passphrase_file.is_none() && !session_token_available(args.session_token.as_deref()) {
+        return Err("TOTP/HOTP code requires a passphrase or session token to unlock the vault. \
+             Pass --passphrase-file <path> or --session-token <path> (or set $ORIGIN_PASS_TOKEN), \
+             or run from a terminal for interactive unlock."
             .to_string());
     }
 
     let path = resolve_vault_path(&args.vault)?;
-    let passphrase = resolve_passphrase(args.passphrase_file.as_deref())?;
-    let mut vault_obj = vault::unlock_vault(&path, &passphrase)?;
+    let mut vault_obj = unlock_vault_with_args(
+        &args.vault,
+        args.passphrase_file.as_deref(),
+        args.session_token.as_deref(),
+    )?;
 
     let entry = vault_obj
         .entries
@@ -663,18 +1183,24 @@ fn cmd_code_otp(args: CodeArgs) -> Result<(), String> {
 }
 
 /// OCRA (RFC 6287) challenge-response code path.
+///
+/// **Suite-driven**: the entry's stored OCRASuite string is the source
+/// of truth for the algorithm, digit count, challenge format, counter /
+/// timestamp mode, and PIN requirement. CLI overrides (`--algo`,
+/// `--digits`, `--counter`) still take precedence. For challenge-based
+/// suites the replay-nonce ledger refuses to re-issue a response for an
+/// already-used challenge unless `--force` is given.
 fn cmd_code_ocra(args: CodeArgs) -> Result<(), String> {
-    let challenge = args
-        .challenge
-        .as_deref()
-        .ok_or_else(|| "--ocra requires --challenge <STRING>".to_string())?;
-
-    let algo = args.algo.clone().unwrap_or(crate::cli::HashAlgorithm::Sha1);
-    let digits = args.digits.unwrap_or(6);
-    let counter = args.counter.unwrap_or(0);
-
-    // Path 1: testing escape hatch (raw key from file).
+    // Path 1: testing escape hatch (raw key from file). Explicit
+    // algo/digits/counter, no suite, no ledger.
     if let Some(key_path) = args.key_file.as_ref() {
+        let challenge = args
+            .challenge
+            .as_deref()
+            .ok_or_else(|| "--ocra --key-file requires --challenge <STRING>".to_string())?;
+        let algo = args.algo.clone().unwrap_or(crate::cli::HashAlgorithm::Sha1);
+        let digits = args.digits.unwrap_or(6);
+        let counter = args.counter.unwrap_or(0);
         let code = compute_ocra_code(key_path, challenge, counter, digits, algo)?;
         return print_ocra_code(&code, args.quiet);
     }
@@ -695,45 +1221,148 @@ fn cmd_code_ocra(args: CodeArgs) -> Result<(), String> {
                 .to_string(),
         );
     }
-    if args.passphrase_file.is_none() {
+    if args.passphrase_file.is_none() && !session_token_available(args.session_token.as_deref()) {
         return Err(
-            "OCRA from vault requires a passphrase to unlock the vault. \
-             Pass --passphrase-file <path> or run from a terminal for \
-             interactive unlock; for tests, prefer --key-file <path>."
+            "OCRA from vault requires a passphrase or session token to unlock the vault. \
+             Pass --passphrase-file <path> or --session-token <path> (or set $ORIGIN_PASS_TOKEN); \
+             for tests, prefer --key-file <path>."
                 .to_string(),
         );
     }
 
     let path = resolve_vault_path(&args.vault)?;
-    let passphrase = resolve_passphrase(args.passphrase_file.as_deref())?;
-    let vault_obj = vault::unlock_vault(&path, &passphrase)?;
+    let mut vault_obj = unlock_vault_with_args(
+        &args.vault,
+        args.passphrase_file.as_deref(),
+        args.session_token.as_deref(),
+    )?;
 
-    let secret = vault_obj
-        .get_ocra_key(&args.name)
+    let entry = vault_obj
+        .get_ocra_entry(&args.name)
         .map_err(|e| format!("OCRA vault lookup failed: {e}"))?;
+    let ocra_json = entry.ocra.as_ref().ok_or_else(|| {
+        format!(
+            "entry '{}' has no OCRA metadata stored (data corruption?)",
+            args.name
+        )
+    })?;
+    let suite_str = ocra_json
+        .get("suite")
+        .and_then(|s| s.as_str())
+        .ok_or_else(|| {
+            format!(
+                "entry '{}' has no stored OCRA suite — re-add with `add --type ocra --suite <...>`",
+                args.name
+            )
+        })?;
+    let suite = ocra_suite::parse_suite(suite_str)?;
+    let key = entry.secret.clone().ok_or_else(|| {
+        format!(
+            "entry '{}' has no secret bytes stored (data corruption?)",
+            args.name
+        )
+    })?;
 
+    // Effective parameters: CLI overrides > stored suite.
+    let algo = match args.algo {
+        Some(a) => a,
+        None => match suite.algo {
+            origin_crypto_sdk::drbg::otp::HashAlgorithm::Sha1 => crate::cli::HashAlgorithm::Sha1,
+            origin_crypto_sdk::drbg::otp::HashAlgorithm::Sha256 => crate::cli::HashAlgorithm::Sha256,
+            origin_crypto_sdk::drbg::otp::HashAlgorithm::Sha512 => crate::cli::HashAlgorithm::Sha512,
+        },
+    };
+    let digits = args.digits.unwrap_or(suite.digits);
+
+    // Counter: only suites with a `C` component use a non-zero counter;
+    // the stored counter auto-increments per use (like HOTP) unless the
+    // caller overrides with --counter.
+    let stored_counter: u64 = ocra_json.get("counter").and_then(|c| c.as_u64()).unwrap_or(0);
+    let counter = if suite.has_counter {
+        args.counter.unwrap_or(stored_counter)
+    } else {
+        0
+    };
+
+    // Timestamp: suites with `T<num><unit>` use the current time in
+    // time-steps (RFC §6.3).
+    let timestamp = suite.timestamp_step_secs.map(|step_secs| {
+        let now = unix_now().max(0) as u64;
+        now / step_secs
+    });
+
+    // Challenge: validated + encoded against the suite's format.
+    ocra_suite::validate_challenge(&suite, args.challenge.as_deref())?;
+    let challenge_bytes = ocra_suite::encode_challenge(&suite, args.challenge.as_deref())?;
+
+    // PIN: suites with `P<hash>` require --pin; suites without one reject it.
+    if suite.pin_algo.is_some() && args.pin.is_none() {
+        return Err(format!(
+            "suite `{suite_str}` requires --pin <STRING> (P- component)"
+        ));
+    }
+    if suite.pin_algo.is_none() && args.pin.is_some() {
+        return Err(format!(
+            "suite `{suite_str}` has no PIN component — omit --pin"
+        ));
+    }
+
+    // Replay-nonce ledger: applies to challenge-based suites without a
+    // timestamp (time-based replay is bounded by the time window).
+    let ledger_applies = suite.challenge.kind != crate::ocra_suite::ChallengeKind::None
+        && timestamp.is_none();
+    if ledger_applies {
+        let fp = ledger::challenge_fingerprint(&challenge_bytes, counter);
+        let replay = ledger::record_use(&path, &args.name, &fp, unix_now(), args.force)?;
+        if replay && !args.force {
+            return Err(format!(
+                "OCRA replay detected: challenge `{}` (counter {counter}) was already used for \
+                 entry '{}' — refusing to re-issue. Pass --force to override.",
+                args.challenge.as_deref().unwrap_or(""),
+                args.name
+            ));
+        }
+    }
+
+    // Compute.
     use origin_crypto_sdk::ocra::{ocra, OcraRequest};
     let sdk_algo: origin_crypto_sdk::drbg::otp::HashAlgorithm = algo.into();
     let req = OcraRequest {
         counter,
-        challenge: challenge.as_bytes(),
-        password: None,
+        challenge: &challenge_bytes,
+        password: args.pin.as_deref().map(|p| p.as_bytes()),
         session: b"",
-        timestamp: None,
+        timestamp,
     };
-    let resp = ocra(&secret, &req, digits, sdk_algo).map_err(|e| e.to_string())?;
+    let resp = ocra(&key, &req, digits, sdk_algo).map_err(|e| e.to_string())?;
     let code = OcraCode {
         value: resp.format_code(),
         numeric: resp.value,
         digits: resp.digits,
     };
+
+    // Counter auto-increment + persist for C-suites (only when the
+    // stored counter was used — an explicit --counter is a verification
+    // call and must not advance the stored state).
+    if suite.has_counter && args.counter.is_none() {
+        if let Some(entry_mut) = vault_obj.entries.get_mut(&args.name) {
+            if let Some(ref mut ocra_json_mut) = entry_mut.ocra {
+                ocra_json_mut["counter"] = serde_json::json!(stored_counter + 1);
+            }
+            entry_mut.updated_at = unix_now();
+        }
+        vault::persist_vault(&path, &vault_obj)?;
+    }
+
     print_ocra_code(&code, args.quiet)
 }
 
 pub fn cmd_export_qr(args: ExportQrArgs) -> Result<(), String> {
-    let path = resolve_vault_path(&args.vault)?;
-    let passphrase = resolve_passphrase(args.passphrase_file.as_deref())?;
-    let vault_obj = vault::unlock_vault(&path, &passphrase)?;
+    let vault_obj = unlock_vault_with_args(
+        &args.vault,
+        args.passphrase_file.as_deref(),
+        args.session_token.as_deref(),
+    )?;
 
     let entry = vault_obj
         .entries
@@ -876,8 +1505,11 @@ pub fn cmd_import_qr(args: ImportQrArgs) -> Result<(), String> {
         args.uri.clone()
     };
 
-    let passphrase = resolve_passphrase(args.passphrase_file.as_deref())?;
-    let mut vault_obj = vault::unlock_vault(&path, &passphrase)?;
+    let mut vault_obj = unlock_vault_with_args(
+        &args.vault,
+        args.passphrase_file.as_deref(),
+        args.session_token.as_deref(),
+    )?;
 
     // Parse `otpauth://<type>/<label>?<query>`.
     let after_scheme = raw_uri
@@ -1024,6 +1656,14 @@ pub fn cmd_import_qr(args: ImportQrArgs) -> Result<(), String> {
 }
 
 pub fn cmd_change_passphrase(args: ChangePassphraseArgs) -> Result<(), String> {
+    if args.session_token.is_some() {
+        return Err(
+            "--session-token is not supported with change-passphrase: rotating the passphrase \
+             re-encrypts the vault under a new master key, which invalidates any existing token. \
+             Use --passphrase-file."
+                .to_string(),
+        );
+    }
     let path = resolve_vault_path(&args.vault)?;
     // Read the existing tier from the vault header BEFORE unlocking (we
     // need the tier to call `change_vault_passphrase`, but the function
@@ -1068,6 +1708,40 @@ pub fn cmd_change_passphrase(args: ChangePassphraseArgs) -> Result<(), String> {
         path.display(),
         tier
     );
+    Ok(())
+}
+
+/// Generate a random password or word-based passphrase.
+///
+/// The secret goes to **stdout** (so it can be piped into
+/// `add --secret-stdin`); the entropy estimate goes to **stderr** so it
+/// never contaminates a pipeline.
+pub fn cmd_generate(args: GenerateArgs) -> Result<(), String> {
+    if args.passphrase {
+        let words = args.words;
+        if !(1..=64).contains(&words) {
+            return Err(format!("--words out of range (1..=64): {words}"));
+        }
+        let phrase = generate::generate_passphrase(words)?;
+        let bits = generate::passphrase_entropy_bits(words);
+        println!("{phrase}");
+        eprintln!("entropy: {bits:.1} bits ({words} words × {:.1} bits/word)", (generate::WORDLIST.len() as f64).log2());
+        return Ok(());
+    }
+
+    let length = args.length;
+    if !(generate::MIN_LENGTH..=generate::MAX_LENGTH).contains(&length) {
+        return Err(format!(
+            "--length out of range ({}..={}): {length}",
+            generate::MIN_LENGTH,
+            generate::MAX_LENGTH
+        ));
+    }
+    let charset = generate::build_charset(args.exclude_symbols, args.exclude_digits, args.exclude_upper)?;
+    let password = generate::generate_password(length, &charset)?;
+    let bits = generate::password_entropy_bits(length, &charset);
+    println!("{password}");
+    eprintln!("entropy: {bits:.1} bits ({length} chars × {:.1} bits/char)", (charset.len() as f64).log2());
     Ok(())
 }
 
@@ -1124,6 +1798,7 @@ pub fn dispatch(cli: crate::cli::Cli) -> Result<(), String> {
         Commands::Init(args) => cmd_init(args),
         Commands::Unlock(args) => cmd_unlock(args),
         Commands::Lock(args) => cmd_lock(args),
+        Commands::LockAll(args) => cmd_lock_all(args),
         Commands::Add(args) => cmd_add(args),
         Commands::Get(args) => cmd_get(args),
         Commands::List(args) => cmd_list(args),
@@ -1132,6 +1807,8 @@ pub fn dispatch(cli: crate::cli::Cli) -> Result<(), String> {
         Commands::ExportQr(args) => cmd_export_qr(args),
         Commands::ImportQr(args) => cmd_import_qr(args),
         Commands::ChangePassphrase(args) => cmd_change_passphrase(args),
+        Commands::Generate(args) => cmd_generate(args),
+        Commands::Tokens(args) => cmd_tokens(args),
     }
 }
 
@@ -1295,6 +1972,7 @@ mod tests {
             vault: String::new(),
             name: String::new(),
             passphrase_file: None,
+            session_token: None,
             algo: None,
             digits: None,
             auto_clear: None,
@@ -1303,6 +1981,8 @@ mod tests {
             challenge: None,
             counter: None,
             key_file: None,
+            pin: None,
+            force: false,
         }
     }
 
@@ -1387,13 +2067,456 @@ mod tests {
             tier: "nano".to_string(),
             passphrase_file: Some(pp.to_string_lossy().to_string()),
             session_token: None,
+            session_ttl: 3600,
+            auto_rotate: false,
+            auto_rotate_threshold: None,
+            auto_rotate_ttl: None,
         })
         .unwrap();
         cmd_list(ListArgs {
             vault: path.to_string_lossy().to_string(),
             passphrase_file: Some(pp.to_string_lossy().to_string()),
+            session_token: None,
         })
         .unwrap();
+    }
+
+    #[test]
+    fn cmd_lock_without_token_errors() {
+        // v0.5 keeps no in-process vault state, so `lock` must be told
+        // which session token to revoke — a bare `lock` is a no-op with
+        // nothing to do and must say so.
+        let err = cmd_lock(LockArgs { session_token: None }).expect_err("bare lock must error");
+        assert!(
+            err.contains("session-token"),
+            "error should point at --session-token, got: {err}"
+        );
+    }
+
+    #[test]
+    fn cmd_lock_with_missing_token_file_errors() {
+        let dir = fresh_vault_dir();
+        let missing = dir.path().join("no-such.token");
+        let err = cmd_lock(LockArgs {
+            session_token: Some(missing.clone()),
+        })
+        .expect_err("missing token file must error");
+        assert!(err.contains("not found"), "error: {err}");
+    }
+
+    #[test]
+    fn cmd_tokens_revoke_and_revoke_all() {
+        let dir = fresh_vault_dir();
+        let store = dir.path().join("tokens");
+        let key = zeroize::Zeroizing::new([7u8; 32]);
+        session::write_session_token(&store.join("work.token"), &key, 3600, None, None).unwrap();
+        session::write_session_token(&store.join("home.token"), &key, 3600, None, None).unwrap();
+
+        // Revoke a single token by bare name, resolved into the custom store.
+        cmd_tokens(TokensArgs {
+            command: TokensCommand::Revoke(crate::cli::TokensRevokeArgs {
+                name: "work".to_string(),
+                dir: store.to_string_lossy().to_string(),
+            }),
+        })
+        .unwrap();
+        assert!(!store.join("work.token").exists(), "revoked token must be deleted");
+        assert!(store.join("home.token").exists(), "other tokens must survive");
+
+        // Revoking the same name again must error (surfaces typos).
+        let err = cmd_tokens(TokensArgs {
+            command: TokensCommand::Revoke(crate::cli::TokensRevokeArgs {
+                name: "work".to_string(),
+                dir: store.to_string_lossy().to_string(),
+            }),
+        })
+        .expect_err("second revoke must fail");
+        assert!(err.contains("nothing to revoke"), "error: {err}");
+
+        // Revoke-all clears the remainder.
+        cmd_tokens(TokensArgs {
+            command: TokensCommand::RevokeAll(crate::cli::TokensRevokeAllArgs {
+                dir: store.to_string_lossy().to_string(),
+                expired_only: false,
+            }),
+        })
+        .unwrap();
+        assert!(session::list_tokens(&store).unwrap().is_empty());
+    }
+
+    #[test]
+    fn cmd_tokens_revoke_all_expired_only_keeps_valid() {
+        let dir = fresh_vault_dir();
+        let store = dir.path().join("tokens");
+        let key = zeroize::Zeroizing::new([7u8; 32]);
+        session::write_session_token(&store.join("keep.token"), &key, 3600, None, None).unwrap();
+        // Expired token: rewrite its expiry into the past via the file.
+        session::write_session_token(&store.join("expired.token"), &key, 1, None, None).unwrap();
+        {
+            let mut t: session::SessionToken = serde_json::from_slice(
+                &std::fs::read(store.join("expired.token")).unwrap(),
+            )
+            .unwrap();
+            t.expires_at -= 100;
+            origin_common::io::atomic_write(&store.join("expired.token"), &serde_json::to_vec(&t).unwrap())
+                .unwrap();
+        }
+
+        cmd_tokens(TokensArgs {
+            command: TokensCommand::RevokeAll(crate::cli::TokensRevokeAllArgs {
+                dir: store.to_string_lossy().to_string(),
+                expired_only: true,
+            }),
+        })
+        .unwrap();
+
+        let remaining: Vec<String> = session::list_tokens(&store)
+            .unwrap()
+            .into_iter()
+            .map(|t| t.name)
+            .collect();
+        assert_eq!(
+            remaining,
+            vec!["keep.token"],
+            "expired-only revoke must keep valid tokens"
+        );
+    }
+
+    #[test]
+    fn cmd_tokens_prune_removes_expired_and_unreadable_keeps_valid() {
+        let dir = fresh_vault_dir();
+        let store = dir.path().join("tokens");
+        let key = zeroize::Zeroizing::new([7u8; 32]);
+        session::write_session_token(&store.join("keep.token"), &key, 3600, None, None).unwrap();
+        // Expired token: rewrite its expiry into the past via the file.
+        session::write_session_token(&store.join("expired.token"), &key, 1, None, None).unwrap();
+        {
+            let mut t: session::SessionToken = serde_json::from_slice(
+                &std::fs::read(store.join("expired.token")).unwrap(),
+            )
+            .unwrap();
+            t.expires_at -= 100;
+            origin_common::io::atomic_write(&store.join("expired.token"), &serde_json::to_vec(&t).unwrap())
+                .unwrap();
+        }
+        // Unreadable (corrupt) token — prune cleans it too.
+        std::fs::write(store.join("garbage.token"), b"not json").unwrap();
+
+        cmd_tokens(TokensArgs {
+            command: TokensCommand::Prune(crate::cli::TokensPruneArgs {
+                dir: store.to_string_lossy().to_string(),
+            }),
+        })
+        .unwrap();
+
+        assert!(store.join("keep.token").exists(), "valid tokens must survive prune");
+        assert!(!store.join("expired.token").exists(), "expired tokens must be pruned");
+        assert!(
+            !store.join("garbage.token").exists(),
+            "unreadable tokens must be pruned"
+        );
+
+        // A second prune has nothing to do and is a success (lenient).
+        cmd_tokens(TokensArgs {
+            command: TokensCommand::Prune(crate::cli::TokensPruneArgs {
+                dir: store.to_string_lossy().to_string(),
+            }),
+        })
+        .unwrap();
+        assert!(store.join("keep.token").exists());
+    }
+
+    #[test]
+    fn cmd_tokens_list_empty_store_is_ok() {
+        let dir = fresh_vault_dir();
+        let store = dir.path().join("tokens");
+        // A store dir that does not exist yet is an empty listing, not an error.
+        cmd_tokens(TokensArgs {
+            command: TokensCommand::List(crate::cli::TokensListArgs {
+                dir: store.to_string_lossy().to_string(),
+                format: TokensFormat::Table,
+                remaining: None,
+            }),
+        })
+        .unwrap();
+        cmd_tokens(TokensArgs {
+            command: TokensCommand::List(crate::cli::TokensListArgs {
+                dir: store.to_string_lossy().to_string(),
+                format: TokensFormat::Json,
+                remaining: None,
+            }),
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn cmd_lock_all_revokes_everything_and_errors_when_empty() {
+        let dir = fresh_vault_dir();
+        let store = dir.path().join("tokens");
+        let key = zeroize::Zeroizing::new([7u8; 32]);
+        session::write_session_token(&store.join("a.token"), &key, 3600, None, None).unwrap();
+        session::write_session_token(&store.join("b.token"), &key, 3600, None, None).unwrap();
+
+        cmd_lock_all(LockAllArgs {
+            dir: store.to_string_lossy().to_string(),
+            vault: None,
+        })
+        .unwrap();
+        assert!(
+            session::list_tokens(&store).unwrap().is_empty(),
+            "lock-all must revoke every token"
+        );
+
+        // Idempotency guard: a second lock-all with nothing left errors.
+        let err = cmd_lock_all(LockAllArgs {
+            dir: store.to_string_lossy().to_string(),
+            vault: None,
+        })
+        .expect_err("empty store must error like bare lock");
+        assert!(err.contains("nothing to lock"), "error: {err}");
+    }
+
+    #[test]
+    fn cmd_lock_all_vault_filter_only_revokes_matching() {
+        let dir = fresh_vault_dir();
+        let store = dir.path().join("tokens");
+        let key = zeroize::Zeroizing::new([7u8; 32]);
+        session::write_session_token(
+            &store.join("a.token"),
+            &key,
+            3600,
+            Some(Path::new("/vaults/a.vault")),
+            None,
+        )
+        .unwrap();
+        session::write_session_token(
+            &store.join("b.token"),
+            &key,
+            3600,
+            Some(Path::new("/vaults/b.vault")),
+            None,
+        )
+        .unwrap();
+
+        cmd_lock_all(LockAllArgs {
+            dir: store.to_string_lossy().to_string(),
+            vault: Some("/vaults/a.vault".to_string()),
+        })
+        .unwrap();
+
+        assert!(!store.join("a.token").exists(), "matching token must be revoked");
+        assert!(
+            store.join("b.token").exists(),
+            "tokens bound to other vaults must survive"
+        );
+
+        // Nothing bound to a vault with no tokens → error.
+        let err = cmd_lock_all(LockAllArgs {
+            dir: store.to_string_lossy().to_string(),
+            vault: Some("/vaults/ghost.vault".to_string()),
+        })
+        .expect_err("no matching tokens must error");
+        assert!(err.contains("nothing to lock"), "error: {err}");
+    }
+
+    #[test]
+    fn cmd_tokens_rotate_refreshes_token_in_place() {
+        let dir = fresh_vault_dir();
+        let store = dir.path().join("tokens");
+        let key = zeroize::Zeroizing::new([7u8; 32]);
+        let original =
+        session::write_session_token(&store.join("work.token"), &key, 3600, Some(Path::new("/v/a.vault")), None)
+            .unwrap();
+
+        cmd_tokens(TokensArgs {
+            command: TokensCommand::Rotate(crate::cli::TokensRotateArgs {
+                name: "work".to_string(),
+                dir: store.to_string_lossy().to_string(),
+                ttl: Some(7200),
+            }),
+        })
+        .unwrap();
+
+        let rotated = session::parse_token_file(&store.join("work.token")).unwrap();
+        assert_ne!(
+            rotated.token_id, original.token_id,
+            "rotation must mint a new token id"
+        );
+        assert_ne!(
+            rotated.token_key, original.token_key,
+            "rotation must mint a new bearer key"
+        );
+        assert_eq!(
+            rotated.expires_at - rotated.created_at,
+            7200,
+            "--ttl must set the new lifetime"
+        );
+        assert_eq!(
+            rotated.vault.as_deref(),
+            Some("/v/a.vault"),
+            "rotation must preserve the vault binding"
+        );
+        // The unsealed master key is unchanged, so the rotated token still unlocks.
+        assert_eq!(
+            session::read_session_token(&store.join("work.token")).unwrap().as_ref(),
+            key.as_ref()
+        );
+    }
+
+    #[test]
+    fn cmd_tokens_rotate_defaults_to_original_ttl() {
+        let dir = fresh_vault_dir();
+        let store = dir.path().join("tokens");
+        let key = zeroize::Zeroizing::new([7u8; 32]);
+        session::write_session_token(&store.join("work.token"), &key, 3600, None, None).unwrap();
+
+        cmd_tokens(TokensArgs {
+            command: TokensCommand::Rotate(crate::cli::TokensRotateArgs {
+                name: "work".to_string(),
+                dir: store.to_string_lossy().to_string(),
+                ttl: None,
+            }),
+        })
+        .unwrap();
+
+        let rotated = session::parse_token_file(&store.join("work.token")).unwrap();
+        assert_eq!(
+            rotated.expires_at - rotated.created_at,
+            3600,
+            "without --ttl, rotation preserves the original lifetime"
+        );
+    }
+
+    #[test]
+    fn build_auto_rotate_validates_flags() {
+        let base = UnlockArgs {
+            vault: "v".to_string(),
+            tier: "nano".to_string(),
+            passphrase_file: None,
+            session_token: None,
+            session_ttl: 3600,
+            auto_rotate: false,
+            auto_rotate_threshold: None,
+            auto_rotate_ttl: None,
+        };
+
+        // Off by default → no policy.
+        assert!(build_auto_rotate(&base).unwrap().is_none());
+
+        // Policy-specific flags without --auto-rotate are rejected.
+        for tweak in [
+            |a: &mut UnlockArgs| a.auto_rotate_threshold = Some(60),
+            |a: &mut UnlockArgs| a.auto_rotate_ttl = Some(7200),
+        ] {
+            let mut bad = base.clone();
+            tweak(&mut bad);
+            let err = build_auto_rotate(&bad).expect_err("must reject orphan flags");
+            assert!(err.contains("--auto-rotate"), "error: {err}");
+        }
+
+        // Enabled → sensible defaults (threshold 15m, ttl = session ttl).
+        let mut on = base.clone();
+        on.auto_rotate = true;
+        let cfg = build_auto_rotate(&on).unwrap().unwrap();
+        assert_eq!(cfg.threshold, session::DEFAULT_AUTO_ROTATE_THRESHOLD_SECS);
+        assert_eq!(cfg.ttl, 3600);
+
+        // Explicit overrides win.
+        let mut ov = base.clone();
+        ov.auto_rotate = true;
+        ov.auto_rotate_threshold = Some(60);
+        ov.auto_rotate_ttl = Some(7200);
+        let cfg = build_auto_rotate(&ov).unwrap().unwrap();
+        assert_eq!(cfg.threshold, 60);
+        assert_eq!(cfg.ttl, 7200);
+    }
+
+    #[test]
+    fn expires_within_predicate() {
+        let mk = |expires_at: i64, unreadable: bool| session::TokenInfo {
+            name: "t".to_string(),
+            path: PathBuf::from("/t"),
+            token_id: String::new(),
+            created_at: 0,
+            expires_at,
+            vault: None,
+            unreadable,
+            auto_rotate: false,
+            auto_rotate_threshold: None,
+            auto_rotate_ttl: None,
+        };
+        let now = 1_000_000i64;
+        // Expiring in 60s → within 2 minutes.
+        assert!(expires_within(&mk(now + 60, false), now, 2));
+        // Expiring in 3 minutes → not within 2 minutes.
+        assert!(!expires_within(&mk(now + 180, false), now, 2));
+        // Already expired always matches.
+        assert!(expires_within(&mk(now - 5, false), now, 2));
+        // Unreadable files never match (no expiry to judge).
+        assert!(!expires_within(&mk(now - 5, true), now, 2));
+    }
+
+    #[test]
+    fn cmd_tokens_renew_keeps_bearer_key() {
+        let dir = fresh_vault_dir();
+        let store = dir.path().join("tokens");
+        let key = zeroize::Zeroizing::new([7u8; 32]);
+        let original =
+            session::write_session_token(&store.join("work.token"), &key, 30, Some(Path::new("/v/a.vault")), None)
+                .unwrap();
+
+        cmd_tokens(TokensArgs {
+            command: TokensCommand::Renew(crate::cli::TokensRenewArgs {
+                name: "work".to_string(),
+                dir: store.to_string_lossy().to_string(),
+                ttl: Some(7200),
+            }),
+        })
+        .unwrap();
+
+        let renewed = session::parse_token_file(&store.join("work.token")).unwrap();
+        assert_eq!(renewed.token_id, original.token_id, "renew must keep the token id");
+        assert_eq!(renewed.token_key, original.token_key, "renew must keep the bearer key");
+        assert_ne!(renewed.expires_at, original.expires_at, "renew must extend expiry");
+        let remaining = renewed.expires_at - unix_now();
+        assert!(
+            (7199..=7200).contains(&remaining),
+            "--ttl must set the new window, got remaining {remaining}s"
+        );
+        // The vault binding survives and the token still unseals.
+        assert_eq!(renewed.vault.as_deref(), Some("/v/a.vault"));
+        assert_eq!(
+            session::read_session_token(&store.join("work.token")).unwrap().as_ref(),
+            key.as_ref()
+        );
+    }
+
+    #[test]
+    fn cmd_tokens_rotate_expired_token_errors() {
+        let dir = fresh_vault_dir();
+        let store = dir.path().join("tokens");
+        let key = zeroize::Zeroizing::new([7u8; 32]);
+        session::write_session_token(&store.join("work.token"), &key, 1, None, None).unwrap();
+        // Backdate the expiry into the past.
+        {
+            let mut t: session::SessionToken = serde_json::from_slice(
+                &std::fs::read(store.join("work.token")).unwrap(),
+            )
+            .unwrap();
+            t.expires_at -= 100;
+            origin_common::io::atomic_write(&store.join("work.token"), &serde_json::to_vec(&t).unwrap())
+                .unwrap();
+        }
+
+        let err = cmd_tokens(TokensArgs {
+            command: TokensCommand::Rotate(crate::cli::TokensRotateArgs {
+                name: "work".to_string(),
+                dir: store.to_string_lossy().to_string(),
+                ttl: Some(3600),
+            }),
+        })
+        .expect_err("expired tokens cannot be rotated");
+        assert!(err.contains("expired"), "error: {err}");
     }
 
     #[test]
@@ -1422,6 +2545,7 @@ mod tests {
                 "OCRA-1:HOTP-SHA1-6:QN08",
                 6,
                 "SHA1",
+                0,
             ))
             .unwrap();
         vault::persist_vault(&path, &vault_obj).unwrap();
@@ -1431,6 +2555,7 @@ mod tests {
             vault: path.to_string_lossy().to_string(),
             name: "bank-ocra".to_string(),
             passphrase_file: Some(pp.to_string_lossy().to_string()),
+            session_token: None,
             algo: Some(crate::cli::HashAlgorithm::Sha1),
             digits: Some(6),
             auto_clear: None,
@@ -1439,6 +2564,8 @@ mod tests {
             challenge: Some("00000000".to_string()),
             counter: None,
             key_file: None,
+            pin: None,
+            force: false,
         })
         .expect("cmd_code via vault lookup");
 
@@ -1447,6 +2574,7 @@ mod tests {
             vault: path.to_string_lossy().to_string(),
             name: "no-such-entry".to_string(),
             passphrase_file: Some(pp.to_string_lossy().to_string()),
+            session_token: None,
             algo: Some(crate::cli::HashAlgorithm::Sha1),
             digits: Some(6),
             auto_clear: None,
@@ -1455,6 +2583,8 @@ mod tests {
             challenge: Some("00000000".to_string()),
             counter: None,
             key_file: None,
+            pin: None,
+            force: false,
         })
         .expect_err("missing entry");
         assert!(err.contains("not found") || err.contains("lookup"));
@@ -1480,6 +2610,7 @@ mod tests {
         let err = cmd_change_passphrase(ChangePassphraseArgs {
             vault: path.to_string_lossy().to_string(),
             passphrase_file: Some(dir.path().join("wrong-pp").to_string_lossy().to_string()),
+            session_token: None,
             new_passphrase_file: Some(pp_new.to_string_lossy().to_string()),
         })
         .expect_err("wrong old passphrase must fail");
@@ -1537,6 +2668,8 @@ mod tests {
             name: name.to_string(),
             r#type: crate::cli::EntryType::Otp,
             passphrase_file: Some(dir.join("pp").to_string_lossy().to_string()),
+            session_token: None,
+            suite: None,
             url: None,
             notes: None,
             secret_file: Some(secret_file.to_string_lossy().to_string()),
@@ -1625,6 +2758,7 @@ mod tests {
             vault: dir.join("test.vault").to_string_lossy().to_string(),
             name: name.to_string(),
             passphrase_file: Some(dir.join("pp").to_string_lossy().to_string()),
+            session_token: None,
             algo: None,
             digits: None,
             auto_clear: None,
@@ -1633,6 +2767,8 @@ mod tests {
             challenge: None,
             counter: None,
             key_file: None,
+            pin: None,
+            force: false,
         }
     }
 
@@ -1682,6 +2818,8 @@ mod tests {
             name: "email".to_string(),
             r#type: crate::cli::EntryType::Password,
             passphrase_file: Some(dir.path().join("pp").to_string_lossy().to_string()),
+            session_token: None,
+            suite: None,
             url: None,
             notes: None,
             secret_file: Some(secret_file.to_string_lossy().to_string()),

@@ -7,4 +7,8 @@
 
 pub mod cli;
 pub mod commands;
+pub mod generate;
+pub mod ledger;
+pub mod ocra_suite;
+pub mod session;
 pub mod vault;

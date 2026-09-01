@@ -342,9 +342,10 @@ impl EntryPayload {
         }
     }
 
-    /// Create an OCRA entry payload.
-    #[allow(dead_code)]
-    pub fn ocra(name: &str, key: &[u8], suite: &str, digits: u32, algo: &str) -> Self {
+    /// Create an OCRA entry payload. `counter` is the initial counter
+    /// for suites with a `C` component; it auto-increments per use (like
+    /// HOTP) inside `cmd_code_ocra`.
+    pub fn ocra(name: &str, key: &[u8], suite: &str, digits: u32, algo: &str, counter: u64) -> Self {
         Self {
             name: name.to_string(),
             entry_type: "ocra".to_string(),
@@ -359,7 +360,7 @@ impl EntryPayload {
                 "suite": suite,
                 "digits": digits,
                 "algo": algo,
-                "counter": 0,
+                "counter": counter,
             })),
         }
     }
@@ -516,6 +517,23 @@ impl Vault {
             .clone()
             .ok_or_else(|| format!("entry '{name}' has no secret bytes stored (data corruption?)"))
     }
+
+    /// Look up a full OCRA entry (key + stored `ocra` JSON) for
+    /// `cmd_code_ocra`, which needs the stored suite string, counter, and
+    /// digit/algorithm parameters in addition to the key bytes.
+    pub fn get_ocra_entry(&self, name: &str) -> Result<&EntryPayload, String> {
+        let entry = self
+            .entries
+            .get(name)
+            .ok_or_else(|| format!("entry not found: {name}"))?;
+        if entry.entry_type != "ocra" {
+            return Err(format!(
+                "entry '{name}' is type '{}'; OCRA requires type 'ocra'",
+                entry.entry_type
+            ));
+        }
+        Ok(entry)
+    }
 }
 
 // ── Top-level operations ──────────────────────────────────────────────
@@ -562,9 +580,8 @@ pub fn init_vault(path: &Path, passphrase: &str, tier: MemoryTier) -> Result<(),
     Ok(())
 }
 
-/// Read a vault file, derive keys, decrypt all entries, and return
-/// the in-memory `Vault`. Errors are formatted strings per CLI conventions.
-pub fn unlock_vault(path: &Path, passphrase: &str) -> Result<Vault, String> {
+/// Read a vault file into `(header, full data)` with size checks.
+fn read_vault_file(path: &Path) -> Result<(VaultHeader, Vec<u8>), String> {
     let mut data = Vec::new();
     let mut file = std::fs::File::open(path)
         .map_err(|e| format!("cannot read vault {}: {e}", path.display()))?;
@@ -593,6 +610,13 @@ pub fn unlock_vault(path: &Path, passphrase: &str) -> Result<Vault, String> {
             header.cipher_suite
         ));
     }
+    Ok((header, data))
+}
+
+/// Read a vault file, derive keys, decrypt all entries, and return
+/// the in-memory `Vault`. Errors are formatted strings per CLI conventions.
+pub fn unlock_vault(path: &Path, passphrase: &str) -> Result<Vault, String> {
+    let (header, data) = read_vault_file(path)?;
 
     // 1. Derive master key + header key.
     let master_key = argon2id_derive(passphrase.as_bytes(), &header.kdf_salt, header.kdf_tier)
@@ -602,6 +626,32 @@ pub fn unlock_vault(path: &Path, passphrase: &str) -> Result<Vault, String> {
             let _ = e;
             "vault unlock failed (Argon2id)".to_string()
         })?;
+    decrypt_vault(&header, &data, master_key.as_ref())
+}
+
+/// Unlock a vault with a pre-derived master key (session-token path).
+/// The master key must be the 32-byte key derived from the vault's
+/// passphrase + salt — obtained via `session::read_session_token`.
+pub fn unlock_vault_with_key(path: &Path, master_key: &[u8]) -> Result<Vault, String> {
+    let (header, data) = read_vault_file(path)?;
+    decrypt_vault(&header, &data, master_key)
+}
+
+/// Shared decryption core for `unlock_vault` / `unlock_vault_with_key`.
+fn decrypt_vault(
+    header: &VaultHeader,
+    data: &[u8],
+    master_key_bytes: &[u8],
+) -> Result<Vault, String> {
+    if master_key_bytes.len() != 32 {
+        return Err(format!(
+            "master key must be 32 bytes; got {}",
+            master_key_bytes.len()
+        ));
+    }
+    let mut master_key = Zeroizing::new([0u8; 32]);
+    master_key.copy_from_slice(master_key_bytes);
+
     let header_key = derive_header_key(master_key.as_ref());
 
     // 2. Decrypt header CT — length is now explicitly recorded in the
@@ -670,7 +720,7 @@ pub fn unlock_vault(path: &Path, passphrase: &str) -> Result<Vault, String> {
     }
 
     Ok(Vault {
-        header,
+        header: header.clone(),
         entries,
         metadata,
         master_key,
@@ -1186,6 +1236,7 @@ mod tests {
                     "OCRA-1:HOTP-SHA1-6:QN08",
                     6,
                     "SHA1",
+                    0,
                 ))
                 .unwrap();
             persist_vault(&path, &vault).unwrap();
