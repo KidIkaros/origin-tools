@@ -9,8 +9,7 @@
 //! bytes signed are reproducible from the manifest alone.
 
 use crate::manifest::CanaryManifest;
-use ed25519_dalek::Signature as Ed25519Signature;
-use ed25519_dalek::VerifyingKey as Ed25519VerifyingKey;
+use origin_crypto_sdk::{Ed25519Signature, Ed25519VerifyingKey};
 use origin_crypto_sdk::pqc::falcon1024::FalconPublicKey;
 use origin_crypto_sdk::pqc::falcon1024::FalconSignature;
 use origin_crypto_sdk::signing::hybrid::{Ed25519Falcon1024, HybridSigningKeyBundle};

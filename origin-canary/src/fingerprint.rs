@@ -10,8 +10,7 @@
 //! local JSONL ledger — no network.
 
 use crate::commitment::{canonicalize, derive_bundle_domain, SignedCommitment, Verification};
-use ed25519_dalek::Signature as Ed25519Signature;
-use ed25519_dalek::VerifyingKey as Ed25519VerifyingKey;
+use origin_crypto_sdk::{Ed25519Signature, Ed25519VerifyingKey};
 use origin_crypto_sdk::blake3;
 use origin_crypto_sdk::pqc::falcon1024::{FalconPublicKey, FalconSignature};
 use origin_crypto_sdk::signing::hybrid::Ed25519Falcon1024;
