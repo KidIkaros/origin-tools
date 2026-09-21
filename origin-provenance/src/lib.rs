@@ -14,5 +14,6 @@ pub mod encoding;
 pub mod error;
 pub mod identity;
 pub mod manifest;
+pub mod opm;
 pub mod stamp;
 pub mod watermark;

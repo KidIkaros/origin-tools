@@ -1980,6 +1980,7 @@ dependencies = [
  "hex",
  "origin-common",
  "origin-crypto-sdk",
+ "origin-proof",
  "serde",
  "serde_json",
  "tempfile",

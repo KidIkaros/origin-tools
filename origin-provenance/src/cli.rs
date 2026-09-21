@@ -29,6 +29,12 @@ pub enum Commands {
     Scan(ScanArgs),
     /// Verify a directory against a manifest
     Check(CheckArgs),
+    /// Create an OPM provenance manifest for a file
+    Create(CreateArgs),
+    /// Append a signed edit checkpoint to an OPM manifest
+    Append(AppendArgs),
+    /// Add an independent attestation to an OPM manifest
+    Attest(AttestArgs),
 }
 
 #[derive(Parser, Clone, Debug)]
@@ -93,4 +99,62 @@ pub struct CheckArgs {
     /// Manifest file to check against
     #[arg(short, long)]
     pub manifest: String,
+}
+
+#[derive(Parser, Clone, Debug)]
+pub struct CreateArgs {
+    /// Asset file to bind (its CURRENT bytes become edit 0)
+    pub asset: String,
+
+    /// Signer seed file (32 raw bytes, or 64-char hex) — never printed
+    #[arg(long)]
+    pub seed_file: String,
+
+    /// Initial action: capture|edit|publish|annotate
+    #[arg(long, default_value = "capture")]
+    pub action: String,
+
+    /// Chunk size in bytes for the content-commitment tree (default 1 MiB)
+    #[arg(long)]
+    pub chunk_size: Option<u32>,
+
+    /// Sidecar path (default: <asset>.opm)
+    #[arg(long)]
+    pub sidecar: Option<String>,
+}
+
+#[derive(Parser, Clone, Debug)]
+pub struct AppendArgs {
+    /// Asset file — its CURRENT (post-edit) bytes are bound
+    pub asset: String,
+
+    /// Signer seed file (32 raw bytes, or 64-char hex) — never printed
+    #[arg(long)]
+    pub seed_file: String,
+
+    /// Action for this edit: capture|edit|publish|annotate
+    #[arg(long, default_value = "edit")]
+    pub action: String,
+
+    /// Note attached to this edit (outside the trust path)
+    #[arg(long)]
+    pub note: Option<String>,
+
+    /// Sidecar path (default: <asset>.opm)
+    #[arg(long)]
+    pub sidecar: Option<String>,
+}
+
+#[derive(Parser, Clone, Debug)]
+pub struct AttestArgs {
+    /// Asset whose OPM sidecar receives the attestation
+    pub asset: String,
+
+    /// ATTESTOR seed file (32 raw bytes, or 64-char hex) — never printed
+    #[arg(long)]
+    pub seed_file: String,
+
+    /// Sidecar path (default: <asset>.opm)
+    #[arg(long)]
+    pub sidecar: Option<String>,
 }

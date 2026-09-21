@@ -5,9 +5,13 @@
 use std::path::Path;
 
 use crate::cli::{
-    CheckArgs, Commands, ScanArgs, StampArgs, UnwatermarkArgs, VerifyArgs, WatermarkArgs,
+    AppendArgs, AttestArgs, CheckArgs, Commands, CreateArgs, ScanArgs, StampArgs, UnwatermarkArgs,
+    VerifyArgs, WatermarkArgs,
 };
+use crate::encoding::Action;
+use crate::identity::Signer;
 use crate::manifest::{FileStatus, Manifest};
+use crate::opm::{self, Opm};
 use crate::stamp::Stamp;
 use crate::watermark::Watermark;
 
@@ -19,6 +23,9 @@ pub fn dispatch(cli: crate::cli::Cli) -> Result<(), String> {
         Commands::Unwatermark(args) => cmd_unwatermark(args),
         Commands::Scan(args) => cmd_scan(args),
         Commands::Check(args) => cmd_check(args),
+        Commands::Create(args) => cmd_create(args),
+        Commands::Append(args) => cmd_append(args),
+        Commands::Attest(args) => cmd_attest(args),
     }
 }
 
@@ -202,6 +209,130 @@ fn cmd_check(args: CheckArgs) -> Result<(), String> {
     } else {
         Ok(())
     }
+}
+
+/// Load a 32-byte signer seed: 32 raw bytes or 64-char hex. The seed is
+/// consumed in-memory only — never printed, logged, or left in argv.
+fn load_signer_seed(path: &str) -> Result<[u8; 32], String> {
+    let raw = std::fs::read(path).map_err(|e| format!("read seed file {path}: {e}"))?;
+    let raw_len = raw.len();
+    if raw_len == 32 {
+        return Ok(raw.try_into().expect("32 bytes"));
+    }
+    if raw_len == 64 {
+        let text = String::from_utf8(raw).map_err(|_| "seed hex is not UTF-8".to_string())?;
+        let bytes = hex::decode(text.trim()).map_err(|e| format!("bad seed hex: {e}"))?;
+        if bytes.len() == 32 {
+            return Ok(bytes.try_into().expect("32 bytes"));
+        }
+    }
+    Err(format!(
+        "seed file {path}: expected 32 raw bytes or 64-char hex, got {raw_len} bytes"
+    ))
+}
+
+fn parse_action(s: &str) -> Result<Action, String> {
+    match s {
+        "capture" => Ok(Action::Capture),
+        "edit" => Ok(Action::Edit),
+        "publish" => Ok(Action::Publish),
+        "annotate" => Ok(Action::Annotate),
+        other => Err(format!(
+            "unknown action '{other}' (expected capture|edit|publish|annotate)"
+        )),
+    }
+}
+
+fn cmd_create(args: CreateArgs) -> Result<(), String> {
+    let asset = Path::new(&args.asset);
+    if !asset.exists() {
+        return Err(format!("file not found: {}", args.asset));
+    }
+    let action = parse_action(&args.action)?;
+    let seed = load_signer_seed(&args.seed_file)?;
+    let signer = Signer::from_seed(&seed).map_err(|e| format!("signer: {e}"))?;
+    let chunk_size = args
+        .chunk_size
+        .unwrap_or(crate::encoding::DEFAULT_CHUNK_SIZE);
+
+    let opm =
+        Opm::create(asset, &signer, action, chunk_size).map_err(|e| format!("create: {e}"))?;
+
+    let sidecar = args
+        .sidecar
+        .unwrap_or_else(|| opm::sidecar_path(asset).to_string_lossy().into_owned());
+    opm::save(&opm, Path::new(&sidecar)).map_err(|e| format!("save {sidecar}: {e}"))?;
+
+    println!("Manifest created: {sidecar}");
+    println!("  asset_id:  {}", opm.asset_id);
+    println!("  action:    {}", args.action);
+    println!("  signer:    {}", signer.fingerprint_hex());
+    Ok(())
+}
+
+fn cmd_append(args: AppendArgs) -> Result<(), String> {
+    let asset = Path::new(&args.asset);
+    if !asset.exists() {
+        return Err(format!("file not found: {}", args.asset));
+    }
+    let action = parse_action(&args.action)?;
+    let seed = load_signer_seed(&args.seed_file)?;
+    let signer = Signer::from_seed(&seed).map_err(|e| format!("signer: {e}"))?;
+
+    let sidecar = args
+        .sidecar
+        .unwrap_or_else(|| opm::sidecar_path(asset).to_string_lossy().into_owned());
+    let sidecar_path = Path::new(&sidecar);
+    if !sidecar_path.exists() {
+        return Err(format!(
+            "manifest not found: {sidecar} (run 'create' first)"
+        ));
+    }
+    let mut opm = opm::load(sidecar_path).map_err(|e| format!("load: {e}"))?;
+
+    // The asset is read INSIDE append_edit — after the edit has landed.
+    opm.append_edit(asset, &signer, action, args.note.as_deref())
+        .map_err(|e| format!("append: {e}"))?;
+    opm::save(&opm, sidecar_path).map_err(|e| format!("save {sidecar}: {e}"))?;
+
+    println!("Edit appended: {sidecar}");
+    println!(
+        "  index:     {}",
+        opm.edits.last().map(|e| e.index).unwrap_or(0)
+    );
+    println!("  action:    {}", args.action);
+    println!("  checkpoints: {}", opm.checkpoints.len());
+    Ok(())
+}
+
+fn cmd_attest(args: AttestArgs) -> Result<(), String> {
+    let asset = Path::new(&args.asset);
+    if !asset.exists() {
+        return Err(format!("file not found: {}", args.asset));
+    }
+    let seed = load_signer_seed(&args.seed_file)?;
+    let attestor = Signer::from_seed(&seed).map_err(|e| format!("attestor: {e}"))?;
+
+    let sidecar = args
+        .sidecar
+        .unwrap_or_else(|| opm::sidecar_path(asset).to_string_lossy().into_owned());
+    let sidecar_path = Path::new(&sidecar);
+    if !sidecar_path.exists() {
+        return Err(format!(
+            "manifest not found: {sidecar} (run 'create' first)"
+        ));
+    }
+    let mut opm = opm::load(sidecar_path).map_err(|e| format!("load: {e}"))?;
+    opm.attest(&attestor).map_err(|e| format!("attest: {e}"))?;
+    opm::save(&opm, sidecar_path).map_err(|e| format!("save {sidecar}: {e}"))?;
+
+    println!("Attestation added: {sidecar}");
+    println!("  attestor:  {}", attestor.fingerprint_hex());
+    println!(
+        "  manifest_id: {}",
+        hex::encode(opm.manifest_id().map_err(|e| e.to_string())?)
+    );
+    Ok(())
 }
 
 #[cfg(test)]
@@ -526,5 +657,155 @@ mod tests {
         };
         let err = cmd_check(check_args).unwrap_err();
         assert!(err.contains("integrity check failed"));
+    }
+
+    // ---- OPM manifest CLI (ticket P-02) ----
+
+    fn seed_file(dir: &tempfile::TempDir, name: &str, seed: [u8; 32]) -> String {
+        let p = dir.path().join(name);
+        std::fs::write(&p, seed).unwrap();
+        p.to_str().unwrap().to_string()
+    }
+
+    #[test]
+    fn opm_create_append_attest_cli_flow() {
+        use crate::cli::Cli;
+        use clap::Parser;
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("movie.txt");
+        std::fs::write(&file, b"scene one").unwrap();
+        let signer_seed = seed_file(&dir, "signer.seed", [0xA1u8; 32]);
+        let attestor_seed = seed_file(&dir, "attestor.seed", [0xB2u8; 32]);
+
+        // create
+        let cli = Cli::parse_from([
+            "origin-provenance",
+            "create",
+            file.to_str().unwrap(),
+            "--seed-file",
+            &signer_seed,
+            "--action",
+            "capture",
+        ]);
+        assert!(dispatch(cli).is_ok());
+        let sidecar = dir.path().join("movie.txt.opm");
+        assert!(sidecar.exists(), "default sidecar <asset>.opm");
+
+        // append (post-edit bytes bound)
+        std::fs::write(&file, b"scene one, re-cut").unwrap();
+        let cli = Cli::parse_from([
+            "origin-provenance",
+            "append",
+            file.to_str().unwrap(),
+            "--seed-file",
+            &signer_seed,
+            "--note",
+            "re-cut",
+        ]);
+        assert!(dispatch(cli).is_ok());
+
+        // attest
+        let cli = Cli::parse_from([
+            "origin-provenance",
+            "attest",
+            file.to_str().unwrap(),
+            "--seed-file",
+            &attestor_seed,
+        ]);
+        assert!(dispatch(cli).is_ok());
+
+        // The sidecar reflects everything: 2 edits, 2 checkpoints, 1 attestation.
+        let opm = opm::load(&sidecar).unwrap();
+        assert_eq!(opm.edits.len(), 2);
+        assert_eq!(opm.checkpoints.len(), 2);
+        assert_eq!(opm.attestations.len(), 1);
+        assert_eq!(opm.edits[1].note.as_deref(), Some("re-cut"));
+        // Post-edit bytes bound (P4-a end to end).
+        assert_eq!(
+            opm.edits[1].content.whole_file_hash,
+            hex::encode(opm::content::whole_file_hash(b"scene one, re-cut"))
+        );
+    }
+
+    #[test]
+    fn opm_cli_rejects_unknown_action_and_missing_files() {
+        use crate::cli::Cli;
+        use clap::Parser;
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("x.txt");
+        std::fs::write(&file, b"x").unwrap();
+        let seed = seed_file(&dir, "s.seed", [1u8; 32]);
+
+        let cli = Cli::parse_from([
+            "origin-provenance",
+            "create",
+            file.to_str().unwrap(),
+            "--seed-file",
+            &seed,
+            "--action",
+            "teleport",
+        ]);
+        let err = dispatch(cli).unwrap_err();
+        assert!(err.contains("unknown action"), "got: {err}");
+
+        let cli = Cli::parse_from([
+            "origin-provenance",
+            "create",
+            "/nonexistent/asset.bin",
+            "--seed-file",
+            &seed,
+        ]);
+        let err = dispatch(cli).unwrap_err();
+        assert!(err.contains("file not found"));
+
+        let cli = Cli::parse_from([
+            "origin-provenance",
+            "create",
+            file.to_str().unwrap(),
+            "--seed-file",
+            "/nonexistent/seed",
+        ]);
+        let err = dispatch(cli).unwrap_err();
+        assert!(err.contains("seed file"));
+    }
+
+    #[test]
+    fn opm_cli_append_requires_existing_manifest() {
+        use crate::cli::Cli;
+        use clap::Parser;
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("y.txt");
+        std::fs::write(&file, b"y").unwrap();
+        let seed = seed_file(&dir, "y.seed", [3u8; 32]);
+
+        let cli = Cli::parse_from([
+            "origin-provenance",
+            "append",
+            file.to_str().unwrap(),
+            "--seed-file",
+            &seed,
+        ]);
+        let err = dispatch(cli).unwrap_err();
+        assert!(err.contains("manifest not found"), "got: {err}");
+    }
+
+    #[test]
+    fn opm_cli_hex_seed_accepted() {
+        use crate::cli::Cli;
+        use clap::Parser;
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("h.txt");
+        std::fs::write(&file, b"h").unwrap();
+        let p = dir.path().join("hex.seed");
+        std::fs::write(&p, hex::encode([5u8; 32])).unwrap();
+
+        let cli = Cli::parse_from([
+            "origin-provenance",
+            "create",
+            file.to_str().unwrap(),
+            "--seed-file",
+            p.to_str().unwrap(),
+        ]);
+        assert!(dispatch(cli).is_ok());
     }
 }

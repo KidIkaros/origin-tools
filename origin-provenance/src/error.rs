@@ -32,4 +32,7 @@ pub enum ProvenanceError {
 
     #[error("{0}")]
     Other(String),
+
+    #[error("crypto error: {0}")]
+    Crypto(#[from] origin_crypto_sdk::Error),
 }

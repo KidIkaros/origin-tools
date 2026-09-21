@@ -9,6 +9,7 @@ description = "File provenance — stamps, watermarks, directory scan, verificat
 [dependencies]
 origin-common = { path = "../origin-common" }
 origin-crypto-sdk.workspace = true
+origin-proof = { path = "../origin-proof" }
 clap.workspace = true
 serde.workspace = true
 serde_json.workspace = true

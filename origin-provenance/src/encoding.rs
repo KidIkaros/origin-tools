@@ -28,7 +28,10 @@ pub const TAG_MANIFEST: &[u8] = b"origin-provenance:manifest:v1";
 pub const TAG_SIGNER_FP: &[u8] = b"origin-provenance:signer-fp:v1";
 
 /// Content-binding action byte (spec S3). Unknown values reject downstream.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// JSON form is the lowercase string ("capture"/"edit"/"publish"/"annotate");
+/// the byte form enters `edit_leaf` via `From<Action> for u8`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
 #[repr(u8)]
 pub enum Action {
     Capture = 0,
