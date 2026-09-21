@@ -13,6 +13,12 @@ pub enum EntropyError {
     Validation(String),
 }
 
+impl From<String> for EntropyError {
+    fn from(s: String) -> Self {
+        EntropyError::Validation(s)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

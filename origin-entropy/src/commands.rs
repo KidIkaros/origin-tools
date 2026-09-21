@@ -4,12 +4,25 @@
 
 use crate::api::{self, EntropyStats};
 use crate::cli::{AnalyzeArgs, CheckArgs, Commands};
-use crate::error::EntropyError;
+use origin_common::read_input;
 
-impl From<EntropyError> for String {
-    fn from(e: EntropyError) -> Self {
-        e.to_string()
+const MAX_INPUT_BYTES: usize = 64 * 1024 * 1024; // 64 MiB hard cap
+
+/// Read input from a file or stdin, rejecting oversized inputs before they can
+/// blow the process's RSS.  This guard is the backstop; the SDK's
+/// `compute_serial_correlation` was already rewritten to be allocation-free so
+/// that even at the cap the process stays well within its means.
+fn read_input_guarded(path: Option<&str>) -> Result<Vec<u8>, String> {
+    let data = read_input(path)?;
+    let len = data.len();
+    if len > MAX_INPUT_BYTES {
+        return Err(format!(
+            "input too large: {len} bytes (hard cap {MAX_INPUT_BYTES} bytes / 64 MiB). \
+             The entropy analysis is statistical and does not need gigabyte inputs — \
+             sample down or stream the file first."
+        ));
     }
+    Ok(data)
 }
 
 pub fn dispatch(cli: crate::cli::Cli) -> Result<(), String> {
@@ -20,8 +33,10 @@ pub fn dispatch(cli: crate::cli::Cli) -> Result<(), String> {
 }
 
 fn cmd_analyze(args: AnalyzeArgs) -> Result<(), String> {
-    let data = read_input(args.input.as_deref())?;
-    let stats = EntropyStats::analyze(&data);
+    let data = read_input_guarded(args.input.as_deref())?;
+    let stats = match EntropyStats::analyze(&data) {
+        s => s,
+    };
 
     // Chi-squared only meaningful with >= 256 bytes
     let chi_report = if data.len() >= 256 {
@@ -65,8 +80,11 @@ fn cmd_analyze(args: AnalyzeArgs) -> Result<(), String> {
 }
 
 fn cmd_check(args: CheckArgs) -> Result<(), String> {
-    let data = read_input(args.input.as_deref())?;
-    let report = api::quality_check(&data, args.bits)?;
+    let data = read_input_guarded(args.input.as_deref())?;
+    let report = match api::quality_check(&data, args.bits) {
+        Ok(r) => r,
+        Err(e) => return Err(e.to_string()),
+    };
 
     match args.format.as_str() {
         "json" => {
@@ -81,7 +99,10 @@ fn cmd_check(args: CheckArgs) -> Result<(), String> {
             );
         }
         _ => {
-            println!("quality_check: {}", if report.passed { "PASS" } else { "FAIL" });
+            println!(
+                "quality_check: {}",
+                if report.passed { "PASS" } else { "FAIL" }
+            );
             println!("target_bits:   {}", args.bits);
             if !report.issues.is_empty() {
                 println!("issues:");
@@ -96,7 +117,3 @@ fn cmd_check(args: CheckArgs) -> Result<(), String> {
     }
     Ok(())
 }
-
-// keep read_input referenced (used by both commands above)
-#[allow(unused_imports)]
-use origin_common::read_input;
