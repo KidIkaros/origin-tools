@@ -1765,7 +1765,6 @@ dependencies = [
  "subtle",
  "tempfile",
  "thiserror 2.0.19",
- "x25519-dalek",
  "zeroize",
 ]
 
@@ -1814,7 +1813,7 @@ dependencies = [
 
 [[package]]
 name = "origin-crypto-sdk"
-version = "0.7.1-rc.6"
+version = "0.7.1-rc.7"
 dependencies = [
  "argon2",
  "blake3",
@@ -1845,6 +1844,7 @@ dependencies = [
  "skein",
  "subtle",
  "unicode-normalization",
+ "x25519-dalek",
  "zstd",
 ]
 

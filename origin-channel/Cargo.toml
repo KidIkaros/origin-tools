@@ -13,7 +13,7 @@ clap.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 hex.workspace = true
-x25519-dalek = { version = "2", features = ["static_secrets"] }
+# X25519 now comes from origin-crypto-sdk (>= 0.7.1-rc.7); no direct dalek dependency.
 ed25519-dalek = "2"
 zeroize = { version = "1", features = ["derive"] }
 subtle = "2.5"

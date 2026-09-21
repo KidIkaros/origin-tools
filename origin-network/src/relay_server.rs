@@ -702,8 +702,8 @@ mod tests {
             &crate::identity::derive_transport_secret(&relay_seed(), 0)?,
         );
         let mut hs = origin_channel::handshake::Handshake::new(
-            secret.clone(),
-            x25519_dalek::PublicKey::from(relay_pk),
+            origin_channel::dh::DhSecret::from_bytes(secret.to_bytes()),
+            origin_channel::dh::DhPublic::from_bytes(relay_pk),
             true,
         );
         let mut msg1 = hs
@@ -1024,8 +1024,8 @@ mod tests {
             &crate::identity::derive_transport_secret(&relay_seed(), 0).unwrap(),
         );
         let mut hs = origin_channel::handshake::Handshake::new(
-            secret.clone(),
-            x25519_dalek::PublicKey::from(relay_pk),
+            origin_channel::dh::DhSecret::from_bytes(secret.to_bytes()),
+            origin_channel::dh::DhPublic::from_bytes(relay_pk),
             true,
         );
         let mut msg1 = hs.start().unwrap();
@@ -1124,8 +1124,8 @@ mod tests {
             &crate::identity::derive_transport_secret(&relay_seed(), 0).unwrap(),
         );
         let mut hs = origin_channel::handshake::Handshake::new(
-            secret.clone(),
-            x25519_dalek::PublicKey::from(relay_pk),
+            origin_channel::dh::DhSecret::from_bytes(secret.to_bytes()),
+            origin_channel::dh::DhPublic::from_bytes(relay_pk),
             true,
         );
         let mut msg1 = hs.start().unwrap();
@@ -1177,8 +1177,8 @@ mod tests {
             &crate::identity::derive_transport_secret(&relay_seed(), 0).unwrap(),
         );
         let mut hs = origin_channel::handshake::Handshake::new(
-            secret.clone(),
-            x25519_dalek::PublicKey::from(relay_pk),
+            origin_channel::dh::DhSecret::from_bytes(secret.to_bytes()),
+            origin_channel::dh::DhPublic::from_bytes(relay_pk),
             true,
         );
         let mut msg1 = hs.start().unwrap();

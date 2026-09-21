@@ -19,6 +19,7 @@ use std::time::Duration;
 use tokio::sync::Mutex;
 use x25519_dalek::StaticSecret;
 
+use origin_channel::dh::{DhPublic, DhSecret};
 use origin_channel::handshake::Handshake;
 use origin_channel::message::HandshakeMessage;
 use origin_channel::ratchet::init_ratchet;
@@ -661,13 +662,13 @@ mod tests {
         let tc = TcpTransport::connector();
         let mut conn = tc.connect(addr).await.unwrap();
         let secret = derive_transport_secret(&seed_a(), 0).unwrap();
-        let peer_pk = PublicKey::from(
+        let peer_pk = DhPublic::from_bytes(
             PeerKeys::from_seed(&seed_b(), 0)
                 .unwrap()
                 .transport_pk_bytes()
                 .unwrap(),
         );
-        let mut hs = Handshake::new(secret.clone(), peer_pk, true);
+        let mut hs = Handshake::new(DhSecret::from_bytes(secret.to_bytes()), peer_pk, true);
         let mut msg1 = hs.start().unwrap();
         msg1.payload
             .extend_from_slice(transport_public_key(&secret).as_slice());
@@ -826,13 +827,13 @@ mod tests {
             let tc = TcpTransport::connector();
             let mut conn = tc.connect(&addr).await.unwrap();
             let secret = derive_transport_secret(&seed_a(), 0).unwrap();
-            let peer_pk = PublicKey::from(
+            let peer_pk = DhPublic::from_bytes(
                 PeerKeys::from_seed(&seed_b(), 0)
                     .unwrap()
                     .transport_pk_bytes()
                     .unwrap(),
             );
-            let mut hs = Handshake::new(secret.clone(), peer_pk, true);
+            let mut hs = Handshake::new(DhSecret::from_bytes(secret.to_bytes()), peer_pk, true);
             let mut msg1 = hs.start().unwrap();
             msg1.payload
                 .extend_from_slice(transport_public_key(&secret).as_slice());

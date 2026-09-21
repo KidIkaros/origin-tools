@@ -188,19 +188,22 @@ impl Handshake {
             .peer_static_pk
             .ok_or(ChannelError::Handshake("no peer static key".into()))?;
 
-        // IK pattern: four DH operations (via the crate's single X25519 seam)
-        let dh_ee = eph_secret.diffie_hellman(&peer_eph);
+        // IK pattern: four DH operations (via the crate's single X25519 seam).
+        // Hardened: all-zero/low-order peer keys are rejected by the SDK
+        // surface — a hostile peer key fails the handshake, never yields a
+        // session key.
+        let dh_ee = dh_or_handshake("dh_ee", eph_secret, &peer_eph)?;
         let dh_es = if self.is_initiator {
-            eph_secret.diffie_hellman(&peer_static)
+            dh_or_handshake("dh_es", eph_secret, &peer_static)?
         } else {
-            self.static_secret.diffie_hellman(&peer_eph)
+            dh_or_handshake("dh_es", &self.static_secret, &peer_eph)?
         };
         let dh_se = if self.is_initiator {
-            self.static_secret.diffie_hellman(&peer_eph)
+            dh_or_handshake("dh_se", &self.static_secret, &peer_eph)?
         } else {
-            eph_secret.diffie_hellman(&peer_static)
+            dh_or_handshake("dh_se", eph_secret, &peer_static)?
         };
-        let dh_ss = self.static_secret.diffie_hellman(&peer_static);
+        let dh_ss = dh_or_handshake("dh_ss", &self.static_secret, &peer_static)?;
 
         // Concatenate all DH outputs + transcript (DH outputs are raw
         // 32-byte shared secrets from the dh seam)
@@ -238,6 +241,15 @@ impl Handshake {
     pub fn is_initiator(&self) -> bool {
         self.is_initiator
     }
+}
+
+/// Run one IK-pattern DH step, mapping the SDK's hardened-DH rejection
+/// (all-zero/low-order peer key) into a handshake failure labeled with the
+/// exact operation, so a hostile key is diagnosable in logs.
+fn dh_or_handshake(op: &str, secret: &DhSecret, peer: &DhPublic) -> Result<[u8; 32]> {
+    secret.diffie_hellman(peer).map_err(|e| {
+        ChannelError::Handshake(format!("{op}: {e}"))
+    })
 }
 
 #[cfg(test)]

@@ -40,7 +40,7 @@ authors = ["Origin SDK Contributors"]
 # [patch.crates-io] section at the bottom of this file:
 #   [patch.crates-io]
 #   origin-crypto-sdk = { path = "../origin-crypto-sdk" }
-origin-crypto-sdk = "=0.7.1-rc.6"
+origin-crypto-sdk = "=0.7.1-rc.7"
 origin-common = { path = "origin-common" }
 origin-identity = { path = "origin-identity" }
 origin-pass = { path = "origin-pass" }
