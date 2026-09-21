@@ -10,7 +10,9 @@
 
 pub mod cli;
 pub mod commands;
+pub mod encoding;
 pub mod error;
+pub mod identity;
 pub mod manifest;
 pub mod stamp;
 pub mod watermark;

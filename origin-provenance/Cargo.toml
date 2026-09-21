@@ -13,6 +13,7 @@ clap.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 hex.workspace = true
+base64 = "0.22"
 thiserror = "2"
 
 [dev-dependencies]

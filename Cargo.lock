@@ -1975,6 +1975,7 @@ dependencies = [
 name = "origin-provenance"
 version = "0.4.3"
 dependencies = [
+ "base64",
  "clap",
  "hex",
  "origin-common",
