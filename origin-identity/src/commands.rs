@@ -9,6 +9,7 @@ use std::path::{Path, PathBuf};
 
 use origin_crypto_sdk::{
     blake3,
+    Ed25519Signature,
     blob::{create_blob, recover_seed},
     recovery::unicode_cipher::{decode_phrase, encode_phrase, PhraseLength, UnicodeWordlist},
     seed::gen::{generate, SeedVariant},
@@ -369,7 +370,7 @@ pub fn cmd_verify(args: VerifyArgs) -> Result<(), String> {
             .ok_or("missing falcon1024 field in signature")?;
         let ed_bytes = hex::decode(ed25519_hex).map_err(|e| format!("ed25519 hex: {e}"))?;
         let falcon_bytes = hex::decode(falcon_hex).map_err(|e| format!("falcon hex: {e}"))?;
-        let ed = ed25519_dalek::Signature::from_slice(&ed_bytes)
+        let ed = Ed25519Signature::from_slice(&ed_bytes)
             .map_err(|e| format!("invalid ed25519 signature: {e}"))?;
         let falcon = origin_crypto_sdk::pqc::falcon1024::FalconSignature::from_bytes(&falcon_bytes)
             .map_err(|e| format!("invalid falcon signature: {e}"))?;
@@ -416,7 +417,7 @@ pub fn cmd_verify(args: VerifyArgs) -> Result<(), String> {
 /// `u32` from the first 4 bytes; values above 32-bit max are rejected
 /// structurally because the buffer can't carry that many bytes.
 pub struct CombinedSignature {
-    pub ed: ed25519_dalek::Signature,
+    pub ed: Ed25519Signature,
     pub falcon: origin_crypto_sdk::pqc::falcon1024::FalconSignature,
 }
 
@@ -473,7 +474,7 @@ impl CombinedSignature {
                 raw.len()
             ));
         }
-        let ed = ed25519_dalek::Signature::from_slice(
+        let ed = Ed25519Signature::from_slice(
             &raw[Self::LEN_PREFIX..Self::LEN_PREFIX + Self::ED_LEN],
         )
         .map_err(|e| format!("invalid ed25519 signature: {e}"))?;
@@ -1207,7 +1208,7 @@ mod tests {
     fn combined_signature_round_trip() {
         // Build a CombinedSignature, encode it, then decode it.
         let ed_bytes = [0xAAu8; 64];
-        let ed = ed25519_dalek::Signature::from_bytes(&ed_bytes);
+        let ed = Ed25519Signature::from_bytes(&ed_bytes);
         let falcon_bytes: Vec<u8> = (0..666).map(|i| (i & 0xff) as u8).collect();
         let falcon =
             origin_crypto_sdk::pqc::falcon1024::FalconSignature::from_bytes(&falcon_bytes).unwrap();
@@ -2366,7 +2367,7 @@ mod tests {
     fn combined_signature_debug_redacts_signature_material() {
         // The manual Debug impl formats `ed_len` / `falcon_len` only.
         let ed_bytes = [0xAAu8; 64];
-        let ed = ed25519_dalek::Signature::from_bytes(&ed_bytes);
+        let ed = Ed25519Signature::from_bytes(&ed_bytes);
         // 666-byte synthetic Falcon sig is structurally accepted by
         // Signature::from_bytes (mirrors round-trip test above).
         let falcon_bytes: Vec<u8> = (0..666).map(|i| (i as u8).wrapping_mul(7)).collect();

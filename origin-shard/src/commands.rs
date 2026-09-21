@@ -12,7 +12,6 @@ impl From<ShardError> for String {
 }
 use crate::api;
 use origin_common::read_input;
-use origin_crypto_sdk::error_correction::ReedSolomonCodec;
 
 pub fn dispatch(cli: crate::cli::Cli) -> Result<(), String> {
     match cli.command {

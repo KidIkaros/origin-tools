@@ -23,6 +23,7 @@ use std::collections::{HashMap, HashSet};
 
 use serde::{Deserialize, Serialize};
 
+use origin_crypto_sdk::{Ed25519Signature, Ed25519VerifyingKey};
 use origin_crypto_sdk::signing::hybrid::{Ed25519Falcon1024, HybridSigningKeyBundle};
 
 use crate::capabilities::CapabilitySet;
@@ -215,13 +216,13 @@ impl SignedDelegation {
         if sig_bytes.len() < 64 {
             return Err("signature too short".into());
         }
-        let ed25519_sig = ed25519_dalek::Signature::from_slice(&sig_bytes[..64])
+        let ed25519_sig = Ed25519Signature::from_slice(&sig_bytes[..64])
             .map_err(|e| format!("invalid ed25519 signature: {e}"))?;
         let falcon_sig =
             origin_crypto_sdk::pqc::falcon1024::FalconSignature::from_bytes(&sig_bytes[64..])
                 .map_err(|e| format!("invalid falcon signature: {e}"))?;
 
-        let ed25519_pk = ed25519_dalek::VerifyingKey::from_bytes(
+        let ed25519_pk = Ed25519VerifyingKey::from_bytes(
             ed25519_pk_bytes
                 .as_slice()
                 .try_into()
@@ -448,13 +449,13 @@ impl DelegationRevocation {
         if sig_bytes.len() < 64 {
             return Err("signature too short".into());
         }
-        let ed25519_sig = ed25519_dalek::Signature::from_slice(&sig_bytes[..64])
+        let ed25519_sig = Ed25519Signature::from_slice(&sig_bytes[..64])
             .map_err(|e| format!("invalid ed25519 signature: {e}"))?;
         let falcon_sig =
             origin_crypto_sdk::pqc::falcon1024::FalconSignature::from_bytes(&sig_bytes[64..])
                 .map_err(|e| format!("invalid falcon signature: {e}"))?;
 
-        let ed25519_pk = ed25519_dalek::VerifyingKey::from_bytes(
+        let ed25519_pk = Ed25519VerifyingKey::from_bytes(
             ed25519_pk_bytes
                 .as_slice()
                 .try_into()
