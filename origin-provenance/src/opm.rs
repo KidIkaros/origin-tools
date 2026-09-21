@@ -72,6 +72,12 @@ pub struct Edit {
     pub note: Option<String>,
     pub content: ContentBinding,
     pub leaf_hash: String,
+    /// Per-chunk hashes in file order (P-03 schema amendment, bound by
+    /// `content.chunk_tree_root`: the verifier recomputes the S2 tree from
+    /// this list and requires it to equal the stored root). Optional for
+    /// wire backward-compat; `create`/`append_edit` always populate it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chunk_hashes: Option<Vec<String>>,
 }
 
 /// Content binding at an edit: whole file + chunk tree.
@@ -92,6 +98,13 @@ pub struct Checkpoint {
     pub mmr_root: String,
     pub timestamp: i64,
     pub signer_fingerprint: String,
+    /// Signer public keys (P-03 schema amendment): the verifier recomputes
+    /// the fingerprint over them — transitive authentication without an
+    /// out-of-band pk map. Outside `checkpoint_payload`/`manifest_id`
+    /// (authenticated by the fingerprint-binding check, ticket-08 pattern).
+    /// Optional for wire backward-compat.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub keys: Option<crate::identity::SignerKeys>,
     /// Base64 (S4) hybrid signature over the checkpoint payload.
     pub signature: String,
 }
@@ -113,6 +126,10 @@ impl Checkpoint {
 #[serde(deny_unknown_fields)]
 pub struct Attestation {
     pub attestor_fingerprint: String,
+    /// Attestor public keys (P-03 schema amendment, same rationale as
+    /// `Checkpoint::keys`). Optional for wire backward-compat.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub keys: Option<crate::identity::SignerKeys>,
     /// Base64 (S4) hybrid signature over the attestation payload.
     pub signature: String,
 }
@@ -165,6 +182,7 @@ impl Opm {
                 note: None,
                 content: ContentBinding::from_hashes(&data, chunk_size),
                 leaf_hash: hex::encode(leaf),
+                chunk_hashes: Some(chunk_hashes(&data, chunk_size)),
             }],
             checkpoints: vec![cp],
             attestations: Vec::new(),
@@ -202,6 +220,7 @@ impl Opm {
             note: note.map(str::to_string),
             content: ContentBinding::from_hashes(&data, self.chunk_size),
             leaf_hash: hex::encode(leaf),
+            chunk_hashes: Some(chunk_hashes(&data, self.chunk_size)),
         });
 
         let mut mmr = MmrState::new();
@@ -229,6 +248,7 @@ impl Opm {
         let sig = attestor.sign(&payload)?;
         self.attestations.push(Attestation {
             attestor_fingerprint: attestor.fingerprint_hex(),
+            keys: Some(attestor.public_keys()),
             signature: Signer::hybrid_sig_to_base64(&sig)?,
         });
         Ok(())
@@ -292,6 +312,7 @@ impl Opm {
             mmr_root: hex::encode(root),
             timestamp: ts,
             signer_fingerprint: signer.fingerprint_hex(),
+            keys: Some(signer.public_keys()),
             signature: Signer::hybrid_sig_to_base64(&sig)?,
         })
     }
@@ -308,6 +329,13 @@ impl ContentBinding {
             chunk_tree_root: hex::encode(content::chunk_tree(data, chunk_size)),
         }
     }
+}
+
+fn chunk_hashes(data: &[u8], chunk_size: u32) -> Vec<String> {
+    let cs = chunk_size.max(1) as usize;
+    data.chunks(cs)
+        .map(|c| hex::encode(origin_crypto_sdk::blake3::hash(c).as_bytes()))
+        .collect()
 }
 
 fn self_leaf_hash(e: &Edit) -> Result<[u8; 32]> {

@@ -10,6 +10,19 @@ use crate::encoding::{signer_fingerprint, SIGNER_DOMAIN};
 use origin_crypto_sdk::signing::hybrid::HybridSigningKeyBundle;
 use origin_crypto_sdk::signing::wire::HybridSig;
 
+/// Public key material carried inside signed structures (P-03 schema
+/// amendment — same transitive-authentication pattern as origin-identity
+/// spec S2 and ticket 08: a fingerprint is a commitment to keys; carrying
+/// the keys lets an offline verifier recompute and check the commitment).
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct SignerKeys {
+    /// Hex Ed25519 public key (64 chars).
+    pub ed25519_pk: String,
+    /// Hex Falcon-1024 public key (3586 chars).
+    pub falcon_pk: String,
+}
+
 /// A manifest signer: hybrid key bundle + derived fingerprint.
 pub struct Signer {
     bundle: HybridSigningKeyBundle,
@@ -48,6 +61,15 @@ impl Signer {
             *self.bundle.ed25519_pk().as_bytes(),
             self.bundle.falcon1024_pk().as_bytes().to_vec(),
         )
+    }
+
+    /// The key material embedded in signed structures (P-03 amendment).
+    pub fn public_keys(&self) -> SignerKeys {
+        let (ed, falcon) = self.pk_bytes();
+        SignerKeys {
+            ed25519_pk: hex::encode(ed),
+            falcon_pk: hex::encode(falcon),
+        }
     }
 
     /// Sign `msg` with the hybrid bundle (fallible path only).

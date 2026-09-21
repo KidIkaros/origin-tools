@@ -35,6 +35,8 @@ pub enum Commands {
     Append(AppendArgs),
     /// Add an independent attestation to an OPM manifest
     Attest(AttestArgs),
+    /// Verify a file against its OPM manifest (three-state output)
+    VerifyManifest(VerifyManifestArgs),
 }
 
 #[derive(Parser, Clone, Debug)]
@@ -143,6 +145,24 @@ pub struct AppendArgs {
     /// Sidecar path (default: <asset>.opm)
     #[arg(long)]
     pub sidecar: Option<String>,
+}
+
+#[derive(Parser, Clone, Debug)]
+pub struct VerifyManifestArgs {
+    /// File to verify against its OPM manifest
+    pub asset: String,
+
+    /// Sidecar path (default: <asset>.opm)
+    #[arg(long)]
+    pub sidecar: Option<String>,
+
+    /// Authoritative attestation threshold K (verifier policy)
+    #[arg(long)]
+    pub k: Option<u32>,
+
+    /// Roster file: one trusted signer/attestor fingerprint hex per line
+    #[arg(long)]
+    pub roster: Option<String>,
 }
 
 #[derive(Parser, Clone, Debug)]

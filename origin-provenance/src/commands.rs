@@ -2,11 +2,9 @@
 
 //! Command implementations for origin-provenance.
 
-use std::path::Path;
-
 use crate::cli::{
     AppendArgs, AttestArgs, CheckArgs, Commands, CreateArgs, ScanArgs, StampArgs, UnwatermarkArgs,
-    VerifyArgs, WatermarkArgs,
+    VerifyArgs, VerifyManifestArgs, WatermarkArgs,
 };
 use crate::encoding::Action;
 use crate::identity::Signer;
@@ -14,6 +12,7 @@ use crate::manifest::{FileStatus, Manifest};
 use crate::opm::{self, Opm};
 use crate::stamp::Stamp;
 use crate::watermark::Watermark;
+use std::path::Path;
 
 pub fn dispatch(cli: crate::cli::Cli) -> Result<(), String> {
     match cli.command {
@@ -26,6 +25,7 @@ pub fn dispatch(cli: crate::cli::Cli) -> Result<(), String> {
         Commands::Create(args) => cmd_create(args),
         Commands::Append(args) => cmd_append(args),
         Commands::Attest(args) => cmd_attest(args),
+        Commands::VerifyManifest(args) => cmd_verify_manifest(args),
     }
 }
 
@@ -333,6 +333,79 @@ fn cmd_attest(args: AttestArgs) -> Result<(), String> {
         hex::encode(opm.manifest_id().map_err(|e| e.to_string())?)
     );
     Ok(())
+}
+
+fn cmd_verify_manifest(args: VerifyManifestArgs) -> Result<(), String> {
+    let asset = Path::new(&args.asset);
+    if !asset.exists() {
+        return Err(format!("file not found: {}", args.asset));
+    }
+    let sidecar = args
+        .sidecar
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| opm::sidecar_path(asset));
+
+    let allow_roster = match &args.roster {
+        Some(path) => {
+            let text =
+                std::fs::read_to_string(path).map_err(|e| format!("read roster {path}: {e}"))?;
+            let fps: Vec<String> = text
+                .lines()
+                .map(str::trim)
+                .filter(|l| !l.is_empty() && !l.starts_with('#'))
+                .map(str::to_string)
+                .collect();
+            if fps.is_empty() {
+                return Err(format!("roster file {path} is empty"));
+            }
+            Some(fps)
+        }
+        None => None,
+    };
+
+    let policy = crate::verify::VerifyPolicy {
+        now: None,
+        required_k: args.k,
+        allow_roster,
+        journal_path: None,
+    };
+    let outcome = crate::verify::verify(asset, Some(&sidecar), &policy);
+
+    // Three-state output — plain, honest, voice-clean.
+    println!("{}", outcome.headline());
+    if let crate::verify::VerifyOutcome::Intact {
+        chunk_report,
+        self_attestation_flag,
+        unattested,
+        k_discrepancy,
+        ..
+    } = &outcome
+    {
+        println!("  {}", chunk_report.summarize());
+        if *self_attestation_flag {
+            println!("  note: signer also appears among attestors (flagged, not rejected)");
+        }
+        if let Some((have, need)) = unattested {
+            println!("  manifest-intact (unattested: {have} of {need} required valid)");
+        }
+        if let Some((issuer_k, auth_k)) = k_discrepancy {
+            println!(
+                "  note: issuer-requested threshold {issuer_k}, verifier-authoritative {auth_k}"
+            );
+        }
+    }
+    if matches!(outcome, crate::verify::VerifyOutcome::Intact { .. }) {
+        println!("  what was not checked: metadata, watermark (hint only),");
+        println!("  signer-asserted timestamps, revocation status");
+    }
+    println!();
+    println!("{}", outcome.footer());
+
+    match outcome {
+        crate::verify::VerifyOutcome::Intact { .. } => Ok(()),
+        crate::verify::VerifyOutcome::Invalid(_) => Err("manifest verification failed".into()),
+        crate::verify::VerifyOutcome::NoManifest { .. } => Err("no manifest found".into()),
+    }
 }
 
 #[cfg(test)]
@@ -787,6 +860,108 @@ mod tests {
         ]);
         let err = dispatch(cli).unwrap_err();
         assert!(err.contains("manifest not found"), "got: {err}");
+    }
+
+    #[test]
+    fn opm_cli_verify_manifest_flow() {
+        use crate::cli::Cli;
+        use clap::Parser;
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("v.txt");
+        std::fs::write(&file, b"verify me").unwrap();
+        let seed = seed_file(&dir, "v.seed", [0x77u8; 32]);
+
+        // create + verify-manifest: intact path
+        let cli = Cli::parse_from([
+            "origin-provenance",
+            "create",
+            file.to_str().unwrap(),
+            "--seed-file",
+            &seed,
+        ]);
+        assert!(dispatch(cli).is_ok());
+        let cli = Cli::parse_from([
+            "origin-provenance",
+            "verify-manifest",
+            file.to_str().unwrap(),
+        ]);
+        assert!(dispatch(cli).is_ok());
+
+        // Tamper → invalid → command fails with integrity error.
+        std::fs::write(&file, b"tampered bytes!!").unwrap();
+        let cli = Cli::parse_from([
+            "origin-provenance",
+            "verify-manifest",
+            file.to_str().unwrap(),
+        ]);
+        let err = dispatch(cli).unwrap_err();
+        assert!(err.contains("failed"));
+
+        // No sidecar → no-manifest error.
+        let lonely = dir.path().join("lonely.txt");
+        std::fs::write(&lonely, b"no manifest").unwrap();
+        let cli = Cli::parse_from([
+            "origin-provenance",
+            "verify-manifest",
+            lonely.to_str().unwrap(),
+        ]);
+        let err = dispatch(cli).unwrap_err();
+        assert!(err.contains("no manifest"));
+    }
+
+    #[test]
+    fn opm_cli_verify_manifest_with_roster_and_k() {
+        use crate::cli::Cli;
+        use clap::Parser;
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("r.txt");
+        std::fs::write(&file, b"roster test").unwrap();
+        let s = crate::identity::Signer::from_seed(&[0x88u8; 32]).unwrap();
+        let roster_path = dir.path().join("roster.txt");
+        std::fs::write(
+            &roster_path,
+            format!("# trusted peers\n{}\n", s.fingerprint_hex()),
+        )
+        .unwrap();
+
+        let mut opm = Opm::create(&file, &s, crate::encoding::Action::Capture, 1_048_576).unwrap();
+        opm.attest(&s).unwrap();
+        let sidecar = opm::sidecar_path(&file);
+        opm::save(&opm, &sidecar).unwrap();
+
+        // On-roster signer, K=1 met: intact.
+        let cli = Cli::parse_from([
+            "origin-provenance",
+            "verify-manifest",
+            file.to_str().unwrap(),
+            "--roster",
+            roster_path.to_str().unwrap(),
+            "--k",
+            "1",
+        ]);
+        assert!(dispatch(cli).is_ok());
+
+        // K=2 unmet with 1 distinct attestor: degraded-intact, still Ok.
+        let cli = Cli::parse_from([
+            "origin-provenance",
+            "verify-manifest",
+            file.to_str().unwrap(),
+            "--k",
+            "2",
+        ]);
+        assert!(dispatch(cli).is_ok());
+
+        // Signer NOT on roster: key-binding rejection.
+        let other_roster = dir.path().join("other.txt");
+        std::fs::write(&other_roster, format!("{}\n", "c".repeat(64))).unwrap();
+        let cli = Cli::parse_from([
+            "origin-provenance",
+            "verify-manifest",
+            file.to_str().unwrap(),
+            "--roster",
+            other_roster.to_str().unwrap(),
+        ]);
+        assert!(dispatch(cli).is_err());
     }
 
     #[test]

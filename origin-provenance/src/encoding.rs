@@ -216,25 +216,24 @@ pub fn signer_fingerprint(
 /// its own root; empty input roots to `BLAKE3(b"")`.
 pub fn chunk_tree_root(data: &[u8], chunk_size: u32) -> [u8; 32] {
     let chunk_size = chunk_size.max(1) as usize;
-    let mut level: Vec<[u8; 32]> = if data.is_empty() {
+    let leaves: Vec<[u8; 32]> = if data.is_empty() {
         vec![]
     } else {
         data.chunks(chunk_size)
-            .map(|c| {
-                let h = blake3::hash(c);
-                let mut out = [0u8; 32];
-                out.copy_from_slice(h.as_bytes());
-                out
-            })
+            .map(|c| *blake3::hash(c).as_bytes())
             .collect()
     };
-    if level.is_empty() {
-        // Empty input: root = BLAKE3 of empty input (spec S2).
-        let h = blake3::hash(b"");
-        let mut out = [0u8; 32];
-        out.copy_from_slice(h.as_bytes());
-        return out;
+    merkle_root_from_leaf_hashes(&leaves)
+}
+
+/// Collapse leaf hashes to the S2 Merkle root (pairwise BLAKE3, odd node
+/// carried up; empty list ⇒ `BLAKE3("")`, matching empty input). Exposed so
+/// the verifier can rebind a manifest's per-chunk hash list to its root.
+pub fn merkle_root_from_leaf_hashes(leaves: &[[u8; 32]]) -> [u8; 32] {
+    if leaves.is_empty() {
+        return *blake3::hash(b"").as_bytes();
     }
+    let mut level: Vec<[u8; 32]> = leaves.to_vec();
     while level.len() > 1 {
         let mut next = Vec::with_capacity(level.len().div_ceil(2));
         let mut i = 0;
@@ -245,7 +244,7 @@ pub fn chunk_tree_root(data: &[u8], chunk_size: u32) -> [u8; 32] {
                 let mut pair = Vec::with_capacity(64);
                 pair.extend_from_slice(&level[i]);
                 pair.extend_from_slice(&level[i + 1]);
-                next.push(blake3::hash(&pair).into());
+                next.push(*blake3::hash(&pair).as_bytes());
             }
             i += 2;
         }

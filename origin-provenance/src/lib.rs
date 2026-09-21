@@ -16,4 +16,5 @@ pub mod identity;
 pub mod manifest;
 pub mod opm;
 pub mod stamp;
+pub mod verify;
 pub mod watermark;
