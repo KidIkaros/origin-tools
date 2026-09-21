@@ -56,7 +56,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // ── registry + endorsement chain ──────────────────────────────────
     let mut registry = AgentRegistry::new();
-    registry.register(AgentRecord::new(merchant_fp.clone(), merchant_pk.clone(), 1));
+    registry.register(AgentRecord::new(
+        merchant_fp.clone(),
+        merchant_pk.clone(),
+        1,
+    ));
     registry.register(AgentRecord::new(worker_fp.clone(), worker_pk.clone(), 1));
     assert_eq!(registry.count(), 2);
 
@@ -100,27 +104,40 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // ── revocation journal ────────────────────────────────────────────
     let mut journal = RevocationJournal::new();
     let target = endorsement.hash();
-    let mut rev = RevocationRecord {
-        target_hash: target,
-        revoked_by: merchant_fp.clone(),
-        reason: "context changed".into(),
-        timestamp: now(),
-        prev_hash: [0u8; 32],
-        signature: vec![],
-    };
-    rev.signature = merchant.sign(&rev.signable_bytes())?;
-    journal.append(rev);
+    journal.append_signed(
+        RevocationRecord {
+            target_hash: target,
+            revoked_by: merchant_fp.clone(), // overridden: journal-owned identity fields
+            reason: "context changed".into(),
+            timestamp: now(),
+            prev_hash: [0u8; 32],
+            signature: vec![],
+            revoker_falcon_pk: vec![],
+        },
+        &merchant,
+    )?;
     assert!(journal.is_revoked(&target));
     journal.verify_integrity()?;
-    println!("✓ revocation journaled + hash-chained");
+    assert_eq!(
+        journal.records[0].verify_signature(),
+        origin_attest::revocation::SignatureStatus::Valid
+    );
+    assert!(journal.verify_signatures().is_empty());
+    println!("✓ revocation journaled + hash-chained + signature-verified");
 
     // ── trust graph ranking ───────────────────────────────────────────
     let mut graph = TrustGraph::new(vec![merchant_fp.clone()]);
     graph.add_claim(claim.clone());
     graph.add_endorsement(endorsement.clone());
     let score = graph.trust_score(&worker_fp, "code-review");
-    assert!(score > 0.0, "endorsed agent must score above 0, got {score}");
-    assert!(!graph.can_issue_tier2(&worker_fp), "one Tier-2 vouch is below threshold");
+    assert!(
+        score > 0.0,
+        "endorsed agent must score above 0, got {score}"
+    );
+    assert!(
+        !graph.can_issue_tier2(&worker_fp),
+        "one Tier-2 vouch is below threshold"
+    );
     println!("✓ trust_score(worker, code-review) = {score:.4}; Tier-2 gate enforced");
 
     println!("\norigin-attest dogfood OK — usable as a foundational dependency");

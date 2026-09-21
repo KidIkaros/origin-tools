@@ -243,6 +243,7 @@ fn full_attestation_pipeline() {
         timestamp: 1_700_001_000,
         prev_hash: [0u8; 32],
         signature: vec![],
+        revoker_falcon_pk: vec![],
     };
     journal.append(revocation);
 
@@ -394,6 +395,7 @@ fn revocation_journal_multi_entry_chain() {
             timestamp: 1_700_000_000 + i as i64,
             prev_hash: [0u8; 32],
             signature: vec![],
+            revoker_falcon_pk: vec![],
         });
     }
 
