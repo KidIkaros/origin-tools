@@ -430,20 +430,7 @@ fn cmd_verify_manifest(args: VerifyManifestArgs) -> Result<(), String> {
         .unwrap_or_else(|| opm::sidecar_path(asset));
 
     let allow_roster = match &args.roster {
-        Some(path) => {
-            let text =
-                std::fs::read_to_string(path).map_err(|e| format!("read roster {path}: {e}"))?;
-            let fps: Vec<String> = text
-                .lines()
-                .map(str::trim)
-                .filter(|l| !l.is_empty() && !l.starts_with('#'))
-                .map(str::to_string)
-                .collect();
-            if fps.is_empty() {
-                return Err(format!("roster file {path} is empty"));
-            }
-            Some(fps)
-        }
+        Some(path) => Some(crate::verify::load_roster(std::path::Path::new(path))?),
         None => None,
     };
 

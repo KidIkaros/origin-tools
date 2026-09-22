@@ -415,6 +415,30 @@ pub fn load_sibling_anchor(asset: &Path) -> Result<Option<crate::opm::Anchor>, S
     }
 }
 
+/// Load a verifier roster file (ticket T-RT9): one trusted
+/// signer/attestor fingerprint hex per line; `#` starts a comment; blank
+/// lines ignored. Shared by the engine CLI and product shells so roster
+/// semantics are uniform: an empty (all-comment) roster file is an ERROR
+/// — a silently-empty roster would fail every manifest, which is safe
+/// but confusing; the error says so instead.
+pub fn load_roster(path: &Path) -> Result<Vec<String>, String> {
+    let text =
+        std::fs::read_to_string(path).map_err(|e| format!("read roster {}: {e}", path.display()))?;
+    let fps: Vec<String> = text
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty() && !l.starts_with('#'))
+        .map(str::to_string)
+        .collect();
+    if fps.is_empty() {
+        return Err(format!(
+            "roster file {} is empty (one fingerprint hex per line)",
+            path.display()
+        ));
+    }
+    Ok(fps)
+}
+
 /// Resolve the key material for a fingerprint: embedded `keys` must recompute
 /// to `expected_fp` (transitive authentication); a verifier roster overrides
 /// (verifier-local trust beats embedded material). Design §3 step 5 + ZTNA.
@@ -1838,6 +1862,25 @@ mod tests {
             ..policy_now(4_100_000_000)
         };
         assert!(intact(&verify(&file, Some(&sidecar), &policy_own)));
+    }
+
+    /// T-RT9: shared roster loader — comments/blanks skipped, fingerprint
+    /// lines preserved; an all-comment/empty file is an error, not a
+    /// silently-empty trust set.
+    #[test]
+    fn load_roster_parses_and_rejects_empty() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("roster.txt");
+        std::fs::write(&p, "# trusted publishers\naa11\n\n  bb22  \n# cc33\n").unwrap();
+        let fps = load_roster(&p).unwrap();
+        assert_eq!(fps, vec!["aa11".to_string(), "bb22".to_string()]);
+
+        std::fs::write(&p, "# only comments\n\n").unwrap();
+        let err = load_roster(&p).unwrap_err();
+        assert!(err.contains("empty"), "got: {err}");
+
+        let missing = dir.path().join("nope.txt");
+        assert!(load_roster(&missing).is_err());
     }
 
     /// B1 (red team pass 2): the engine's `create`/seal must refuse to
