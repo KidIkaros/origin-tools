@@ -134,6 +134,29 @@ pub struct Attestation {
     pub signature: String,
 }
 
+/// The publisher's signed head announcement (ticket T-RT1): binds a
+/// `manifest_id` to its edit count and asset, signed by the manifest
+/// signer. Published out-of-band (the publisher's site, a receipt, the
+/// work itself) where an attacker cannot rewrite it; verifiers load it
+/// to detect truncated or substituted histories. Progress semantics:
+/// a manifest with MORE edits than announced passes (growth beyond a
+/// stale announcement); fewer — or a different head — fails.
+#[derive(Serialize, Deserialize, Clone, Debug)]
+#[serde(deny_unknown_fields)]
+pub struct Anchor {
+    /// The announced manifest head (hex of the recomputed manifest_id).
+    pub manifest_id: String,
+    /// Edit count at announcement time.
+    pub edit_count: u64,
+    /// Anchor signer fingerprint — expected to be the manifest signer.
+    pub signer_fingerprint: String,
+    /// Anchor signer public keys (fingerprint-recomputed at verify).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub keys: Option<crate::identity::SignerKeys>,
+    /// Base64 (S4) hybrid signature over the anchor payload.
+    pub signature: String,
+}
+
 /// Content hashing helpers (BLAKE3 family — design D2).
 pub mod content {
     use origin_crypto_sdk::blake3;
@@ -302,6 +325,116 @@ impl Opm {
             mmr.append_hash(self_leaf_hash(e)?);
         }
         Ok(mmr.root())
+    }
+
+    /// Author the head anchor (ticket T-RT1): signer's hybrid signature
+    /// over `(edit_count, manifest_id, asset_id)` — call after the
+    /// manifest is final and publish the result out-of-band.
+    pub fn anchor(&self, signer: &Signer) -> Result<Anchor> {
+        let id = self.manifest_id()?;
+        let asset_id = self.asset_id_bytes()?;
+        let payload =
+            crate::encoding::anchor_payload_input(self.edits.len() as u64, &id, &asset_id);
+        let sig = signer.sign(&payload)?;
+        Ok(Anchor {
+            manifest_id: hex::encode(id),
+            edit_count: self.edits.len() as u64,
+            signer_fingerprint: signer.fingerprint_hex(),
+            keys: Some(signer.public_keys()),
+            signature: Signer::hybrid_sig_to_base64(&sig)?,
+        })
+    }
+
+    /// Recompute `manifest_id` as of the FIRST `n` edits (ticket T-RT1
+    /// growth semantics): leaves 0..n plus every checkpoint whose
+    /// `leaf_count` ≤ n. The threshold request is a creation-time
+    /// property in v1 (nothing mutates it after `create`), so it is
+    /// always included. Errors when `n` exceeds the present edit count.
+    pub fn manifest_id_at(&self, n: u64) -> Result<[u8; 32]> {
+        let count = n as usize;
+        if count > self.edits.len() {
+            return Err(ProvenanceError::InvalidManifest(
+                "anchor count exceeds present edits".into(),
+            ));
+        }
+        let mut leaves = Vec::with_capacity(count);
+        for e in &self.edits[..count] {
+            leaves.push(self_leaf_hash(e)?);
+        }
+        let mut cps = Vec::new();
+        for cp in &self.checkpoints {
+            if cp.leaf_count <= n {
+                cps.push(CheckpointBasis {
+                    leaf_count: cp.leaf_count,
+                    mmr_root: decode32(&cp.mmr_root)?,
+                    timestamp: cp.timestamp,
+                    signer_fingerprint_raw: decode32(&cp.signer_fingerprint)?,
+                });
+            }
+        }
+        let asset_id = self.asset_id_bytes()?;
+        Ok(manifest_id(
+            self.version,
+            &asset_id,
+            self.chunk_size,
+            &leaves,
+            &cps,
+            self.threshold.map(|t| t.k),
+        ))
+    }
+
+    /// Verify an anchor against THIS manifest (ticket T-RT1):
+    /// - the anchor signer's embedded keys must recompute to the anchor
+    ///   fingerprint (transitive authentication, ticket-08 pattern);
+    /// - head check (progress semantics):
+    ///   · presented edits == announced count ⇒ the manifest head must
+    ///     equal the announced `manifest_id`;
+    ///   · presented edits > announced (growth beyond a stale
+    ///     announcement) ⇒ the announced head must be a GENUINE PREFIX
+    ///     of the presented history — the prefix id at the announced
+    ///     count must equal the announced `manifest_id`;
+    ///   · presented edits < announced ⇒ truncation ⇒ fail.
+    /// Signature failures, key mismatches, and head mismatches are all
+    /// just `false` — an anchor never upgrades a verdict, it only fails
+    /// closed.
+    pub fn verify_anchor(&self, anchor: &Anchor) -> Result<bool> {
+        let presented = self.edits.len() as u64;
+        let head_ok = if presented == anchor.edit_count {
+            hex::encode(self.manifest_id()?) == anchor.manifest_id
+        } else if presented > anchor.edit_count {
+            hex::encode(self.manifest_id_at(anchor.edit_count)?) == anchor.manifest_id
+        } else {
+            false // presented < announced: the history shrank
+        };
+        if !head_ok {
+            return Ok(false);
+        }
+        // Signature binds the ANNOUNCED head. In both pass branches the
+        // prefix id at the announced count equals the announced head
+        // (equality: the full head; growth: verified above), so this is
+        // exactly the payload the publisher signed.
+        let id = self.manifest_id_at(anchor.edit_count)?;
+        let asset_id = self.asset_id_bytes()?;
+        let payload = crate::encoding::anchor_payload_input(anchor.edit_count, &id, &asset_id);
+        let keys = anchor
+            .keys
+            .as_ref()
+            .ok_or_else(|| ProvenanceError::InvalidManifest("anchor missing keys".into()))?;
+        let ed: [u8; 32] = hex::decode(&keys.ed25519_pk)
+            .map_err(|e| ProvenanceError::InvalidManifest(format!("anchor ed pk: {e}")))?
+            .try_into()
+            .map_err(|_| {
+                ProvenanceError::InvalidManifest("anchor ed pk: expected 32 bytes".into())
+            })?;
+        let falcon = hex::decode(&keys.falcon_pk)
+            .map_err(|e| ProvenanceError::InvalidManifest(format!("anchor falcon pk: {e}")))?;
+        let recomputed = crate::encoding::signer_fingerprint(&ed, &falcon)
+            .map_err(|e| ProvenanceError::InvalidManifest(format!("anchor fp: {e}")))?;
+        if hex::encode(recomputed) != anchor.signer_fingerprint {
+            return Ok(false);
+        }
+        let sig = Signer::hybrid_sig_from_base64(&anchor.signature)?;
+        Ok(sig.verify(&ed, &falcon, &payload).is_ok())
     }
 
     /// Sign and add a checkpoint over the current MMR state.

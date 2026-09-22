@@ -3,8 +3,8 @@
 //! Command implementations for origin-provenance.
 
 use crate::cli::{
-    AppendArgs, AttestArgs, CheckArgs, Commands, CreateArgs, ScanArgs, StampArgs, UnwatermarkArgs,
-    VerifyArgs, VerifyManifestArgs, WatermarkArgs,
+    AnchorArgs, AppendArgs, AttestArgs, CheckArgs, Commands, CreateArgs, ScanArgs, StampArgs,
+    UnwatermarkArgs, VerifyArgs, VerifyManifestArgs, WatermarkArgs,
 };
 use crate::encoding::Action;
 use crate::identity::Signer;
@@ -26,7 +26,46 @@ pub fn dispatch(cli: crate::cli::Cli) -> Result<(), String> {
         Commands::Append(args) => cmd_append(args),
         Commands::Attest(args) => cmd_attest(args),
         Commands::VerifyManifest(args) => cmd_verify_manifest(args),
+        Commands::Anchor(args) => cmd_anchor(args),
     }
+}
+
+/// Publish a signed head anchor (ticket T-RT1): the announcement copy a
+/// publisher posts out-of-band so verifiers can detect truncated or
+/// substituted histories.
+fn cmd_anchor(args: AnchorArgs) -> Result<(), String> {
+    let asset = Path::new(&args.asset);
+    if !asset.exists() {
+        return Err(format!("file not found: {}", args.asset));
+    }
+    let seed = load_signer_seed(&args.seed_file)?;
+    let signer = Signer::from_seed(&seed).map_err(|e| format!("signer: {e}"))?;
+    let sidecar = args
+        .sidecar
+        .unwrap_or_else(|| opm::sidecar_path(asset).to_string_lossy().into_owned());
+    let sidecar_path = Path::new(&sidecar);
+    if !sidecar_path.exists() {
+        return Err(format!("manifest not found: {sidecar} (run 'create' first)"));
+    }
+    let opm = opm::load(sidecar_path).map_err(|e| format!("load: {e}"))?;
+    let anchor = opm.anchor(&signer).map_err(|e| format!("anchor: {e}"))?;
+    let out_path = args
+        .output
+        .unwrap_or_else(|| format!("{}.anchor", args.asset));
+    if Path::new(&out_path).exists() {
+        return Err(crate::error::ProvenanceError::AnchorExists(out_path).to_string());
+    }
+    let text = serde_json::to_string_pretty(&anchor).map_err(|e| format!("serialize: {e}"))?;
+    std::fs::write(&out_path, &text).map_err(|e| format!("write {out_path}: {e}"))?;
+
+    println!("Anchor written: {out_path}");
+    println!("  manifest_id: {}", anchor.manifest_id);
+    println!("  edit_count:  {}", anchor.edit_count);
+    println!("  signer:      {}", anchor.signer_fingerprint);
+    println!("  publish this file out-of-band (your site, a receipt, the work itself);");
+    println!("  verifiers keep it beside the asset (or pass --anchor) so any trimmed");
+    println!("  or substituted history fails with manifest-invalid (history).");
+    Ok(())
 }
 
 fn cmd_stamp(args: StampArgs) -> Result<(), String> {
@@ -379,6 +418,18 @@ fn cmd_verify_manifest(args: VerifyManifestArgs) -> Result<(), String> {
         }
         None => None,
     };
+    // Head anchor (ticket T-RT1): explicit --anchor pins the file (must
+    // exist); otherwise a sibling `<asset>.anchor` is applied automatically
+    // when present (shared loader). Anchor failures are
+    // `manifest-invalid (head-anchor)` — never a downgrade, never silent.
+    let anchor = match &args.anchor {
+        Some(p) => {
+            let text = std::fs::read_to_string(p).map_err(|e| format!("read anchor {p}: {e}"))?;
+            Some(serde_json::from_str::<opm::Anchor>(&text)
+                .map_err(|e| format!("parse anchor {p}: {e}"))?)
+        }
+        None => crate::verify::load_sibling_anchor(asset)?,
+    };
     let policy = crate::verify::VerifyPolicy {
         now: None,
         max_future_skew_secs: 2,
@@ -387,6 +438,7 @@ fn cmd_verify_manifest(args: VerifyManifestArgs) -> Result<(), String> {
         journal_path: None,
         expected_manifest_id,
         expected_leaf_count: args.expect_edits,
+        anchor,
     };
 
     // Spec §6 discovery order: explicit --sidecar pins the path (no

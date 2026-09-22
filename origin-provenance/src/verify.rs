@@ -189,6 +189,10 @@ pub enum InvalidReason {
     Timestamp,
     SignerRevoked { journal_tip: i64 },
     AttestationBinding,
+    /// A publisher head anchor was supplied and does not verify for this
+    /// manifest (ticket T-RT1): truncated, substituted, or wrong/stale
+    /// anchor. Distinct reason — the anchor is signed evidence.
+    HeadAnchor,
 }
 
 impl InvalidReason {
@@ -212,6 +216,7 @@ impl InvalidReason {
                 format!("manifest-invalid (signer-revoked, as of journal tip {journal_tip})")
             }
             InvalidReason::AttestationBinding => "manifest-invalid (attestation-binding)".into(),
+            InvalidReason::HeadAnchor => "manifest-invalid (head-anchor)".into(),
         }
     }
 }
@@ -373,6 +378,12 @@ pub struct VerifyPolicy {
     /// Lighter head anchor: the expected number of edits. A presented
     /// manifest with fewer edits than the announced count is truncated.
     pub expected_leaf_count: Option<u64>,
+    /// The publisher's SIGNED head anchor (ticket T-RT1), loaded by the
+    /// caller from an explicit path or a sibling `<asset>.anchor`. Verified
+    /// against the presented manifest inside the pipeline (progress
+    /// semantics: equality or genuine-prefix passes; shrink/substitution
+    /// ⇒ `manifest-invalid (head-anchor)`).
+    pub anchor: Option<crate::opm::Anchor>,
 }
 
 impl Default for VerifyPolicy {
@@ -385,7 +396,22 @@ impl Default for VerifyPolicy {
             journal_path: None,
             expected_manifest_id: None,
             expected_leaf_count: None,
+            anchor: None,
         }
+    }
+}
+
+/// Load the sibling `<asset>.anchor` head anchor if present (ticket
+/// T-RT1). Shared by the engine CLI and product shells so auto-application
+/// is uniform: a parse-broken anchor is an ERROR (fail closed), not
+/// silent absence.
+pub fn load_sibling_anchor(asset: &Path) -> Result<Option<crate::opm::Anchor>, String> {
+    let sibling = format!("{}.anchor", asset.display());
+    match std::fs::read_to_string(&sibling) {
+        Ok(text) => serde_json::from_str(&text)
+            .map(Some)
+            .map_err(|e| format!("parse anchor {sibling}: {e}")),
+        Err(_) => Ok(None),
     }
 }
 
@@ -560,6 +586,17 @@ fn verify_loaded(
                 },
                 ann,
             );
+        }
+    }
+
+    // Step 7b — publisher head anchor (ticket T-RT1). A verified anchor is
+    // the publisher's signed announcement of the head; failure means the
+    // presented history shrank or was substituted relative to it. Fails
+    // closed whenever an anchor is supplied and does not verify.
+    if let Some(anchor) = &policy.anchor {
+        let ok = opm.verify_anchor(anchor).unwrap_or(false);
+        if !ok {
+            return VerifyOutcome::Invalid(InvalidReason::HeadAnchor, ann);
         }
     }
 
@@ -1167,6 +1204,7 @@ mod tests {
             journal_path: None,
             expected_manifest_id: None,
             expected_leaf_count: None,
+            anchor: None,
         }
     }
 
@@ -1460,6 +1498,7 @@ mod tests {
             journal_path: None,
             expected_manifest_id: None,
             expected_leaf_count: None,
+            anchor: None,
         };
         let outcome = verify(&file, Some(&sidecar), &policy);
         assert!(intact(&outcome), "got: {:?}", outcome.headline());
@@ -1473,6 +1512,7 @@ mod tests {
             journal_path: None,
             expected_manifest_id: None,
             expected_leaf_count: None,
+            anchor: None,
         };
         let outcome = verify(&file, Some(&sidecar), &policy);
         assert_eq!(outcome.headline(), "manifest-invalid (key-binding)");
@@ -1519,6 +1559,7 @@ mod tests {
             journal_path: None,
             expected_manifest_id: None,
             expected_leaf_count: None,
+            anchor: None,
         };
         let outcome = verify(&file, Some(&sidecar), &policy);
         match &outcome {
@@ -1699,6 +1740,73 @@ mod tests {
             "manifest-invalid (key-binding)",
             "off-roster attestor must not count"
         );
+    }
+
+    /// T-RT1: anchor lifecycle — passes at announcement (2 edits), passes
+    /// after legitimate growth, fails on truncation, substitution, and
+    /// forgery.
+    #[test]
+    fn rt_anchor_lifecycle() {
+        let dir = tempfile::tempdir().unwrap();
+        let (file, sidecar) = enrolled_manifest(&dir);
+        let s = signer();
+        // Anchor the GROWN manifest (2 edits) so truncation has room.
+        let mut m = opm::load(&sidecar).unwrap();
+        m.append_edit(&file, &s, Action::Edit, None).unwrap();
+        m.attestations.clear();
+        opm::save(&m, &sidecar).unwrap();
+        let anchor = m.anchor(&s).unwrap();
+        let now = 4_100_000_000;
+        let policy = VerifyPolicy {
+            anchor: Some(anchor.clone()),
+            ..policy_now(now)
+        };
+
+        // (a) At announcement: intact with the anchor applied.
+        assert!(intact(&verify(&file, Some(&sidecar), &policy)));
+
+        // (b) Legitimate growth: one more signed edit by the same signer.
+        //     The announced head is a genuine prefix ⇒ still intact.
+        let mut g = opm::load(&sidecar).unwrap();
+        g.append_edit(&file, &s, Action::Edit, None).unwrap();
+        let gpath = save_temp(&g, &dir, "anchor-growth.opm");
+        assert!(
+            intact(&verify(&file, Some(&gpath), &policy)),
+            "growth beyond a stale announcement passes"
+        );
+
+        // (c) Truncation: cut back to edit 0 — presented < announced.
+        let mut t = opm::load(&sidecar).unwrap();
+        t.edits.truncate(1);
+        t.checkpoints.retain(|c| c.leaf_count <= 1);
+        let tpath = save_temp(&t, &dir, "anchor-trunc.opm");
+        let outcome = verify(&file, Some(&tpath), &policy);
+        assert_eq!(outcome.headline(), "manifest-invalid (head-anchor)");
+
+        // (d) Substitution: a fresh impostor manifest fails (wrong head +
+        //     wrong anchor signer).
+        let file2 = dir.path().join("subst.bin");
+        std::fs::write(&file2, b"version one of the asset").unwrap();
+        let impostor = Signer::from_seed(&[0x99; 32]).unwrap();
+        let sub = opm::Opm::create(&file2, &impostor, Action::Capture, DEFAULT_CHUNK_SIZE).unwrap();
+        let subpath = save_temp(&sub, &dir, "anchor-subst.opm");
+        let outcome = verify(&file2, Some(&subpath), &policy);
+        assert_eq!(outcome.headline(), "manifest-invalid (head-anchor)");
+
+        // (e) Forged anchor: tamper the signature; exact manifest fails.
+        let mut forged = anchor.clone();
+        use base64::Engine as _;
+        let mut raw = base64::engine::general_purpose::STANDARD
+            .decode(&forged.signature)
+            .unwrap();
+        raw[5] ^= 0xFF;
+        forged.signature = base64::engine::general_purpose::STANDARD.encode(&raw);
+        let policy_forged = VerifyPolicy {
+            anchor: Some(forged),
+            ..policy_now(now)
+        };
+        let outcome = verify(&file, Some(&sidecar), &policy_forged);
+        assert_eq!(outcome.headline(), "manifest-invalid (head-anchor)");
     }
 
     /// Intact output carries the signer fingerprint (the sidecar is
@@ -2155,6 +2263,7 @@ mod tests {
             journal_path: None,
             expected_manifest_id: None,
             expected_leaf_count: None,
+            anchor: None,
         };
         let outcome = verify(&file, Some(&sidecar), &policy);
         match &outcome {
@@ -2173,6 +2282,7 @@ mod tests {
             journal_path: None,
             expected_manifest_id: None,
             expected_leaf_count: None,
+            anchor: None,
         };
         let outcome = verify(&file, Some(&sidecar), &policy);
         match &outcome {

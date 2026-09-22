@@ -23,6 +23,8 @@ pub enum ProvenanceError {
 
     #[error("invalid manifest: {0}")]
     InvalidManifest(String),
+    #[error("anchor file exists at {0} — refusing to overwrite (publish it, or delete it to re-anchor)")]
+    AnchorExists(String),
 
     #[error("signature verification failed: {0}")]
     SignatureError(String),

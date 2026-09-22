@@ -38,6 +38,8 @@ pub enum Commands {
     Attest(AttestArgs),
     /// Verify a file against its OPM manifest (three-state output)
     VerifyManifest(VerifyManifestArgs),
+    /// Publish a signed head anchor for a file's manifest (announcement copy)
+    Anchor(AnchorArgs),
 }
 
 #[derive(Parser, Clone, Debug)]
@@ -175,6 +177,31 @@ pub struct VerifyManifestArgs {
     /// than announced ⇒ truncated history ⇒ invalid.
     #[arg(long)]
     pub expect_edits: Option<u64>,
+
+    /// Anchor file (signed head announcement, ticket T-RT1). Explicit path
+    /// must exist; otherwise an `<asset>.anchor` beside the asset is applied
+    /// automatically when present.
+    #[arg(long)]
+    pub anchor: Option<String>,
+}
+
+#[derive(Parser, Clone, Debug)]
+pub struct AnchorArgs {
+    /// Asset whose manifest head is announced
+    pub asset: String,
+
+    /// Signer seed file (32 raw bytes, or 64-char hex) — should be the
+    /// manifest signer
+    #[arg(long)]
+    pub seed_file: String,
+
+    /// Sidecar path (default: <asset>.opm)
+    #[arg(long)]
+    pub sidecar: Option<String>,
+
+    /// Output path for the anchor JSON (default: <asset>.anchor)
+    #[arg(long)]
+    pub output: Option<String>,
 }
 
 #[derive(Parser, Clone, Debug)]

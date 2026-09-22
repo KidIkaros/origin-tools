@@ -26,6 +26,7 @@ pub const TAG_CHECKPOINT: &[u8] = b"origin-provenance:checkpoint:v1";
 pub const TAG_ATTESTATION: &[u8] = b"origin-provenance:attestation:v1";
 pub const TAG_MANIFEST: &[u8] = b"origin-provenance:manifest:v1";
 pub const TAG_SIGNER_FP: &[u8] = b"origin-provenance:signer-fp:v1";
+pub const TAG_ANCHOR: &[u8] = b"origin-provenance:anchor:v1";
 
 /// Content-binding action byte (spec S3). Unknown values reject downstream.
 /// JSON form is the lowercase string ("capture"/"edit"/"publish"/"annotate");
@@ -130,6 +131,22 @@ pub fn attestation_payload_input(
     buf.extend_from_slice(manifest_id);
     buf.extend_from_slice(&leaf_count.to_be_bytes());
     buf.extend_from_slice(mmr_root);
+    buf
+}
+
+/// Exact input bytes of the head-anchor payload (ticket T-RT1): the
+/// publisher's signed announcement of a manifest head. Binds the
+/// announced head (`manifest_id`) to its edit count and the asset.
+pub fn anchor_payload_input(
+    edit_count: u64,
+    manifest_id: &[u8; 32],
+    asset_id: &[u8; 32],
+) -> Vec<u8> {
+    let mut buf = Vec::with_capacity(TAG_ANCHOR.len() + 8 + 32 + 32);
+    buf.extend_from_slice(TAG_ANCHOR);
+    buf.extend_from_slice(&edit_count.to_be_bytes());
+    buf.extend_from_slice(manifest_id);
+    buf.extend_from_slice(asset_id);
     buf
 }
 
@@ -287,6 +304,16 @@ mod tests {
         assert_eq!(TAG_ATTESTATION.len(), 32);
         assert_eq!(TAG_MANIFEST.len(), 29);
         assert_eq!(TAG_SIGNER_FP.len(), 30);
+        assert_eq!(TAG_ANCHOR.len(), 27);
+    }
+
+    #[test]
+    fn anchor_payload_layout() {
+        // Tag(27) || edit_count(8) || manifest_id(32) || asset_id(32)
+        let input = anchor_payload_input(3, &fixture::ZERO32, &fixture::ZERO32);
+        assert_eq!(input.len(), 27 + 8 + 32 + 32);
+        assert_eq!(&input[..27], TAG_ANCHOR);
+        assert_eq!(&input[27..35], &3u64.to_be_bytes());
     }
 
     #[test]
