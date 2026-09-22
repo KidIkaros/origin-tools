@@ -196,11 +196,23 @@ fn field_err(field: &str) -> ProvenanceError {
     ProvenanceError::InvalidLicense(format!("invalid license {field}"))
 }
 
+/// Whether `s` is a syntactically valid issuer pin (64 hex chars).
+/// Split out for tests; [`issuer_fingerprint`] fails closed through it.
+pub fn is_valid_pin(s: &str) -> bool {
+    s.len() == 64 && s.bytes().all(|b| b.is_ascii_hexdigit())
+}
+
 /// The compile-time feature flag: issuer fingerprint hex pinned at build
-/// time via the `ORIGIN_ISSUER_FP` env var. `None` ⇒ this build's
-/// licensing commands are inert.
+/// time via the `ORIGIN_ISSUER_FP` env var. Fails closed: anything that is
+/// not exactly a valid 64-hex pin — absent, EMPTY (a nonexistent GitHub
+/// Actions secret expands to "" and cargo forwards the outer env to
+/// rustc, so `option_env!` sees it even when build.rs withholds it), or
+/// malformed — yields `None`, i.e. licensing inert in this build.
 pub fn issuer_fingerprint() -> Option<&'static str> {
-    option_env!("ORIGIN_ISSUER_FP")
+    match option_env!("ORIGIN_ISSUER_FP") {
+        Some(s) if is_valid_pin(s) => Some(s),
+        _ => None,
+    }
 }
 
 #[cfg(test)]
@@ -331,5 +343,20 @@ mod tests {
         assert_eq!(format_unix(0), "1970-01-01T00:00:00Z");
         assert_eq!(format_unix(1_700_000_000), "2023-11-14T22:13:20Z");
         assert_eq!(format_unix(951_782_400), "2000-02-29T00:00:00Z"); // leap day
+    }
+
+    #[test]
+    fn pin_validation_fails_closed() {
+        assert!(is_valid_pin(
+            "f7977ba05b5f3929da6a6d3508fd344bd04a2445f26f4bfd833ebd9a3da6a775"
+        ));
+        // Empty string: the nonexistent-CI-secret case — must NOT count as
+        // an active pin (v0.1.8 release-gate lesson).
+        assert!(!is_valid_pin(""));
+        assert!(!is_valid_pin("   "));
+        assert!(!is_valid_pin("nothex"));
+        assert!(!is_valid_pin(&"a".repeat(63)));
+        assert!(!is_valid_pin(&"a".repeat(65)));
+        assert!(!is_valid_pin(&format!("{}gg", "a".repeat(62))));
     }
 }
