@@ -219,9 +219,13 @@ fn load_signer_seed(path: &str) -> Result<[u8; 32], String> {
     if raw_len == 32 {
         return Ok(raw.try_into().expect("32 bytes"));
     }
-    if raw_len == 64 {
+    if raw_len == 64 || raw_len == 65 {
+        // 64-char hex with a trailing newline (65 bytes) is the common
+        // human-authored case — accepted; other 65-byte files fail hex
+        // decode with a specific error.
         let text = String::from_utf8(raw).map_err(|_| "seed hex is not UTF-8".to_string())?;
-        let bytes = hex::decode(text.trim()).map_err(|e| format!("bad seed hex: {e}"))?;
+        let bytes = hex::decode(text.trim_end_matches(['\n', '\r']))
+            .map_err(|e| format!("bad seed hex: {e}"))?;
         if bytes.len() == 32 {
             return Ok(bytes.try_into().expect("32 bytes"));
         }
@@ -364,12 +368,25 @@ fn cmd_verify_manifest(args: VerifyManifestArgs) -> Result<(), String> {
         None => None,
     };
 
+    let expected_manifest_id = match &args.expect_manifest_id {
+        Some(s) => {
+            let bytes = hex::decode(s.trim())
+                .map_err(|e| format!("--expect-manifest-id: bad hex: {e}"))?;
+            let arr: [u8; 32] = bytes
+                .try_into()
+                .map_err(|_| "--expect-manifest-id: expected 64 hex chars (32 bytes)".to_string())?;
+            Some(arr)
+        }
+        None => None,
+    };
     let policy = crate::verify::VerifyPolicy {
         now: None,
         max_future_skew_secs: 2,
         required_k: args.k,
         allow_roster,
         journal_path: None,
+        expected_manifest_id,
+        expected_leaf_count: args.expect_edits,
     };
 
     // Spec §6 discovery order: explicit --sidecar pins the path (no
@@ -392,10 +409,14 @@ fn cmd_verify_manifest(args: VerifyManifestArgs) -> Result<(), String> {
         self_attestation_flag,
         unattested,
         k_discrepancy,
+        signer,
+        manifest_id,
         ..
     } = &outcome
     {
         println!("  {}", chunk_report.summarize());
+        println!("  signer: {}", signer);
+        println!("  manifest_id: {manifest_id}");
         if *self_attestation_flag {
             println!("  note: signer also appears among attestors (flagged, not rejected)");
         }

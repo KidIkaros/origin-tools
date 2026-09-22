@@ -181,6 +181,9 @@ pub enum InvalidReason {
     ContentHash { chunk: Option<usize> },
     History,
     HistoryRewind,
+    /// Two distinct signer fingerprints across checkpoints (design H:
+    /// v1 is single-signer per manifest — added by red-team 2026-09-22).
+    MultiSigner,
     KeyBinding,
     SignerSignature,
     Timestamp,
@@ -201,6 +204,7 @@ impl InvalidReason {
             },
             InvalidReason::History => "manifest-invalid (history)".into(),
             InvalidReason::HistoryRewind => "manifest-invalid (history-rewind)".into(),
+            InvalidReason::MultiSigner => "manifest-invalid (multi-signer)".into(),
             InvalidReason::KeyBinding => "manifest-invalid (key-binding)".into(),
             InvalidReason::SignerSignature => "manifest-invalid (signer-signature)".into(),
             InvalidReason::Timestamp => "manifest-invalid (timestamp)".into(),
@@ -236,6 +240,15 @@ pub enum VerifyOutcome {
         /// (Clean), not found (NoJournal), or found-untrustworthy
         /// (Unreliable — verification proceeded, footer warns).
         revocation: RevocationStatus,
+        /// The manifest's signer fingerprint (hex) — surfaced so verifiers
+        /// can see WHOSE claim they are judging (red-team 2026-09-22: the
+        /// sidecar is attacker-reauthorable; the fingerprint is the only
+        /// thing distinguishing a substituted manifest).
+        signer: String,
+        /// Recomputed manifest_id (hex) — the value attestors signed and
+        /// the value a verifier checks against the publisher's announced
+        /// head (red-team 2026-09-22).
+        manifest_id: String,
     },
     /// Payload: the C2PA annotation channel (E/F) — a manifest-carrying file
     /// can ALSO embed C2PA; the channel reports on any verdict.
@@ -350,6 +363,16 @@ pub struct VerifyPolicy {
     pub allow_roster: Option<Vec<String>>,
     /// Journal path — accepted here, consumed when revocation wires in P-05.
     pub journal_path: Option<std::path::PathBuf>,
+    /// Verifier's expected manifest head (transparency-anchor check, red-team
+    /// 2026-09-22): a prefix of history replays perfectly, so NO purely
+    /// manifest-local check can detect truncation to a genuine checkpoint.
+    /// The anchor is the publisher's announced `manifest_id` (posted where
+    /// an attacker cannot rewrite it). When set, a manifest whose recomputed
+    /// manifest_id differs is `manifest-invalid (history)`.
+    pub expected_manifest_id: Option<[u8; 32]>,
+    /// Lighter head anchor: the expected number of edits. A presented
+    /// manifest with fewer edits than the announced count is truncated.
+    pub expected_leaf_count: Option<u64>,
 }
 
 impl Default for VerifyPolicy {
@@ -360,6 +383,8 @@ impl Default for VerifyPolicy {
             required_k: None,
             allow_roster: None,
             journal_path: None,
+            expected_manifest_id: None,
+            expected_leaf_count: None,
         }
     }
 }
@@ -476,6 +501,28 @@ fn verify_loaded(
         return VerifyOutcome::Invalid(reason, ann);
     }
 
+    // Head-anchor check (red-team 2026-09-22): against the verifier's
+    // announced expectations, if supplied. A prefix of genuine history
+    // replays consistently — without an out-of-band anchor, truncation to
+    // a genuine checkpoint is undetectable by manifest-local checks.
+    let manifest_id = match opm.manifest_id() {
+        Ok(id) => id,
+        Err(_) => return VerifyOutcome::Invalid(InvalidReason::History, ann),
+    };
+    if let Some(expected) = policy.expected_manifest_id {
+        if manifest_id != expected {
+            return VerifyOutcome::Invalid(InvalidReason::History, ann);
+        }
+    }
+    if let Some(expected) = policy.expected_leaf_count {
+        // Fewer edits than announced ⇒ truncated. More edits than the
+        // announcement is progress beyond a stale announcement, not a
+        // rollback — allowed here; a strict == is the verifier's policy.
+        if opm.edits.len() < expected as usize {
+            return VerifyOutcome::Invalid(InvalidReason::History, ann);
+        }
+    }
+
     // Step 5 — checkpoint signatures with embedded/roster keys.
     if let Err(reason) = check_checkpoint_signatures(&opm, policy.allow_roster.as_ref()) {
         return VerifyOutcome::Invalid(reason, ann);
@@ -527,7 +574,12 @@ fn verify_loaded(
     } else {
         Vec::new()
     };
-    let threshold = match check_attestations(&opm, policy.required_k, &revoked_attestors) {
+    let threshold = match check_attestations(
+        &opm,
+        policy.required_k,
+        &revoked_attestors,
+        policy.allow_roster.as_ref(),
+    ) {
         Ok(t) => t,
         Err(reason) => return VerifyOutcome::Invalid(reason, ann),
     };
@@ -556,6 +608,11 @@ fn verify_loaded(
         k_discrepancy: threshold.k_discrepancy,
         c2pa: ann,
         revocation: revocation_state,
+        signer: opm.checkpoints
+            .last()
+            .map(|c| c.signer_fingerprint.clone())
+            .unwrap_or_default(),
+        manifest_id: hex::encode(manifest_id),
     }
 }
 
@@ -855,6 +912,25 @@ fn check_content(
 /// timestamps; reject a checkpoint whose leaf_count does not exceed every
 /// earlier one as `history-rewind` (amendment H).
 fn check_mmr_history(opm: &Opm) -> Result<(), InvalidReason> {
+    // A manifest with zero checkpoints carries no signature-checked state
+    // at all ("manifest-intact as of 0") — red-team 2026-09-22. Every
+    // writer produces at least one checkpoint; absence is invalid history.
+    if opm.checkpoints.is_empty() {
+        return Err(InvalidReason::History);
+    }
+
+    // Design H: v1 is single-signer per manifest. A second signer cannot
+    // shrink history — and cannot appear at all (red-team 2026-09-22:
+    // `append` with a foreign seed previously verified intact).
+    let signers: Vec<&str> = opm
+        .checkpoints
+        .iter()
+        .map(|c| c.signer_fingerprint.as_str())
+        .collect();
+    if signers.iter().any(|s| *s != signers[0]) {
+        return Err(InvalidReason::MultiSigner);
+    }
+
     // Amendment H scan FIRST: a non-monotonic leaf_count sequence is the
     // distinct rewind reason and must not be masked by a replay failure.
     let mut last_leaf_count: Option<u64> = None;
@@ -922,6 +998,23 @@ fn check_mmr_history(opm: &Opm) -> Result<(), InvalidReason> {
             return Err(InvalidReason::History);
         }
     }
+
+    // Head-anchor gate (red-team 2026-09-22): the LAST checkpoint must
+    // cover every edit the manifest claims. Without it, a manifest could
+    // assert edits its signer never checkpointed (drop the final
+    // checkpoint → uncheckpointed edits verify silently).
+    let last = opm.checkpoints.last().expect("non-empty checked above");
+    if last.leaf_count != replayed {
+        return Err(InvalidReason::History);
+    }
+
+    // Spec S1: asset_id derives from the FIRST edit's whole-file hash.
+    // The stored field must actually be that derivation (defense in
+    // depth: attestors sign a manifest whose asset_id could otherwise be
+    // arbitrary).
+    if hex::encode(asset_id) != opm.asset_id {
+        return Err(InvalidReason::History);
+    }
     Ok(())
 }
 
@@ -963,6 +1056,7 @@ fn check_attestations(
     opm: &Opm,
     required_k: Option<u32>,
     revoked_attestors: &[String],
+    roster: Option<&Vec<String>>,
 ) -> Result<ThresholdResult, InvalidReason> {
     if opm.attestations.is_empty() {
         let unattested = required_k.map(|k| (0, k));
@@ -978,7 +1072,10 @@ fn check_attestations(
         .map_err(|_| InvalidReason::AttestationBinding)?;
     let mut distinct: Vec<String> = Vec::new();
     for att in &opm.attestations {
-        let keys = keys_for(&att.attestor_fingerprint, att.keys.as_ref(), None)?;
+        // Red-team 2026-09-22: the roster must gate ATTESTORS too — it
+        // previously constrained only the signer, so an off-roster
+        // attestor counted toward K.
+        let keys = keys_for(&att.attestor_fingerprint, att.keys.as_ref(), roster)?;
         let ed: [u8; 32] = hex::decode(&keys.ed25519_pk)
             .ok()
             .and_then(|b| b.try_into().ok())
@@ -1068,6 +1165,8 @@ mod tests {
             required_k: None,
             allow_roster: None,
             journal_path: None,
+            expected_manifest_id: None,
+            expected_leaf_count: None,
         }
     }
 
@@ -1347,13 +1446,20 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let (file, sidecar) = enrolled_manifest(&dir);
         let s = signer();
-        let roster = vec![s.fingerprint_hex()];
+        // Roster = trusted SIGNER AND ATTESTOR fingerprints (design D3:
+        // "trusted signer/attestor fingerprints"; red-team 2026-09-22 —
+        // the roster previously gated only the signer, letting an
+        // off-roster attestor count toward K).
+        let attestor = Signer::from_seed(&ATTESTOR_SEED).unwrap();
+        let roster = vec![s.fingerprint_hex(), attestor.fingerprint_hex()];
         let policy = VerifyPolicy {
             now: Some(4_100_000_000),
             max_future_skew_secs: 2,
             required_k: None,
             allow_roster: Some(roster),
             journal_path: None,
+            expected_manifest_id: None,
+            expected_leaf_count: None,
         };
         let outcome = verify(&file, Some(&sidecar), &policy);
         assert!(intact(&outcome), "got: {:?}", outcome.headline());
@@ -1365,6 +1471,8 @@ mod tests {
             required_k: None,
             allow_roster: Some(vec!["deadbeef".repeat(8)]),
             journal_path: None,
+            expected_manifest_id: None,
+            expected_leaf_count: None,
         };
         let outcome = verify(&file, Some(&sidecar), &policy);
         assert_eq!(outcome.headline(), "manifest-invalid (key-binding)");
@@ -1409,6 +1517,8 @@ mod tests {
             required_k: Some(3),
             allow_roster: None,
             journal_path: None,
+            expected_manifest_id: None,
+            expected_leaf_count: None,
         };
         let outcome = verify(&file, Some(&sidecar), &policy);
         match &outcome {
@@ -1460,6 +1570,153 @@ mod tests {
             "no signer hardcoding; got {:?}",
             outcome.headline()
         );
+    }
+
+    // ---- red-team regressions (2026-09-22 session) ----
+
+    /// RT1: truncation to a genuine checkpoint replays perfectly, so a
+    /// manifest-LOCAL check cannot catch it — detection requires the
+    /// verifier's head anchor (`expected_manifest_id` /
+    /// `expected_leaf_count`, the transparency-log pattern). This test
+    /// pins BOTH sides of that boundary: unanchored accepts the prefix
+    /// (documented limitation), anchored rejects it.
+    #[test]
+    fn rt1_truncation_needs_head_anchor() {
+        let dir = tempfile::tempdir().unwrap();
+        let (file, sidecar) = enrolled_manifest(&dir);
+        let mut m = opm::load(&sidecar).unwrap();
+        m.append_edit(&file, &signer(), Action::Edit, None).unwrap();
+        m.append_edit(&file, &signer(), Action::Edit, None).unwrap();
+        m.attestations.clear();
+        opm::save(&m, &sidecar).unwrap();
+
+        let announced_id = m.manifest_id().unwrap(); // publisher's announced head
+
+        // Roll back: keep edit 0 + the leaf_count=1 checkpoint only.
+        let mut r = opm::load(&sidecar).unwrap();
+        r.edits.truncate(1);
+        r.checkpoints.retain(|c| c.leaf_count <= 1);
+        let path = save_temp(&r, &dir, "rt1.opm");
+
+        // (a) No anchor: the prefix verifies intact — the honest limit of
+        // manifest-local checks ("only one edit happened" is locally
+        // indistinguishable from a rollback).
+        let outcome = verify(&file, Some(&path), &policy_now(4_100_000_000));
+        assert!(
+            intact(&outcome),
+            "unanchored: prefix replays perfectly: {:?}",
+            outcome.headline()
+        );
+
+        // (b) With the publisher's announced manifest_id: rejected.
+        let policy = VerifyPolicy {
+            expected_manifest_id: Some(announced_id),
+            ..policy_now(4_100_000_000)
+        };
+        let outcome = verify(&file, Some(&path), &policy);
+        assert_eq!(outcome.headline(), "manifest-invalid (history)");
+
+        // (c) With just the announced edit count: also rejected.
+        let policy = VerifyPolicy {
+            expected_leaf_count: Some(3),
+            ..policy_now(4_100_000_000)
+        };
+        let outcome = verify(&file, Some(&path), &policy);
+        assert_eq!(outcome.headline(), "manifest-invalid (history)");
+    }
+
+    /// RT1b: a manifest asserting edits its last checkpoint never covered
+    /// (final checkpoint dropped) is rejected — uncheckpointed edits cannot
+    /// ride along on an earlier anchor.
+    #[test]
+    fn rt1b_uncheckpointed_tail_rejected() {
+        let dir = tempfile::tempdir().unwrap();
+        let (file, sidecar) = enrolled_manifest(&dir);
+        let mut m = opm::load(&sidecar).unwrap();
+        m.append_edit(&file, &signer(), Action::Edit, None).unwrap();
+        m.attestations.clear();
+        opm::save(&m, &sidecar).unwrap();
+
+        let mut t = opm::load(&sidecar).unwrap();
+        t.checkpoints.pop(); // drop the anchor covering the new edit
+        let path = save_temp(&t, &dir, "rt1b.opm");
+
+        let outcome = verify(&file, Some(&path), &policy_now(4_100_000_000));
+        assert_eq!(outcome.headline(), "manifest-invalid (history)");
+    }
+
+    /// RT3: zero checkpoints means zero signature-checked state — the old
+    /// verifier produced "manifest-intact as of 0".
+    #[test]
+    fn rt3_zero_checkpoints_rejected() {
+        let dir = tempfile::tempdir().unwrap();
+        let (file, sidecar) = enrolled_manifest(&dir);
+        let mut m = opm::load(&sidecar).unwrap();
+        m.attestations.clear();
+        m.checkpoints.clear();
+        let path = save_temp(&m, &dir, "rt3.opm");
+
+        let outcome = verify(&file, Some(&path), &policy_now(4_100_000_000));
+        assert_eq!(outcome.headline(), "manifest-invalid (history)");
+    }
+
+    /// RT7: a second signer appending via `append` (foreign seed on a
+    /// victim manifest) previously verified INTACT. Design H: single-signer
+    /// per manifest in v1.
+    #[test]
+    fn rt7_second_signer_extension_rejected() {
+        let dir = tempfile::tempdir().unwrap();
+        let (file, sidecar) = enrolled_manifest(&dir);
+        let mut m = opm::load(&sidecar).unwrap();
+        let attacker = Signer::from_seed(&[0xEE; 32]).unwrap();
+        m.append_edit(&file, &attacker, Action::Publish, None)
+            .unwrap();
+        m.attestations.clear();
+        let path = save_temp(&m, &dir, "rt7.opm");
+
+        let outcome = verify(&file, Some(&path), &policy_now(4_100_000_000));
+        assert_eq!(
+            outcome.headline(),
+            "manifest-invalid (multi-signer)",
+            "design H: v1 is single-signer per manifest"
+        );
+    }
+
+    /// RT8: the verifier roster must gate ATTESTORS too — an off-roster
+    /// attestor previously counted toward K while the signer was gated.
+    #[test]
+    fn rt8_roster_gates_attestors() {
+        let dir = tempfile::tempdir().unwrap();
+        let (file, sidecar) = enrolled_manifest(&dir); // carries 1 attestor
+        let roster = vec![signer().fingerprint_hex()]; // signer ON, attestor OFF
+        let policy = VerifyPolicy {
+            allow_roster: Some(roster),
+            ..policy_now(4_100_000_000)
+        };
+        let outcome = verify(&file, Some(&sidecar), &policy);
+        assert_eq!(
+            outcome.headline(),
+            "manifest-invalid (key-binding)",
+            "off-roster attestor must not count"
+        );
+    }
+
+    /// Intact output carries the signer fingerprint (the sidecar is
+    /// attacker-reauthorable; the fingerprint is what a verifier checks
+    /// against out-of-band knowledge).
+    #[test]
+    fn rt_intact_outcome_carries_signer_fingerprint() {
+        let dir = tempfile::tempdir().unwrap();
+        let (file, sidecar) = enrolled_manifest(&dir);
+        let outcome = verify(&file, Some(&sidecar), &policy_now(4_100_000_000));
+        let expected_fp = signer().fingerprint_hex();
+        match &outcome {
+            VerifyOutcome::Intact { signer, .. } => {
+                assert_eq!(signer, &expected_fp);
+                assert_eq!(signer.len(), 64);
+            }
+            other => panic!("expected intact, got {:?}", other.headline()),
+        }
     }
 
     // ---- output contract ----
@@ -1896,6 +2153,8 @@ mod tests {
             required_k: Some(2),
             allow_roster: None,
             journal_path: None,
+            expected_manifest_id: None,
+            expected_leaf_count: None,
         };
         let outcome = verify(&file, Some(&sidecar), &policy);
         match &outcome {
@@ -1912,6 +2171,8 @@ mod tests {
             required_k: Some(1),
             allow_roster: None,
             journal_path: None,
+            expected_manifest_id: None,
+            expected_leaf_count: None,
         };
         let outcome = verify(&file, Some(&sidecar), &policy);
         match &outcome {

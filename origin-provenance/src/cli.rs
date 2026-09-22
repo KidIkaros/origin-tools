@@ -164,6 +164,17 @@ pub struct VerifyManifestArgs {
     /// Roster file: one trusted signer/attestor fingerprint hex per line
     #[arg(long)]
     pub roster: Option<String>,
+
+    /// Expected manifest head (hex, from the publisher's announcement) —
+    /// detects truncation/rollback of history to a genuine checkpoint
+    /// (manifest-local checks cannot; transparency-log pattern).
+    #[arg(long)]
+    pub expect_manifest_id: Option<String>,
+
+    /// Expected edit count (from the publisher's announcement). Fewer edits
+    /// than announced ⇒ truncated history ⇒ invalid.
+    #[arg(long)]
+    pub expect_edits: Option<u64>,
 }
 
 #[derive(Parser, Clone, Debug)]
