@@ -150,6 +150,46 @@ pub fn anchor_payload_input(
     buf
 }
 
+/// Domain tag for license tokens (ticket T-G5 pre-build): signed,
+/// offline-verifiable entitlements. Deliberately a distinct domain from
+/// manifests/anchors so a signature over one structure can never be
+/// replayed as a signature over another.
+pub const TAG_LICENSE: &[u8] = b"origin-provenance:license:v1";
+
+/// Exact input bytes of the license payload: domain tag, version,
+/// length-prefixed `license_id` and `subject` (u32 BE + UTF-8 bytes —
+/// the first variable-length fields in any payload recipe; keep that
+/// true), tier code, and the issued/expires window (expires uses a
+/// 0/1 presence marker then i64 BE, mirroring serde's Option shape).
+pub fn license_payload_input(
+    version: u8,
+    license_id: &str,
+    tier: u8,
+    subject: &str,
+    issued_at: i64,
+    expires_at: Option<i64>,
+) -> Vec<u8> {
+    let mut buf = Vec::with_capacity(
+        TAG_LICENSE.len() + 1 + 4 + license_id.len() + 1 + 4 + subject.len() + 8 + 9,
+    );
+    buf.extend_from_slice(TAG_LICENSE);
+    buf.push(version);
+    buf.extend_from_slice(&(license_id.len() as u32).to_be_bytes());
+    buf.extend_from_slice(license_id.as_bytes());
+    buf.push(tier);
+    buf.extend_from_slice(&(subject.len() as u32).to_be_bytes());
+    buf.extend_from_slice(subject.as_bytes());
+    buf.extend_from_slice(&issued_at.to_be_bytes());
+    match expires_at {
+        None => buf.push(0),
+        Some(ts) => {
+            buf.push(1);
+            buf.extend_from_slice(&ts.to_be_bytes());
+        }
+    }
+    buf
+}
+
 /// One checkpoint's contribution to the manifest signable bytes.
 #[derive(Clone, Copy, Debug)]
 pub struct CheckpointBasis {

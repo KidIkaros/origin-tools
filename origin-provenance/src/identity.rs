@@ -29,6 +29,20 @@ pub struct Signer {
     fingerprint: [u8; 32],
 }
 
+impl SignerKeys {
+    /// Base64 (S4 convention) ↔ `HybridSig`, re-exposed from `Signer` for
+    /// structures that carry keys without a signer instance (P-03 pattern
+    /// consumers such as license tokens).
+    pub fn hybrid_sig_to_base64(sig: &HybridSig) -> crate::error::Result<String> {
+        Signer::hybrid_sig_to_base64(sig)
+    }
+
+    /// Decode a base64 S4 string back into a `HybridSig`.
+    pub fn hybrid_sig_from_base64(s: &str) -> crate::error::Result<HybridSig> {
+        Signer::hybrid_sig_from_base64(s)
+    }
+}
+
 impl Signer {
     /// Derive a signer from a 32-byte seed (spec §3 domain).
     pub fn from_seed(seed: &[u8; 32]) -> origin_crypto_sdk::Result<Self> {

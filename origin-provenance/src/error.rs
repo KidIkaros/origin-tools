@@ -29,6 +29,9 @@ pub enum ProvenanceError {
     #[error("manifest already exists at {0} — refusing to overwrite (delete it to start over; re-sealing wipes prior history)")]
     ManifestExists(String),
 
+    #[error("invalid license: {0}")]
+    InvalidLicense(String),
+
     #[error("signature verification failed: {0}")]
     SignatureError(String),
 

@@ -14,6 +14,7 @@ pub mod commands;
 pub mod encoding;
 pub mod error;
 pub mod identity;
+pub mod license;
 pub mod manifest;
 pub mod opm;
 pub mod stamp;

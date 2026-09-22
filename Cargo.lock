@@ -1979,7 +1979,7 @@ dependencies = [
 
 [[package]]
 name = "origin-provenance"
-version = "0.4.9"
+version = "0.5.0"
 dependencies = [
  "base64",
  "clap",
