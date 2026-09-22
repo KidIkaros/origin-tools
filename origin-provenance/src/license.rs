@@ -121,8 +121,25 @@ impl License {
         if self.subject.is_empty() || self.subject.len() > 256 {
             return Err(field_err("subject"));
         }
+        // Red-team pass 3 (R3-3): control characters (C0 + DEL) have no
+        // business in an identifier or a subject. They are the vector for
+        // terminal escape-sequence injection in product presentation, and
+        // they survive the JSON round-trip — so reject them here where the
+        // webhook path is covered too.
+        if has_control_chars(&self.id) {
+            return Err(field_err("id (control character)"));
+        }
+        if has_control_chars(&self.subject) {
+            return Err(field_err("subject (control character)"));
+        }
+        // Red-team pass 3 (R3-2): negative timestamps are pre-epoch dates
+        // no real license can carry. They were previously accepted, letting
+        // a legitimately-issued-looking token claim 1969-or-earlier dates.
+        if self.issued_at < 0 {
+            return Err(field_err("issued_at (negative)"));
+        }
         if let Some(exp) = self.expires_at {
-            if exp < self.issued_at {
+            if exp < 0 || exp < self.issued_at {
                 return Err(field_err("expires_at"));
             }
         }
@@ -194,6 +211,14 @@ pub fn write(lic: &License) -> Result<String> {
 
 fn field_err(field: &str) -> ProvenanceError {
     ProvenanceError::InvalidLicense(format!("invalid license {field}"))
+}
+
+/// True if `s` contains ASCII control characters (C0 0x00–0x1F or DEL 0x7F).
+/// ESC (0x1B) is the terminal escape-sequence injection vector; newlines
+/// break one-line presentation. Unicode is deliberately allowed (real
+/// subjects may need it) — only controls are rejected.
+fn has_control_chars(s: &str) -> bool {
+    s.bytes().any(|b| b < 0x20 || b == 0x7F)
 }
 
 /// Whether `s` is a syntactically valid issuer pin (64 hex chars).
@@ -358,5 +383,57 @@ mod tests {
         assert!(!is_valid_pin(&"a".repeat(63)));
         assert!(!is_valid_pin(&"a".repeat(65)));
         assert!(!is_valid_pin(&format!("{}gg", "a".repeat(62))));
+    }
+
+    #[test]
+    fn negative_timestamps_rejected() {
+        // R3-2: a properly-signed token with pre-epoch dates must fail.
+        let iss = issuer();
+        let mut lic = sample(&iss);
+        lic.issued_at = -100;
+        lic.expires_at = Some(-50);
+        re_sign(&mut lic, &iss);
+        let err = lic
+            .verify(&iss.fingerprint_raw())
+            .expect_err("negative issued_at must fail");
+        assert!(err.to_string().contains("issued_at"), "got: {err}");
+    }
+
+    #[test]
+    fn control_characters_rejected() {
+        // R3-3: ANSI escape (ESC), newline, and DEL in id/subject must
+        // fail even with a valid signature over them.
+        let iss = issuer();
+        for (field, evil) in [
+            ("id", "lic-\u{1b}[31mRED"),
+            ("id", "lic-\nLINE2"),
+            ("id", "lic-\u{7f}"),
+            ("subject", "a\u{1b}[31mRED"),
+            ("subject", "a\nLINE2"),
+            ("subject", "a\u{7f}"),
+        ] {
+            let mut lic = sample(&iss);
+            if field == "id" {
+                lic.id = evil.to_string();
+            } else {
+                lic.subject = evil.to_string();
+            }
+            re_sign(&mut lic, &iss);
+            let err = lic
+                .verify(&iss.fingerprint_raw())
+                .expect_err("control-char license must fail")
+                .to_string();
+            assert!(
+                err.contains("control character"),
+                "{field}={evil:?}: got {err}"
+            );
+        }
+    }
+
+    /// Re-sign `lic` with `iss` over its current fields (for tests that
+    /// mutate fields and need the signature to match again).
+    fn re_sign(lic: &mut License, iss: &Signer) {
+        let sig = iss.sign(&lic.payload()).expect("sign");
+        lic.sig = SignerKeys::hybrid_sig_to_base64(&sig).expect("b64");
     }
 }
