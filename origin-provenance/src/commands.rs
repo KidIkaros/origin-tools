@@ -409,9 +409,11 @@ fn cmd_verify_manifest(args: VerifyManifestArgs) -> Result<(), String> {
     }
     if matches!(outcome, crate::verify::VerifyOutcome::Intact { .. }) {
         println!("  what was not checked: metadata, watermark (hint only),");
-        println!("  signer-asserted timestamps, revocation status");
+        println!("  signer-asserted timestamps");
     }
     println!();
+    // Revocation-aware footer (spec §7): carries the journal state, and the
+    // exact verbatim warning when the journal is found untrustworthy.
     println!("{}", outcome.footer());
 
     match outcome {

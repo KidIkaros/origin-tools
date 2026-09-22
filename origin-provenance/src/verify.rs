@@ -31,13 +31,116 @@
 //! 9. local policy: verifier-owned (ZTNA) — this engine reports; policy
 //!    layers decide.
 //!
-//! Output contract: `manifest-intact as of T` (T = latest checkpoint time),
-//! `manifest-invalid: <reason>`, `no-manifest` — always with the
-//! "what was checked / what was not" footer. Metadata ignored; watermark =
-//! hint only; timestamps are signer-asserted, not TSA-attested. No
-//! "Content Credentials" phrasing anywhere (voice rule).
+//! Output contract: `manifest-intact as of T` (T = latest checkpoint time,
+//! composed with the journal tip), `manifest-invalid: <reason>`,
+//! `no-manifest` — always with the "what was checked / what was not"
+//! footer. Metadata ignored; watermark = hint only; timestamps are
+//! signer-asserted, not TSA-attested. No C2PA-branded phrasing anywhere
+//! (voice rule, design A).
 
 use std::path::Path;
+
+use origin_attest::revocation::RevocationJournal;
+
+/// Revocation target convention (provenance side of the journal contract):
+/// `target_hash = SHA3-256(signer_or_attestor_fingerprint_hex_bytes)`. The
+/// fingerprint is the stable v1 identity (design I: revocation-only rotation,
+/// continuity = new signer + new manifest), so it is what the journal kills.
+pub fn revocation_target(fingerprint_hex: &str) -> [u8; 32] {
+    origin_crypto_sdk::sha3_256(fingerprint_hex.as_bytes())
+}
+
+/// Outcome of journal consultation (spec §7 — integrity-first honesty).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum RevocationStatus {
+    /// No journal found at the policy/default path. Absence of a journal is
+    /// NOT evidence of absence of revocation — stated plainly in the footer.
+    NoJournal,
+    /// Journal loaded; hash chain intact; no record signature invalid;
+    /// the queried fingerprints were not found.
+    Clean { records: usize },
+    /// Journal loaded but untrustworthy (chain broken, unparseable, or a
+    /// forged record). Verification PROCEEDS; the footer carries the exact
+    /// §7 warning — never a false "revoked", never a false "clean".
+    Unreliable { detail: String },
+}
+
+impl RevocationStatus {
+    /// Whether revocation results from this journal may be enforced.
+    fn enforceable(&self) -> bool {
+        matches!(self, RevocationStatus::Clean { .. })
+    }
+}
+
+/// A journal loaded from disk with its health findings.
+struct LoadedJournal {
+    journal: RevocationJournal,
+    status: RevocationStatus,
+}
+
+/// Load + health-check the journal at `path`. File absent ⇒ `NoJournal`.
+/// Unparseable file, broken chain, or forged record ⇒ `Unreliable` with the
+/// distinct finding (ticket 08: "chain broken" and "record forged" are
+/// different findings — both make revocation status unreliable).
+fn load_journal(path: &Path) -> LoadedJournal {
+    let text = match std::fs::read_to_string(path) {
+        Ok(t) => t,
+        Err(_) => {
+            return LoadedJournal {
+                journal: RevocationJournal::new(),
+                status: RevocationStatus::NoJournal,
+            }
+        }
+    };
+    let journal: RevocationJournal = match serde_json::from_str(&text) {
+        Ok(j) => j,
+        Err(e) => {
+            return LoadedJournal {
+                journal: RevocationJournal::new(),
+                status: RevocationStatus::Unreliable {
+                    detail: format!("journal unparseable: {e}"),
+                },
+            }
+        }
+    };
+    if let Err(e) = journal.verify_integrity() {
+        return LoadedJournal {
+            journal,
+            status: RevocationStatus::Unreliable {
+                detail: format!("journal chain broken: {e}"),
+            },
+        };
+    }
+    let bad = journal.verify_signatures();
+    if !bad.is_empty() {
+        return LoadedJournal {
+            journal,
+            status: RevocationStatus::Unreliable {
+                detail: format!("journal record signature(s) invalid at index(es) {bad:?}"),
+            },
+        };
+    }
+    LoadedJournal {
+        status: RevocationStatus::Clean {
+            records: journal.len(),
+        },
+        journal,
+    }
+}
+
+/// Default journal location (spec §7 / ticket 05 D9 static distribution):
+/// `revocations.json` next to the asset.
+fn default_journal_path(asset: &Path) -> std::path::PathBuf {
+    asset
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .join("revocations.json")
+}
+
+/// Timestamp of the last record (the journal tip for `as-of` and output).
+fn journal_tip_time(journal: &RevocationJournal) -> Option<i64> {
+    journal.records.last().map(|r| r.timestamp)
+}
 
 use origin_proof::mmr::MmrState;
 
@@ -128,6 +231,10 @@ pub enum VerifyOutcome {
         /// C2PA annotation channel (E/F — orthogonal to the verdict; a
         /// file can carry BOTH an Origin sidecar and embedded C2PA).
         c2pa: crate::c2pa::C2paAnnotation,
+        /// Journal consultation result (spec §7): revocation was checked
+        /// (Clean), not found (NoJournal), or found-untrustworthy
+        /// (Unreliable — verification proceeded, footer warns).
+        revocation: RevocationStatus,
     },
     /// Payload: the C2PA annotation channel (E/F) — a manifest-carrying file
     /// can ALSO embed C2PA; the channel reports on any verdict.
@@ -172,14 +279,49 @@ impl VerifyOutcome {
         }
     }
 
-    /// The mandatory "what was checked / what was not" footer (design §3).
+    /// The mandatory "what was checked / what was not" footer (design §3),
+    /// now revocation-aware (spec §7): the journal state is stated plainly,
+    /// and a broken/untrustworthy journal carries the exact warning.
     pub fn footer(&self) -> String {
-        "checked: canonical edit order, content binding (whole file + chunks), \
+        let base = "checked: canonical edit order, content binding (whole file + chunks), \
 MMR replay at every checkpoint, checkpoint signatures (Ed25519+Falcon), \
-timestamp sanity, attestation binding. \
-not checked: metadata (ignored), watermark (hint only), \
-timestamps are signer-asserted not TSA-attested, revocation (wired in a later ticket)."
-            .to_string()
+timestamp sanity, attestation binding.";
+        let rev = match self {
+            VerifyOutcome::Intact {
+                revocation: RevocationStatus::Clean { records },
+                ..
+            } => format!(" revocation (journal consulted, chain intact: {records} records)."),
+            VerifyOutcome::Intact {
+                revocation: RevocationStatus::NoJournal,
+                ..
+            } => " revocation NOT checked: no journal found \
+(absence of a journal is not evidence of absence of revocation)."
+                .to_string(),
+            VerifyOutcome::Intact {
+                revocation: RevocationStatus::Unreliable { .. },
+                ..
+            } => " revocation NOT enforced: journal integrity check failed — \
+revocation status unreliable."
+                .to_string(),
+            VerifyOutcome::Invalid(..) => {
+                " revocation (not enforced on this failure path).".to_string()
+            }
+            VerifyOutcome::NoManifest { .. } => {
+                " revocation (not reached — no manifest found).".to_string()
+            }
+        };
+        let rest = "not checked: metadata (ignored), watermark (hint only), \
+timestamps are signer-asserted not TSA-attested.";
+        match self {
+            VerifyOutcome::Intact {
+                revocation: RevocationStatus::Unreliable { detail },
+                ..
+            } => format!(
+                "WARNING: journal integrity check failed — revocation status unreliable. \
+({detail})\n{base}{rev} {rest}"
+            ),
+            _ => format!("{base}{rev} {rest}"),
+        }
     }
 }
 
@@ -290,6 +432,16 @@ fn verify_loaded(
 ) -> VerifyOutcome {
     let ann = annotate_asset(asset);
 
+    // Step 7 (revocation) consultation happens FIRST so its health state can
+    // gate enforcement and compose the output; per §7 integrity is checked
+    // BEFORE any revocation result is used.
+    let journal_path = policy
+        .journal_path
+        .clone()
+        .unwrap_or_else(|| default_journal_path(asset));
+    let LoadedJournal { journal, status } = load_journal(&journal_path);
+    let revocation_state = status;
+
     // Step 3 — content binding (reportable per-chunk, then fatal).
     let (report, reason) = check_content(asset, &opm, content_bytes);
     if let Some(r) = reason {
@@ -313,26 +465,66 @@ fn verify_loaded(
         return VerifyOutcome::Invalid(InvalidReason::Timestamp, ann);
     }
 
-    // Step 7 — revocation: P-05 wires the journal; the policy already
-    // accepts the path so callers are forward-compatible.
+    // Step 7 — revocation (enforced only when the journal is provably
+    // healthy; Unreliable proceeds with the footer warning, §7). Every
+    // checkpoint signer is checked: a manifest signed at any point by a
+    // revoked key is tainted (rotation = new signer + NEW manifest, design I).
+    if revocation_state.enforceable() {
+        let revoked_signer = opm
+            .checkpoints
+            .iter()
+            .map(|c| revocation_target(&c.signer_fingerprint))
+            .find(|t| journal.is_revoked(t));
+        if revoked_signer.is_some() {
+            return VerifyOutcome::Invalid(
+                InvalidReason::SignerRevoked {
+                    journal_tip: journal_tip_time(&journal).unwrap_or_default(),
+                },
+                ann,
+            );
+        }
+    }
 
-    // Step 8 — threshold.
-    let threshold = match check_attestations(&opm, policy.required_k) {
+    // Step 8 — threshold. Revoked attestors are excluded from the distinct
+    // count (same journal contract; enforcement gated identically).
+    let revoked_attestors: Vec<String> = if revocation_state.enforceable() {
+        opm.attestations
+            .iter()
+            .map(|a| a.attestor_fingerprint.clone())
+            .filter(|fp| journal.is_revoked(&revocation_target(fp)))
+            .collect()
+    } else {
+        Vec::new()
+    };
+    let threshold = match check_attestations(&opm, policy.required_k, &revoked_attestors) {
         Ok(t) => t,
         Err(reason) => return VerifyOutcome::Invalid(reason, ann),
     };
 
-    VerifyOutcome::Intact {
-        as_of: opm
+    // `as of` = min(latest checkpoint, journal tip) when a journal was found
+    // (a claim is only as fresh as the most recent revocation sweep); raw
+    // latest checkpoint otherwise.
+    let as_of = match journal_tip_time(&journal) {
+        Some(tip) if !matches!(revocation_state, RevocationStatus::NoJournal) => opm
+            .checkpoints
+            .last()
+            .map(|c| c.timestamp.min(tip))
+            .unwrap_or(tip),
+        _ => opm
             .checkpoints
             .last()
             .map(|c| c.timestamp)
             .unwrap_or_default(),
+    };
+
+    VerifyOutcome::Intact {
+        as_of,
         chunk_report: report,
         self_attestation_flag: threshold.self_attestation,
         unattested: threshold.unattested,
         k_discrepancy: threshold.k_discrepancy,
         c2pa: ann,
+        revocation: revocation_state,
     }
 }
 
@@ -739,6 +931,7 @@ struct ThresholdResult {
 fn check_attestations(
     opm: &Opm,
     required_k: Option<u32>,
+    revoked_attestors: &[String],
 ) -> Result<ThresholdResult, InvalidReason> {
     if opm.attestations.is_empty() {
         let unattested = required_k.map(|k| (0, k));
@@ -770,7 +963,9 @@ fn check_attestations(
             .map_err(|_| InvalidReason::AttestationBinding)?;
         sig.verify(&ed, &falcon, &payload)
             .map_err(|_| InvalidReason::AttestationBinding)?;
-        if !distinct.contains(&att.attestor_fingerprint) {
+        if !distinct.contains(&att.attestor_fingerprint)
+            && !revoked_attestors.contains(&att.attestor_fingerprint)
+        {
             distinct.push(att.attestor_fingerprint.clone());
         }
     }
@@ -1447,6 +1642,217 @@ mod tests {
             }
             other => panic!("expected invalid, got {other:?}"),
         }
+    }
+
+    // ---- P-05: revocation integration (spec §7; R3 drill) ----
+
+    use origin_attest::revocation::{RevocationJournal, RevocationRecord};
+
+    /// A healthy journal at the asset's default path revoking `fps`.
+    fn journal_revoke(dir: &tempfile::TempDir, fps: &[String], tip: i64) {
+        let mut journal = RevocationJournal::new();
+        let revoker =
+            origin_crypto_sdk::signing::postquantum::Falcon1024Signer::from_seed(&[0x77u8; 32])
+                .unwrap();
+        for fp in fps {
+            journal
+                .append_signed(
+                    RevocationRecord {
+                        target_hash: revocation_target(fp),
+                        revoked_by: String::new(), // filled by append_signed
+                        reason: "key compromise (R3 drill)".into(),
+                        timestamp: tip,
+                        prev_hash: [0u8; 32],
+                        signature: vec![],
+                        revoker_falcon_pk: vec![],
+                    },
+                    &revoker,
+                )
+                .unwrap();
+        }
+        std::fs::write(
+            dir.path().join("revocations.json"),
+            serde_json::to_string(&journal).unwrap(),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn r3_revoked_signer_is_rejected_with_journal_tip() {
+        let dir = tempfile::tempdir().unwrap();
+        let (file, sidecar) = enrolled_manifest(&dir);
+        let s = signer();
+        journal_revoke(&dir, &[s.fingerprint_hex()], 4_098_000_000);
+
+        let outcome = verify(&file, Some(&sidecar), &policy_now(4_100_000_000));
+        assert_eq!(
+            outcome.headline(),
+            "manifest-invalid (signer-revoked, as of journal tip 4098000000)"
+        );
+    }
+
+    #[test]
+    fn r3_swap_gate_second_signer_accepted() {
+        // Continuity per design I: the compromised signer dies via journal;
+        // a NEW signer's manifest verifies against the same journal.
+        let dir = tempfile::tempdir().unwrap();
+        let old = signer();
+        journal_revoke(&dir, &[old.fingerprint_hex()], 4_098_000_000);
+
+        let file = dir.path().join("successor.bin");
+        std::fs::write(&file, b"successor content").unwrap();
+        let successor = Signer::from_seed(&OTHER_SEED).unwrap();
+        let mut opm = Opm::create(&file, &successor, Action::Capture, DEFAULT_CHUNK_SIZE).unwrap();
+        opm.attest(&Signer::from_seed(&ATTESTOR_SEED).unwrap())
+            .unwrap();
+        let sidecar = crate::opm::sidecar_path(&file);
+        opm::save(&opm, &sidecar).unwrap();
+
+        let outcome = verify(&file, Some(&sidecar), &policy_now(4_100_000_000));
+        assert!(intact(&outcome), "got: {outcome:?}");
+    }
+
+    #[test]
+    fn broken_journal_chain_proceeds_with_verbatim_warning() {
+        let dir = tempfile::tempdir().unwrap();
+        let (file, sidecar) = enrolled_manifest(&dir);
+        // Healthy journal, then corrupt a record's reason: chain + signature
+        // both break. Verification must PROCEED (intact) with the exact §7
+        // warning — never a false "revoked", never a false "clean".
+        journal_revoke(&dir, &["a".repeat(64)], 4_098_000_000);
+        let path = dir.path().join("revocations.json");
+        let mut journal: RevocationJournal =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        journal.records[0].reason = "tampered".into();
+        std::fs::write(&path, serde_json::to_string(&journal).unwrap()).unwrap();
+
+        let outcome = verify(&file, Some(&sidecar), &policy_now(4_100_000_000));
+        assert!(intact(&outcome), "verification proceeds: {outcome:?}");
+        let f = outcome.footer();
+        assert!(
+            f.starts_with(
+                "WARNING: journal integrity check failed — revocation status unreliable."
+            ),
+            "{f}"
+        );
+        assert!(f.contains("not checked: metadata"));
+    }
+
+    #[test]
+    fn forged_record_signature_is_distinct_from_chain_break() {
+        // Ticket 08: "chain broken" and "record forged" are different
+        // findings. Flip a signature byte: the hash chain stays intact
+        // (hash covers signable bytes only) but the signature fails.
+        let dir = tempfile::tempdir().unwrap();
+        let (file, sidecar) = enrolled_manifest(&dir);
+        journal_revoke(&dir, &["a".repeat(64)], 4_098_000_000);
+        let path = dir.path().join("revocations.json");
+        let mut journal: RevocationJournal =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        journal.records[0].signature[0] ^= 0xFF;
+        std::fs::write(&path, serde_json::to_string(&journal).unwrap()).unwrap();
+
+        let outcome = verify(&file, Some(&sidecar), &policy_now(4_100_000_000));
+        assert!(intact(&outcome));
+        let f = outcome.footer();
+        assert!(f.contains("WARNING: journal integrity check failed"), "{f}");
+        assert!(f.contains("record signature(s) invalid"), "{f}");
+    }
+
+    #[test]
+    fn absent_journal_and_empty_journal_are_distinct_footers() {
+        // Absent: NOT checked — absence is not evidence of absence.
+        let dir = tempfile::tempdir().unwrap();
+        let (file, sidecar) = enrolled_manifest(&dir);
+        let outcome = verify(&file, Some(&sidecar), &policy_now(4_100_000_000));
+        assert!(intact(&outcome));
+        assert!(outcome
+            .footer()
+            .contains("revocation NOT checked: no journal found"));
+
+        // Present-but-empty: checked, clean, zero records.
+        std::fs::write(
+            dir.path().join("revocations.json"),
+            serde_json::to_string(&RevocationJournal::new()).unwrap(),
+        )
+        .unwrap();
+        let outcome2 = verify(&file, Some(&sidecar), &policy_now(4_100_000_000));
+        assert!(intact(&outcome2));
+        assert!(outcome2
+            .footer()
+            .contains("revocation (journal consulted, chain intact: 0 records)."));
+    }
+
+    #[test]
+    fn journal_tip_composes_as_of() {
+        // A claim is only as fresh as the most recent revocation sweep:
+        // with a journal present, `as of` = min(latest checkpoint, tip).
+        let dir = tempfile::tempdir().unwrap();
+        let (file, sidecar) = enrolled_manifest(&dir);
+        journal_revoke(&dir, &["a".repeat(64)], 1_000_000); // old sweep, unrelated target
+
+        let outcome = verify(&file, Some(&sidecar), &policy_now(4_100_000_000));
+        match &outcome {
+            VerifyOutcome::Intact { as_of, .. } => assert_eq!(*as_of, 1_000_000),
+            other => panic!("expected intact, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn revoked_attestor_excluded_from_threshold() {
+        let dir = tempfile::tempdir().unwrap();
+        let (file, sidecar) = enrolled_manifest(&dir);
+        // One legitimate second attestor + one that will be revoked.
+        let mut opm = opm::load(&sidecar).unwrap();
+        let a2 = Signer::from_seed(&OTHER_SEED).unwrap();
+        opm.attest(&a2).unwrap();
+        opm::save(&opm, &sidecar).unwrap();
+
+        // Revoke the first attestor: distinct valid count drops to 1.
+        let attestor_fp = Signer::from_seed(&ATTESTOR_SEED).unwrap().fingerprint_hex();
+        journal_revoke(&dir, &[attestor_fp], 4_098_000_000);
+
+        // K=2: shortfall disclosed (degraded-intact with 1 of 2).
+        let policy = VerifyPolicy {
+            now: Some(4_100_000_000),
+            required_k: Some(2),
+            allow_roster: None,
+            journal_path: None,
+        };
+        let outcome = verify(&file, Some(&sidecar), &policy);
+        match &outcome {
+            VerifyOutcome::Intact { unattested, .. } => {
+                assert_eq!(*unattested, Some((1, 2)), "revoked attestor excluded");
+            }
+            other => panic!("expected intact, got {other:?}"),
+        }
+
+        // K=1: met by the non-revoked attestor alone.
+        let policy = VerifyPolicy {
+            now: Some(4_100_000_000),
+            required_k: Some(1),
+            allow_roster: None,
+            journal_path: None,
+        };
+        let outcome = verify(&file, Some(&sidecar), &policy);
+        match &outcome {
+            VerifyOutcome::Intact { unattested, .. } => assert_eq!(*unattested, None),
+            other => panic!("expected intact, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn pq_gate_falcon_half_tamper_rejected_ed_half_intact() {
+        // R3's PQ gate, cross-referenced from P-03: flipping a Falcon
+        // signature byte fails the checkpoint signature even though the
+        // Ed25519 half is untouched.
+        let dir = tempfile::tempdir().unwrap();
+        let (file, sidecar) = enrolled_manifest(&dir);
+        let opm = opm::load(&sidecar).unwrap();
+        let tampered = flip_falcon_sig_byte(&opm);
+        let path = save_temp(&tampered, &dir, "pq.opm");
+        let outcome = verify(&file, Some(&path), &policy_now(4_100_000_000));
+        assert_eq!(outcome.headline(), "manifest-invalid (signer-signature)");
     }
 
     #[test]
