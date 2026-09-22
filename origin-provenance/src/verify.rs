@@ -1842,7 +1842,7 @@ mod tests {
 
     /// B1 (red team pass 2): the engine's `create`/seal must refuse to
     /// overwrite an existing manifest — the guard previously lived only
-    /// in the basanite shell, so engine users silently clobbered history.
+    /// in product shells, so library consumers silently clobbered history.
     #[test]
     fn rt2_engine_create_refuses_overwrite() {
         let dir = tempfile::tempdir().unwrap();

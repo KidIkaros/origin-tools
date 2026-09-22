@@ -177,8 +177,8 @@ impl Opm {
     /// first edit (`Capture` by default; callers pass the initial action).
     /// Refuses to run when the asset already has a sidecar manifest —
     /// sealing is the start of a history, and silently replacing one
-    /// destroys it (B1, red team pass 2; the basanite shell had this
-    /// guard at v0.1.1, the engine now enforces it too).
+    /// destroys it (B1, red team pass 2; product shells had this guard
+    /// first, the engine now enforces it too).
     pub fn create(asset: &Path, signer: &Signer, action: Action, chunk_size: u32) -> Result<Self> {
         let sidecar = sidecar_path(asset);
         if sidecar.exists() {
