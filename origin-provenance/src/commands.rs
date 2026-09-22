@@ -7,7 +7,7 @@ use crate::cli::{
     UnwatermarkArgs, VerifyArgs, VerifyManifestArgs, WatermarkArgs,
 };
 use crate::encoding::Action;
-use crate::identity::Signer;
+use crate::identity::{load_signer_seed, Signer};
 use crate::manifest::{FileStatus, Manifest};
 use crate::opm::{self, Opm};
 use crate::stamp::Stamp;
@@ -262,30 +262,6 @@ fn cmd_check(args: CheckArgs) -> Result<(), String> {
     } else {
         Ok(())
     }
-}
-
-/// Load a 32-byte signer seed: 32 raw bytes or 64-char hex. The seed is
-/// consumed in-memory only — never printed, logged, or left in argv.
-fn load_signer_seed(path: &str) -> Result<[u8; 32], String> {
-    let raw = std::fs::read(path).map_err(|e| format!("read seed file {path}: {e}"))?;
-    let raw_len = raw.len();
-    if raw_len == 32 {
-        return Ok(raw.try_into().expect("32 bytes"));
-    }
-    if raw_len == 64 || raw_len == 65 {
-        // 64-char hex with a trailing newline (65 bytes) is the common
-        // human-authored case — accepted; other 65-byte files fail hex
-        // decode with a specific error.
-        let text = String::from_utf8(raw).map_err(|_| "seed hex is not UTF-8".to_string())?;
-        let bytes = hex::decode(text.trim_end_matches(['\n', '\r']))
-            .map_err(|e| format!("bad seed hex: {e}"))?;
-        if bytes.len() == 32 {
-            return Ok(bytes.try_into().expect("32 bytes"));
-        }
-    }
-    Err(format!(
-        "seed file {path}: expected 32 raw bytes or 64-char hex, got {raw_len} bytes"
-    ))
 }
 
 fn parse_action(s: &str) -> Result<Action, String> {
