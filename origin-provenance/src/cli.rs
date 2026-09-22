@@ -145,6 +145,12 @@ pub struct AppendArgs {
     #[arg(long)]
     pub note: Option<String>,
 
+    /// Allow appending with a seed that differs from the manifest's existing
+    /// signer (T-RT4). Creates a multi-signer manifest, which `verify`
+    /// rejects by default (design H) — only for deliberate co-signing flows.
+    #[arg(long)]
+    pub force: bool,
+
     /// Sidecar path (default: <asset>.opm)
     #[arg(long)]
     pub sidecar: Option<String>,

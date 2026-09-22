@@ -333,6 +333,32 @@ fn cmd_append(args: AppendArgs) -> Result<(), String> {
     }
     let mut opm = opm::load(sidecar_path).map_err(|e| format!("load: {e}"))?;
 
+    // T-RT4: refuse to silently extend a manifest under a different key.
+    // A multi-signer manifest is rejected by `verify` (design H), so an
+    // unflagged foreign append would hand the user a guaranteed-broken
+    // artifact. `--force` allows deliberate co-signing with a loud warning.
+    if let Some(last_cp) = opm.checkpoints.last() {
+        let manifest_signer = &last_cp.signer_fingerprint;
+        if manifest_signer != &signer.fingerprint_hex() {
+            if !args.force {
+                return Err(format!(
+                    "signer mismatch: manifest is signed by {} but this seed derives {} \
+                     — a second signer's edit makes the manifest fail `verify` (multi-signer). \
+                     Pass --force to append anyway (deliberate co-signing only).",
+                    manifest_signer,
+                    signer.fingerprint_hex()
+                ));
+            }
+            eprintln!(
+                "WARNING: appending under a DIFFERENT signer ({}) than the manifest's \
+                 existing signer ({}) — the resulting multi-signer manifest will fail \
+                 default `verify` (design H). This is only useful for deliberate co-signing.",
+                signer.fingerprint_hex(),
+                manifest_signer
+            );
+        }
+    }
+
     // The asset is read INSIDE append_edit — after the edit has landed.
     opm.append_edit(asset, &signer, action, args.note.as_deref())
         .map_err(|e| format!("append: {e}"))?;
@@ -949,6 +975,74 @@ mod tests {
         ]);
         let err = dispatch(cli).unwrap_err();
         assert!(err.contains("manifest not found"), "got: {err}");
+    }
+
+    /// T-RT4 (redteam F4): a foreign-signer append must be refused with
+    /// guidance (multi-signer manifests fail `verify` by design H), and
+    /// `--force` must allow it with a loud warning.
+    #[test]
+    fn opm_cli_append_foreign_signer_refused_then_forced() {
+        use crate::cli::Cli;
+        use clap::Parser;
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("z.txt");
+        std::fs::write(&file, b"z").unwrap();
+        let owner = seed_file(&dir, "owner.seed", [9u8; 32]);
+        let attacker = seed_file(&dir, "other.seed", [11u8; 32]);
+
+        let cli = Cli::parse_from([
+            "origin-provenance",
+            "create",
+            file.to_str().unwrap(),
+            "--seed-file",
+            &owner,
+        ]);
+        dispatch(cli).unwrap();
+
+        // Foreign seed, no --force: refused with the mismatch guidance.
+        let cli = Cli::parse_from([
+            "origin-provenance",
+            "append",
+            file.to_str().unwrap(),
+            "--seed-file",
+            &attacker,
+            "--action",
+            "publish",
+        ]);
+        let err = dispatch(cli).unwrap_err();
+        assert!(err.contains("signer mismatch"), "got: {err}");
+        assert!(err.contains("--force"), "got: {err}");
+
+        // Still the original single-edit manifest.
+        let opm = opm::load(&dir.path().join("z.txt.opm")).unwrap();
+        assert_eq!(opm.edits.len(), 1);
+
+        // --force: succeeds (warning goes to stderr, not asserted here).
+        let cli = Cli::parse_from([
+            "origin-provenance",
+            "append",
+            file.to_str().unwrap(),
+            "--seed-file",
+            &attacker,
+            "--action",
+            "publish",
+            "--force",
+        ]);
+        dispatch(cli).unwrap();
+        let opm = opm::load(&dir.path().join("z.txt.opm")).unwrap();
+        assert_eq!(opm.edits.len(), 2);
+
+        // And the resulting manifest indeed fails verify (multi-signer).
+        let vcli = Cli::parse_from([
+            "origin-provenance",
+            "verify-manifest",
+            file.to_str().unwrap(),
+        ]);
+        let vout = dispatch(vcli).unwrap_err();
+        assert!(
+            vout.contains("verification failed"),
+            "forced append should fail verify, got: {vout}"
+        );
     }
 
     #[test]
