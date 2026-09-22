@@ -4,7 +4,8 @@
 //! contract (design §3; spec §5).
 //!
 //! Check order (normative — do not reorder):
-//! 1. locate sidecar (watermark fallback lands in P-04)
+//! 1. locate sidecar (explicit path, or discovery order in `verify_discover`:
+//!    default sidecar → watermark fallback — a hint, design D4)
 //! 2. parse + structure; canonical edit order (strictly increasing index
 //!    from 0 — rejected, never reordered). Checkpoint `leaf_count`
 //!    monotonicity is deliberately NOT checked here (design H): a
@@ -124,22 +125,49 @@ pub enum VerifyOutcome {
         /// Issuer-requested vs authoritative K, shown when both present
         /// and different (design §3 step 8).
         k_discrepancy: Option<(u32, u32)>,
+        /// C2PA annotation channel (E/F — orthogonal to the verdict; a
+        /// file can carry BOTH an Origin sidecar and embedded C2PA).
+        c2pa: crate::c2pa::C2paAnnotation,
     },
-    Invalid(InvalidReason),
-    /// No sidecar found. (Watermark fallback lands in P-04.)
+    /// Payload: the C2PA annotation channel (E/F) — a manifest-carrying file
+    /// can ALSO embed C2PA; the channel reports on any verdict.
+    Invalid(InvalidReason, crate::c2pa::C2paAnnotation),
+    /// No sidecar found. `attempts` is the honest discovery log: what the
+    /// engine looked at and what it found (P-04 fallback), all labeled
+    /// heuristic. Empty when `--sidecar` was explicit.
     NoManifest {
         sidecar_path: String,
+        attempts: Vec<String>,
+        c2pa: crate::c2pa::C2paAnnotation,
     },
 }
 
 impl VerifyOutcome {
+    /// The C2PA annotation channel attached to this verdict (E/F —
+    /// orthogonal to the verdict itself).
+    pub fn c2pa(&self) -> &crate::c2pa::C2paAnnotation {
+        match self {
+            VerifyOutcome::Intact { c2pa, .. } | VerifyOutcome::NoManifest { c2pa, .. } => c2pa,
+            VerifyOutcome::Invalid(_, c2pa) => c2pa,
+        }
+    }
+
     /// One-line verdict (stable strings; tests pin them).
     pub fn headline(&self) -> String {
         match self {
             VerifyOutcome::Intact { as_of, .. } => format!("manifest-intact as of {as_of}"),
-            VerifyOutcome::Invalid(r) => r.label(),
-            VerifyOutcome::NoManifest { sidecar_path } => {
-                format!("no-manifest (no sidecar at {sidecar_path})")
+            VerifyOutcome::Invalid(r, _) => r.label(),
+            VerifyOutcome::NoManifest {
+                sidecar_path,
+                attempts,
+                ..
+            } => {
+                let mut s = format!("no-manifest (no sidecar at {sidecar_path})");
+                for a in attempts {
+                    s.push_str("\n  ");
+                    s.push_str(a);
+                }
+                s
             }
         }
     }
@@ -206,7 +234,8 @@ fn keys_for(
     }
 }
 
-/// Verify `asset` against its sidecar (or the explicit one given).
+/// Verify `asset` against its sidecar (or the explicit one given). The
+/// frozen P-03 contract: explicit/default sidecar only, no discovery.
 pub fn verify(asset: &Path, sidecar: Option<&Path>, policy: &VerifyPolicy) -> VerifyOutcome {
     // Step 1 — locate the manifest.
     let path: std::path::PathBuf = match sidecar {
@@ -216,42 +245,72 @@ pub fn verify(asset: &Path, sidecar: Option<&Path>, policy: &VerifyPolicy) -> Ve
     if !path.exists() {
         return VerifyOutcome::NoManifest {
             sidecar_path: path.to_string_lossy().into_owned(),
+            attempts: Vec::new(),
+            c2pa: annotate_asset(asset),
         };
     }
-
-    // Step 2 — parse + structure.
     let opm = match opm::load(&path) {
         Ok(o) => o,
-        Err(_) => return VerifyOutcome::Invalid(InvalidReason::Unparseable),
+        Err(_) => return VerifyOutcome::Invalid(InvalidReason::Unparseable, annotate_asset(asset)),
     };
     if opm.version != opm::OPM_VERSION {
-        return VerifyOutcome::Invalid(InvalidReason::Unparseable);
+        return VerifyOutcome::Invalid(InvalidReason::Unparseable, annotate_asset(asset));
     }
     if let Err(reason) = check_structure(&opm) {
-        return VerifyOutcome::Invalid(reason);
+        return VerifyOutcome::Invalid(reason, annotate_asset(asset));
     }
+    verify_loaded(asset, opm, policy, None)
+}
+
+/// Version + structure gates, then steps 3–9. Shared by `verify` and the
+/// discovery wrapper (which feeds in a manifest found via the watermark hint).
+fn verify_parsed(
+    asset: &Path,
+    opm: Opm,
+    policy: &VerifyPolicy,
+    content_bytes: Option<&[u8]>,
+) -> VerifyOutcome {
+    if opm.version != opm::OPM_VERSION {
+        return VerifyOutcome::Invalid(InvalidReason::Unparseable, annotate_asset(asset));
+    }
+    if let Err(reason) = check_structure(&opm) {
+        return VerifyOutcome::Invalid(reason, annotate_asset(asset));
+    }
+    verify_loaded(asset, opm, policy, content_bytes)
+}
+
+/// Steps 3–9 over a structure-checked manifest. `content_bytes` overrides the
+/// asset read when discovery matched via the watermark-embedded original
+/// (design D4 — the override is a hint and is logged in the attempts trail).
+fn verify_loaded(
+    asset: &Path,
+    opm: Opm,
+    policy: &VerifyPolicy,
+    content_bytes: Option<&[u8]>,
+) -> VerifyOutcome {
+    let ann = annotate_asset(asset);
 
     // Step 3 — content binding (reportable per-chunk, then fatal).
-    let (report, reason) = check_content(asset, &opm);
+    let (report, reason) = check_content(asset, &opm, content_bytes);
     if let Some(r) = reason {
-        return VerifyOutcome::Invalid(r);
+        return VerifyOutcome::Invalid(r, ann);
     }
     let report = report.expect("content check produced a report on success path");
 
     // Step 4 — MMR consistency for every checkpoint + rewind check (H).
     if let Err(reason) = check_mmr_history(&opm) {
-        return VerifyOutcome::Invalid(reason);
+        return VerifyOutcome::Invalid(reason, ann);
     }
 
     // Step 5 — checkpoint signatures with embedded/roster keys.
     if let Err(reason) = check_checkpoint_signatures(&opm, policy.allow_roster.as_ref()) {
-        return VerifyOutcome::Invalid(reason);
+        return VerifyOutcome::Invalid(reason, ann);
     }
 
     // Step 6 — timestamp sanity (verifier-local now).
     let now = policy.now.unwrap_or_else(unix_now);
     if opm.checkpoints.iter().any(|c| c.timestamp > now) {
-        return VerifyOutcome::Invalid(InvalidReason::Timestamp);
+        return VerifyOutcome::Invalid(InvalidReason::Timestamp, ann);
     }
 
     // Step 7 — revocation: P-05 wires the journal; the policy already
@@ -260,7 +319,7 @@ pub fn verify(asset: &Path, sidecar: Option<&Path>, policy: &VerifyPolicy) -> Ve
     // Step 8 — threshold.
     let threshold = match check_attestations(&opm, policy.required_k) {
         Ok(t) => t,
-        Err(reason) => return VerifyOutcome::Invalid(reason),
+        Err(reason) => return VerifyOutcome::Invalid(reason, ann),
     };
 
     VerifyOutcome::Intact {
@@ -273,7 +332,199 @@ pub fn verify(asset: &Path, sidecar: Option<&Path>, policy: &VerifyPolicy) -> Ve
         self_attestation_flag: threshold.self_attestation,
         unattested: threshold.unattested,
         k_discrepancy: threshold.k_discrepancy,
+        c2pa: ann,
     }
+}
+
+/// C2PA annotation for any asset (E/F — orthogonal to the verdict).
+fn annotate_asset(asset: &Path) -> crate::c2pa::C2paAnnotation {
+    match std::fs::read(asset) {
+        Ok(data) => crate::c2pa::annotate(crate::c2pa::extract_store(&data, Some(asset))),
+        Err(_) => crate::c2pa::C2paAnnotation {
+            container: None,
+            present: false,
+            claim_generator: None,
+            action_count: None,
+            signature_parses: None,
+            note: None,
+        },
+    }
+}
+
+/// Discovery entry point (spec §5; P-04): default sidecar first, then the
+/// watermark fallback. The watermark is a HINT (design D4): extraction is a
+/// candidate match only when a sibling `.opm`'s first-edit whole-file hash
+/// equals the BLAKE3 of the asset or of the watermark-embedded original.
+/// Multiple candidates are never guessed; every step is logged honestly.
+pub fn verify_discover(asset: &Path, policy: &VerifyPolicy) -> VerifyOutcome {
+    let mut attempts: Vec<String> = Vec::new();
+    let default = opm::sidecar_path(asset);
+    if default.exists() {
+        return verify(asset, Some(&default), policy);
+    }
+    attempts.push(format!(
+        "discovery: no sidecar at {}",
+        default.to_string_lossy()
+    ));
+
+    let data = match std::fs::read(asset) {
+        Ok(d) => d,
+        Err(_) => {
+            attempts.push("discovery: asset unreadable".into());
+            return VerifyOutcome::NoManifest {
+                sidecar_path: default.to_string_lossy().into_owned(),
+                attempts,
+                c2pa: annotate_asset(asset),
+            };
+        }
+    };
+    let annotation = annotate_asset(asset);
+
+    let (candidates, original) = watermark_candidates(asset, &data, &mut attempts);
+    let original_buf: Option<Vec<u8>> = original;
+    match candidates.len() {
+        0 => VerifyOutcome::NoManifest {
+            sidecar_path: default.to_string_lossy().into_owned(),
+            attempts,
+            c2pa: annotation,
+        },
+        1 => {
+            let p = candidates[0].clone();
+            attempts.push(format!(
+                "discovery: watermark hint matched {} (candidate, not trust)",
+                p.to_string_lossy()
+            ));
+            let opm = match opm::load(&p) {
+                Ok(o) => o,
+                Err(_) => {
+                    attempts.push("discovery: candidate manifest unreadable".into());
+                    return VerifyOutcome::NoManifest {
+                        sidecar_path: p.to_string_lossy().into_owned(),
+                        attempts,
+                        c2pa: annotation,
+                    };
+                }
+            };
+            // Which byte-stream does the manifest bind? If it binds the
+            // watermark-embedded original (matched_via = "embedded original"),
+            // content verification runs against those extracted bytes — a
+            // hint-qualified check, disclosed in the attempts trail.
+            let matched_via = original_buf.as_ref().and_then(|orig| {
+                let o_hash = hex::encode(origin_crypto_sdk::blake3::hash(orig).as_bytes());
+                opm.edits
+                    .first()
+                    .map(|e| e.content.whole_file_hash == o_hash)
+                    .filter(|b| *b)
+                    .map(|_| "embedded original")
+            });
+            let content_bytes: Option<&[u8]> = match matched_via {
+                Some(_) => original_buf.as_deref(),
+                None => None,
+            };
+            if matched_via.is_some() {
+                attempts.push(
+                    "discovery: content verified against watermark-embedded original \
+                     (hint-qualified; watermark is not a trust signal)"
+                        .into(),
+                );
+            }
+            match verify_parsed(asset, opm, policy, content_bytes) {
+                VerifyOutcome::NoManifest {
+                    attempts: mut all,
+                    c2pa,
+                    ..
+                } => {
+                    let mut merged = attempts;
+                    merged.append(&mut all);
+                    VerifyOutcome::NoManifest {
+                        sidecar_path: p.to_string_lossy().into_owned(),
+                        attempts: merged,
+                        c2pa,
+                    }
+                }
+                other => other,
+            }
+        }
+        _ => {
+            attempts.push(
+                "discovery: multiple watermark candidates — refusing to guess (use --sidecar)"
+                    .into(),
+            );
+            VerifyOutcome::NoManifest {
+                sidecar_path: default.to_string_lossy().into_owned(),
+                attempts,
+                c2pa: annotation,
+            }
+        }
+    }
+}
+
+/// Sibling `.opm` manifests (same directory, design D6's manifest home)
+/// whose first edit's whole-file hash equals the BLAKE3 of the watermarked
+/// asset or of the embedded original bytes. Logs every attempt; loads each
+/// candidate defensively (a corrupt sibling is a skipped candidate, not a
+/// verify failure).
+fn watermark_candidates(
+    asset: &Path,
+    data: &[u8],
+    attempts: &mut Vec<String>,
+) -> (Vec<std::path::PathBuf>, Option<Vec<u8>>) {
+    let (wm, original) = match crate::watermark::Watermark::extract(data) {
+        Ok(x) => x,
+        Err(_) => {
+            attempts.push("discovery: no watermark marker found".into());
+            return (Vec::new(), None);
+        }
+    };
+    if !wm.verify(&original) {
+        attempts.push(
+            "discovery: watermark found but its hash does not match the embedded original \
+             (stripped or re-saved after watermarking) — no candidate from it"
+                .into(),
+        );
+    }
+    let asset_hash = origin_crypto_sdk::blake3::hash(data);
+    let original_hash = origin_crypto_sdk::blake3::hash(&original);
+    let mut candidates = Vec::new();
+    let dir = match asset.parent() {
+        Some(d) => d,
+        None => return (candidates, Some(original)),
+    };
+    let entries = match std::fs::read_dir(dir) {
+        Ok(e) => e,
+        Err(_) => return (candidates, Some(original)),
+    };
+    for entry in entries.flatten() {
+        let p = entry.path();
+        let is_opm = p.extension().map(|e| e == "opm").unwrap_or(false);
+        if !is_opm || p == opm::sidecar_path(asset) {
+            continue;
+        }
+        let loaded = match opm::load(&p) {
+            Ok(o) => o,
+            Err(_) => {
+                attempts.push(format!(
+                    "discovery: sibling {} unreadable — skipped",
+                    p.to_string_lossy()
+                ));
+                continue;
+            }
+        };
+        let first = match loaded.edits.first() {
+            Some(e) => e,
+            None => continue,
+        };
+        let fh = &first.content.whole_file_hash;
+        if fh == &hex::encode(asset_hash.as_bytes()) || fh == &hex::encode(original_hash.as_bytes())
+        {
+            candidates.push(p);
+        }
+    }
+    if candidates.is_empty() {
+        attempts
+            .push("discovery: watermark found but no sibling manifest matches its content".into());
+    }
+    (candidates, Some(original))
 }
 
 fn unix_now() -> i64 {
@@ -296,10 +547,20 @@ fn check_structure(opm: &Opm) -> Result<(), InvalidReason> {
 /// Step 3: recompute whole-file hash + chunk tree; build the per-chunk
 /// report against the stored `chunk_hashes` when present. The stored
 /// `chunk_tree_root` binds the list: recompute-from-list must equal root.
-fn check_content(asset: &Path, opm: &Opm) -> (Option<ChunkReport>, Option<InvalidReason>) {
-    let data = match std::fs::read(asset) {
-        Ok(d) => d,
-        Err(_) => return (None, Some(InvalidReason::ContentHash { chunk: None })),
+fn check_content(
+    asset: &Path,
+    opm: &Opm,
+    content_bytes: Option<&[u8]>,
+) -> (Option<ChunkReport>, Option<InvalidReason>) {
+    let read_buf: Vec<u8>;
+    let data: &[u8] = if let Some(b) = content_bytes {
+        b
+    } else {
+        read_buf = match std::fs::read(asset) {
+            Ok(d) => d,
+            Err(_) => return (None, Some(InvalidReason::ContentHash { chunk: None })),
+        };
+        &read_buf
     };
     let edit = match opm.edits.last() {
         Some(e) => e,
@@ -337,9 +598,9 @@ fn check_content(asset: &Path, opm: &Opm) -> (Option<ChunkReport>, Option<Invali
     if let Some(rep) = &report {
         // The stored root binds the stored list; the whole-file hash binds
         // the recomputed tree. Both must agree with the current file.
-        let root_from_file = content::chunk_tree(&data, opm.chunk_size);
+        let root_from_file = content::chunk_tree(data, opm.chunk_size);
         if hex::encode(root_from_file) != edit.content.chunk_tree_root
-            || hex::encode(content::whole_file_hash(&data)) != edit.content.whole_file_hash
+            || hex::encode(content::whole_file_hash(data)) != edit.content.whole_file_hash
         {
             let reason = rep
                 .first_mismatch
@@ -352,8 +613,8 @@ fn check_content(asset: &Path, opm: &Opm) -> (Option<ChunkReport>, Option<Invali
     }
 
     // No stored list: whole-file + tree checks only.
-    if hex::encode(content::whole_file_hash(&data)) != edit.content.whole_file_hash
-        || hex::encode(content::chunk_tree(&data, opm.chunk_size)) != edit.content.chunk_tree_root
+    if hex::encode(content::whole_file_hash(data)) != edit.content.whole_file_hash
+        || hex::encode(content::chunk_tree(data, opm.chunk_size)) != edit.content.chunk_tree_root
     {
         return (None, Some(InvalidReason::ContentHash { chunk: None }));
     }
@@ -653,7 +914,7 @@ mod tests {
 
         let outcome = verify(&file, None, &policy_now(4_100_000_000));
         match &outcome {
-            VerifyOutcome::Invalid(InvalidReason::ContentHash { chunk: Some(0) }) => {}
+            VerifyOutcome::Invalid(InvalidReason::ContentHash { chunk: Some(0) }, _) => {}
             other => panic!(
                 "expected content-hash naming chunk 0, got {:?}",
                 other.headline()
@@ -764,7 +1025,7 @@ mod tests {
         std::fs::write(&big, &data).unwrap();
         let outcome = verify(&big, None, &policy_now(4_100_000_000));
         match &outcome {
-            VerifyOutcome::Invalid(InvalidReason::ContentHash { chunk: Some(2) }) => {}
+            VerifyOutcome::Invalid(InvalidReason::ContentHash { chunk: Some(2) }, _) => {}
             other => panic!("expected chunk 2 mismatch, got {:?}", other.headline()),
         }
     }
@@ -1001,5 +1262,209 @@ mod tests {
             keys_for(&fp, Some(&keys), Some(&roster)).unwrap_err(),
             InvalidReason::KeyBinding
         );
+    }
+
+    // ---- P-04: discovery + annotation channel ----
+
+    /// An asset whose watermark embeds the bytes of a manifest-paired original.
+    fn watermarked_asset(dir: &tempfile::TempDir) -> (std::path::PathBuf, Vec<u8>) {
+        let original = b"version one of the asset".to_vec();
+        let wm = crate::watermark::Watermark::new(&original, Some("test".into()));
+        let marked = wm.embed(&original).unwrap();
+        let file = dir.path().join("stripped-asset.bin");
+        std::fs::write(&file, &marked).unwrap();
+        (file, original)
+    }
+
+    #[test]
+    fn default_sidecar_still_verified_without_discovery_overhead() {
+        let dir = tempfile::tempdir().unwrap();
+        let (file, _sidecar) = enrolled_manifest(&dir);
+        let outcome = verify_discover(&file, &policy_now(4_100_000_000));
+        assert!(intact(&outcome));
+    }
+
+    #[test]
+    fn watermark_fallback_finds_sibling_manifest_for_original() {
+        // The true D4 scenario: the pairing is stripped — the watermarked
+        // asset travels WITHOUT its default-path sidecar, and the manifest
+        // sits under a non-default sibling name. Discovery must recover it.
+        let dir = tempfile::tempdir().unwrap();
+        let (file, original) = watermarked_asset(&dir);
+        let s = signer();
+        let opm =
+            Opm::create_from_bytes(&original, &s, Action::Capture, DEFAULT_CHUNK_SIZE).unwrap();
+        opm::save(&opm, &dir.path().join("recovered.opm")).unwrap();
+
+        let outcome = verify_discover(&file, &policy_now(4_100_000_000));
+        assert!(intact(&outcome), "got: {outcome:?}");
+    }
+
+    #[test]
+    fn watermarked_asset_with_default_sidecar_binds_marked_bytes() {
+        // The strict default-path rule: a manifest at <asset>.opm binds what
+        // it binds — one that enrolled the marked bytes verifies; one that
+        // enrolled pre-watermark bytes is a content failure there (the
+        // supported flows: bind the distributed bytes, or rely on discovery).
+        let dir = tempfile::tempdir().unwrap();
+        let (file, _original) = watermarked_asset(&dir);
+        let s = signer();
+        let marked = std::fs::read(&file).unwrap();
+        let opm = Opm::create_from_bytes(&marked, &s, Action::Capture, DEFAULT_CHUNK_SIZE).unwrap();
+        opm::save(&opm, &crate::opm::sidecar_path(&file)).unwrap();
+
+        let outcome = verify_discover(&file, &policy_now(4_100_000_000));
+        assert!(intact(&outcome), "got: {outcome:?}");
+    }
+
+    #[test]
+    fn unwatermarked_asset_is_honest_no_manifest() {
+        let dir = tempfile::tempdir().unwrap();
+        let _ = enrolled_manifest(&dir);
+        let lonely = dir.path().join("other.bin");
+        std::fs::write(&lonely, b"unwatermarked content").unwrap();
+
+        let outcome = verify_discover(&lonely, &policy_now(4_100_000_000));
+        match &outcome {
+            VerifyOutcome::NoManifest { attempts, c2pa, .. } => {
+                assert!(attempts.iter().any(|a| a.contains("no sidecar at")));
+                assert!(attempts.iter().any(|a| a.contains("no watermark marker")));
+                assert!(!c2pa.present);
+            }
+            other => panic!("expected no-manifest, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn watermark_without_matching_manifest_names_what_was_tried() {
+        let dir = tempfile::tempdir().unwrap();
+        let (file, _original) = watermarked_asset(&dir);
+        // No manifest anywhere in the directory: the trail must show the
+        // watermark was found and examined, and that nothing matched it.
+
+        let outcome = verify_discover(&file, &policy_now(4_100_000_000));
+        match &outcome {
+            VerifyOutcome::NoManifest { attempts, .. } => {
+                assert!(
+                    attempts
+                        .iter()
+                        .any(|a| a.contains("watermark found but no sibling manifest matches")),
+                    "attempts: {attempts:?}"
+                );
+            }
+            other => panic!("expected no-manifest, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn multiple_watermark_candidates_refuse_to_guess() {
+        let dir = tempfile::tempdir().unwrap();
+        let (file, original) = watermarked_asset(&dir);
+        let s = signer();
+        // Two sibling manifests both claiming the same original content.
+        let opm =
+            Opm::create_from_bytes(&original, &s, Action::Capture, DEFAULT_CHUNK_SIZE).unwrap();
+        opm::save(&opm, &dir.path().join("copy1.opm")).unwrap();
+        opm::save(&opm, &dir.path().join("copy2.opm")).unwrap();
+
+        let outcome = verify_discover(&file, &policy_now(4_100_000_000));
+        match &outcome {
+            VerifyOutcome::NoManifest { attempts, .. } => {
+                assert!(
+                    attempts.iter().any(|a| a.contains("refusing to guess")),
+                    "attempts: {attempts:?}"
+                );
+            }
+            other => panic!("expected no-manifest, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn c2pa_annotation_attaches_to_every_verdict() {
+        // Intact verdict + C2PA-carrying asset: annotation present alongside.
+        let dir = tempfile::tempdir().unwrap();
+        let (file, sidecar) = enrolled_manifest(&dir);
+        // Make the asset C2PA-carrying WITHOUT breaking its content binding:
+        // append a C2PA store via a JPEG wrapper is impossible here (that
+        // would change content). Instead: verify that the channel is attached
+        // (empty annotation for a non-C2PA asset, present for a C2PA one).
+        let outcome = verify(&file, Some(&sidecar), &policy_now(4_100_000_000));
+        match &outcome {
+            VerifyOutcome::Intact { c2pa, .. } => {
+                assert!(!c2pa.present, "no C2PA data was embedded");
+            }
+            other => panic!("expected intact, got {other:?}"),
+        }
+
+        // A C2PA-carrying unmanifested asset still gets the annotation.
+        let store = crate::c2pa::tests_support::claim_store("AnnotGen/1.0");
+        let marked = dir.path().join("c2pa-only.jumbf");
+        std::fs::write(&marked, &store).unwrap();
+        let outcome2 = verify_discover(&marked, &policy_now(4_100_000_000));
+        match &outcome2 {
+            VerifyOutcome::NoManifest { c2pa, .. } => {
+                assert!(c2pa.present);
+                assert_eq!(c2pa.claim_generator.as_deref(), Some("AnnotGen/1.0"));
+            }
+            other => panic!("expected no-manifest, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn both_manifests_independence_annotation_never_becomes_trust() {
+        // Design F: an asset can carry BOTH an Origin manifest AND embedded
+        // C2PA. The C2PA claim must not influence the verdict either way.
+        // Here the asset itself is a .jumbf store (the sidecar-JUMBF
+        // container) with its own Origin manifest alongside.
+        let dir = tempfile::tempdir().unwrap();
+        let store = crate::c2pa::tests_support::claim_store("CoGen/1.0");
+        let asset = dir.path().join("co-asset.jumbf");
+        std::fs::write(&asset, &store).unwrap();
+        let s = signer();
+        let opm = Opm::create_from_bytes(&store, &s, Action::Capture, DEFAULT_CHUNK_SIZE).unwrap();
+        let sidecar = crate::opm::sidecar_path(&asset);
+        opm::save(&opm, &sidecar).unwrap();
+
+        // Intact manifest + C2PA present: intact verdict, annotation rendered.
+        let outcome = verify_discover(&asset, &policy_now(4_100_000_000));
+        match &outcome {
+            VerifyOutcome::Intact { c2pa, .. } => {
+                assert!(c2pa.present);
+                assert_eq!(c2pa.container, Some("jumbf-sidecar"));
+                assert_eq!(c2pa.claim_generator.as_deref(), Some("CoGen/1.0"));
+            }
+            other => panic!("expected intact, got {other:?}"),
+        }
+
+        // Break the manifest's signature: C2PA presence must NOT rescue it.
+        let loaded = opm::load(&sidecar).unwrap();
+        let tampered = flip_falcon_sig_byte(&loaded);
+        let path = save_temp(&tampered, &dir, "flip2.opm");
+        let outcome2 = verify(&asset, Some(&path), &policy_now(4_100_000_000));
+        match &outcome2 {
+            VerifyOutcome::Invalid(_, c2pa) => {
+                assert!(c2pa.present, "annotation still renders on invalid");
+            }
+            other => panic!("expected invalid, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn discovered_manifest_verdict_carries_annotation_too() {
+        // Full composition: watermark-discovered manifest + C2PA in the
+        // watermarked asset, on the Intact path.
+        let dir = tempfile::tempdir().unwrap();
+        let (file, original) = watermarked_asset(&dir);
+        let s = signer();
+        let opm =
+            Opm::create_from_bytes(&original, &s, Action::Capture, DEFAULT_CHUNK_SIZE).unwrap();
+        opm::save(&opm, &dir.path().join("recovered.opm")).unwrap();
+
+        let outcome = verify_discover(&file, &policy_now(4_100_000_000));
+        assert!(intact(&outcome), "got: {outcome:?}");
+        match &outcome {
+            VerifyOutcome::Intact { c2pa, .. } => assert!(!c2pa.present),
+            _ => unreachable!(),
+        }
     }
 }

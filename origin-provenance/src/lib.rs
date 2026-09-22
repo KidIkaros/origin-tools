@@ -8,6 +8,7 @@
 //! - **Scan**: Recursively hash a directory tree into a manifest
 //! - **Verify**: Check files against a manifest, report tampering
 
+pub mod c2pa;
 pub mod cli;
 pub mod commands;
 pub mod encoding;

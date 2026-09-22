@@ -21,7 +21,8 @@ pub enum Commands {
     Stamp(StampArgs),
     /// Verify a file against a stamp
     Verify(VerifyArgs),
-    /// Embed a watermark into a file
+    /// Embed a watermark into a file (experimental)
+    #[command(alias = "watermark-embed")]
     Watermark(WatermarkArgs),
     /// Extract and verify a watermark from a file
     Unwatermark(UnwatermarkArgs),
@@ -152,7 +153,7 @@ pub struct VerifyManifestArgs {
     /// File to verify against its OPM manifest
     pub asset: String,
 
-    /// Sidecar path (default: <asset>.opm)
+    /// Sidecar path (default: <asset>.opm, then watermark-hint discovery)
     #[arg(long)]
     pub sidecar: Option<String>,
 

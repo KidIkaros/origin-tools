@@ -154,12 +154,24 @@ impl Opm {
     /// first edit (`Capture` by default; callers pass the initial action).
     pub fn create(asset: &Path, signer: &Signer, action: Action, chunk_size: u32) -> Result<Self> {
         let data = std::fs::read(asset)?;
-        let wfh = content::whole_file_hash(&data);
+        Self::create_from_bytes(&data, signer, action, chunk_size)
+    }
+
+    /// Create a manifest binding the given bytes directly — the watermark-
+    /// pre-enrollment flow (D4/D6): the distributed file is `original` plus
+    /// the marker, and discovery later matches via the embedded original.
+    pub fn create_from_bytes(
+        data: &[u8],
+        signer: &Signer,
+        action: Action,
+        chunk_size: u32,
+    ) -> Result<Self> {
+        let wfh = content::whole_file_hash(data);
         let asset_id = crate::encoding::asset_id(&wfh);
         let leaf = edit_leaf(
             0,
             u8::from(action),
-            &content::chunk_tree(&data, chunk_size),
+            &content::chunk_tree(data, chunk_size),
             &wfh,
             &asset_id,
         );
@@ -180,9 +192,9 @@ impl Opm {
                 index: 0,
                 action,
                 note: None,
-                content: ContentBinding::from_hashes(&data, chunk_size),
+                content: ContentBinding::from_hashes(data, chunk_size),
                 leaf_hash: hex::encode(leaf),
-                chunk_hashes: Some(chunk_hashes(&data, chunk_size)),
+                chunk_hashes: Some(chunk_hashes(data, chunk_size)),
             }],
             checkpoints: vec![cp],
             attestations: Vec::new(),

@@ -342,6 +342,7 @@ fn cmd_verify_manifest(args: VerifyManifestArgs) -> Result<(), String> {
     }
     let sidecar = args
         .sidecar
+        .clone()
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|| opm::sidecar_path(asset));
 
@@ -369,10 +370,22 @@ fn cmd_verify_manifest(args: VerifyManifestArgs) -> Result<(), String> {
         allow_roster,
         journal_path: None,
     };
-    let outcome = crate::verify::verify(asset, Some(&sidecar), &policy);
+
+    // Spec §6 discovery order: explicit --sidecar pins the path (no
+    // discovery); otherwise default sidecar first, then the watermark
+    // fallback (a hint, design D4 — the trail says so on every attempt).
+    let outcome = match args.sidecar {
+        Some(_) => crate::verify::verify(asset, Some(&sidecar), &policy),
+        None => crate::verify::verify_discover(asset, &policy),
+    };
 
     // Three-state output — plain, honest, voice-clean.
     println!("{}", outcome.headline());
+    // C2PA annotation channel (E/F): renders on every verdict, never merged
+    // with it.
+    for line in outcome.c2pa().render() {
+        println!("  {line}");
+    }
     if let crate::verify::VerifyOutcome::Intact {
         chunk_report,
         self_attestation_flag,
@@ -403,7 +416,7 @@ fn cmd_verify_manifest(args: VerifyManifestArgs) -> Result<(), String> {
 
     match outcome {
         crate::verify::VerifyOutcome::Intact { .. } => Ok(()),
-        crate::verify::VerifyOutcome::Invalid(_) => Err("manifest verification failed".into()),
+        crate::verify::VerifyOutcome::Invalid(..) => Err("manifest verification failed".into()),
         crate::verify::VerifyOutcome::NoManifest { .. } => Err("no manifest found".into()),
     }
 }
@@ -982,5 +995,95 @@ mod tests {
             p.to_str().unwrap(),
         ]);
         assert!(dispatch(cli).is_ok());
+    }
+
+    // ---- P-04: discovery routing + annotation channel ----
+
+    #[test]
+    fn verify_manifest_without_sidecar_uses_discovery() {
+        use crate::cli::Cli;
+        use clap::Parser;
+        let dir = tempfile::tempdir().unwrap();
+        let s = crate::identity::Signer::from_seed(&[0x44u8; 32]).unwrap();
+
+        // Default sidecar present: discovery takes it — intact.
+        let file = dir.path().join("a.txt");
+        std::fs::write(&file, b"alpha").unwrap();
+        let opm = Opm::create(&file, &s, crate::encoding::Action::Capture, 1_048_576).unwrap();
+        opm::save(&opm, &opm::sidecar_path(&file)).unwrap();
+        let cli = Cli::parse_from([
+            "origin-provenance",
+            "verify-manifest",
+            file.to_str().unwrap(),
+        ]);
+        assert!(dispatch(cli).is_ok());
+
+        // No sidecar anywhere: honest no-manifest (command errors on it).
+        let lonely = dir.path().join("lonely.txt");
+        std::fs::write(&lonely, b"nothing here").unwrap();
+        let cli = Cli::parse_from([
+            "origin-provenance",
+            "verify-manifest",
+            lonely.to_str().unwrap(),
+        ]);
+        assert!(dispatch(cli).is_err());
+    }
+
+    #[test]
+    fn verify_manifest_discovery_recovers_watermarked_pairing() {
+        use crate::cli::Cli;
+        use clap::Parser;
+        let dir = tempfile::tempdir().unwrap();
+        let s = crate::identity::Signer::from_seed(&[0x45u8; 32]).unwrap();
+
+        // Watermarked asset with its manifest under a NON-default name
+        // (the stripped-pairing scenario): discovery must recover it.
+        let original = b"watermarked payload".to_vec();
+        let wm = crate::watermark::Watermark::new(&original, None);
+        let marked = wm.embed(&original).unwrap();
+        let file = dir.path().join("w.txt");
+        std::fs::write(&file, &marked).unwrap();
+        let opm =
+            Opm::create_from_bytes(&original, &s, crate::encoding::Action::Capture, 1_048_576)
+                .unwrap();
+        opm::save(&opm, &dir.path().join("elsewhere.opm")).unwrap();
+
+        let cli = Cli::parse_from([
+            "origin-provenance",
+            "verify-manifest",
+            file.to_str().unwrap(),
+        ]);
+        assert!(dispatch(cli).is_ok());
+    }
+
+    #[test]
+    fn verify_manifest_watermark_embed_alias_experimental() {
+        use crate::cli::Cli;
+        use clap::Parser;
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("m.txt");
+        std::fs::write(&file, b"watermark me").unwrap();
+
+        // The alias parses and runs (experimental label lives in help).
+        let cli = Cli::parse_from([
+            "origin-provenance",
+            "watermark-embed",
+            file.to_str().unwrap(),
+        ]);
+        assert!(dispatch(cli).is_ok());
+        assert!(crate::watermark::Watermark::has_watermark(
+            &std::fs::read(&file).unwrap()
+        ));
+
+        // Experimental label present in the long help.
+        let cmd = <Cli as clap::CommandFactory>::command();
+        let sub = cmd
+            .find_subcommand("watermark")
+            .expect("watermark subcommand");
+        assert!(sub
+            .get_about()
+            .unwrap()
+            .to_string()
+            .contains("experimental"));
     }
 }
