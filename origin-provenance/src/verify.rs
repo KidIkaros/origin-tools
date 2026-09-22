@@ -20,7 +20,8 @@
 //!    keys come from the checkpoint's embedded `keys` recomputed to the
 //!    fingerprint (transitive authentication, ticket-08 pattern) or the
 //!    verifier roster; mismatch ⇒ `key-binding`
-//! 6. timestamp sanity: no future checkpoints (verifier-local now)
+//! 6. timestamp sanity: no checkpoints further than `max_future_skew_secs`
+//!    (default 2s, verifier-owned) beyond verifier-local now
 //! 7. revocation: journal `is_revoked(signer fp)` (wired in P-05; stubbed
 //!    here — journal dependency not yet in scope)
 //! 8. threshold: every attestation verifies over the RECOMPUTED
@@ -327,11 +328,20 @@ timestamps are signer-asserted not TSA-attested.";
 
 /// Verifier-owned policy (ZTNA — design §3 step 9). The tool supplies
 /// structure; the verifier decides values.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct VerifyPolicy {
     /// Verifier's `now` (unix seconds) for the future-timestamp check.
     /// `None` = use system time.
     pub now: Option<i64>,
+    /// Clock-skew tolerance for the future-timestamp check (seconds). A
+    /// checkpoint may exceed `now` by at most this much (see step 6). The
+    /// writer legitimately stamps `last + 1` under same-second batch edits
+    /// (amendment H's strictly-increasing rule), so an unskewed check
+    /// rejects the author's own just-written manifest until the clock
+    /// ticks. Default 2s via `VerifyPolicy::default()`; larger values are
+    /// the verifier's policy decision (ZTNA). Futures beyond skew are
+    /// still `manifest-invalid (timestamp)`.
+    pub max_future_skew_secs: i64,
     /// Authoritative attestation threshold K (verifier-side). `None` = no
     /// attestation requirement (attestations, if present, still must verify).
     pub required_k: Option<u32>,
@@ -340,6 +350,18 @@ pub struct VerifyPolicy {
     pub allow_roster: Option<Vec<String>>,
     /// Journal path — accepted here, consumed when revocation wires in P-05.
     pub journal_path: Option<std::path::PathBuf>,
+}
+
+impl Default for VerifyPolicy {
+    fn default() -> Self {
+        VerifyPolicy {
+            now: None,
+            max_future_skew_secs: 2,
+            required_k: None,
+            allow_roster: None,
+            journal_path: None,
+        }
+    }
 }
 
 /// Resolve the key material for a fingerprint: embedded `keys` must recompute
@@ -459,9 +481,18 @@ fn verify_loaded(
         return VerifyOutcome::Invalid(reason, ann);
     }
 
-    // Step 6 — timestamp sanity (verifier-local now).
+    // Step 6 — timestamp sanity (verifier-local now + bounded skew).
+    // `max_future_skew_secs` exists because amendment H (strictly
+    // increasing timestamps) makes the writer stamp `last + 1` when
+    // several edits land in the same wall-clock second — a manifest can
+    // validly carry a timestamp one or a few seconds ahead of the
+    // verifier at the moment of authoring. Beyond skew: invalid.
     let now = policy.now.unwrap_or_else(unix_now);
-    if opm.checkpoints.iter().any(|c| c.timestamp > now) {
+    if opm
+        .checkpoints
+        .iter()
+        .any(|c| c.timestamp > now + policy.max_future_skew_secs)
+    {
         return VerifyOutcome::Invalid(InvalidReason::Timestamp, ann);
     }
 
@@ -1033,6 +1064,7 @@ mod tests {
     fn policy_now(now: i64) -> VerifyPolicy {
         VerifyPolicy {
             now: Some(now),
+            max_future_skew_secs: 2,
             required_k: None,
             allow_roster: None,
             journal_path: None,
@@ -1158,10 +1190,52 @@ mod tests {
         // Untampered manifest, but the verifier's clock is set BEFORE the
         // last checkpoint was signed: step 6 catches a validly-signed
         // future-dated checkpoint (tampering the ts would instead fail
-        // step 5's signature — a different reason).
+        // step 5's signature — a different reason). 60s ahead is far
+        // beyond the 2s default skew.
         let now = opm.checkpoints.last().unwrap().timestamp - 60;
         let outcome = verify(&file, Some(&sidecar), &policy_now(now));
         assert_eq!(outcome.headline(), "manifest-invalid (timestamp)");
+    }
+
+    /// REGRESSION (found by live dogfood 2026-09-21): `create` + `append`
+    /// in the same wall-clock second makes amendment H's strictly-
+    /// increasing rule stamp `last + 1` — one second into the FUTURE. An
+    /// unskewed step-6 check then rejected the author's own just-written
+    /// manifest until the clock ticked (`manifest-invalid (timestamp)` on
+    /// a manifest the same tool verified as intact one second later).
+    /// The writer contract and the verifier's future check must agree:
+    /// futures within `max_future_skew_secs` are authoring artifacts,
+    /// not forgeries.
+    #[test]
+    fn same_second_batch_edit_verifies_immediately_within_skew() {
+        let dir = tempfile::tempdir().unwrap();
+        let (file, sidecar) = enrolled_manifest(&dir);
+        let opm = opm::load(&sidecar).unwrap();
+        // Enrolled manifests may carry a +1s checkpoint from the batch
+        // rule; simulate verifying the instant after authoring.
+        let last = opm.checkpoints.last().unwrap().timestamp;
+        let outcome = verify(&file, Some(&sidecar), &policy_now(last - 1));
+        assert!(
+            matches!(outcome, VerifyOutcome::Intact { .. }),
+            "a manifest authored moments ago must verify within skew, got: {}",
+            outcome.headline()
+        );
+    }
+
+    #[test]
+    fn future_beyond_skew_is_still_timestamp_failure() {
+        let dir = tempfile::tempdir().unwrap();
+        let (file, sidecar) = enrolled_manifest(&dir);
+        let opm = opm::load(&sidecar).unwrap();
+        // skew is 2s: 5s ahead of the last checkpoint exceeds now + 2.
+        let now = opm.checkpoints.last().unwrap().timestamp - 5;
+        let outcome = verify(&file, Some(&sidecar), &policy_now(now));
+        assert_eq!(outcome.headline(), "manifest-invalid (timestamp)");
+    }
+
+    #[test]
+    fn default_policy_carries_two_second_skew() {
+        assert_eq!(VerifyPolicy::default().max_future_skew_secs, 2);
     }
 
     #[test]
@@ -1276,6 +1350,7 @@ mod tests {
         let roster = vec![s.fingerprint_hex()];
         let policy = VerifyPolicy {
             now: Some(4_100_000_000),
+            max_future_skew_secs: 2,
             required_k: None,
             allow_roster: Some(roster),
             journal_path: None,
@@ -1286,6 +1361,7 @@ mod tests {
         // A peer NOT on the roster is rejected even with valid signatures.
         let policy = VerifyPolicy {
             now: Some(4_100_000_000),
+            max_future_skew_secs: 2,
             required_k: None,
             allow_roster: Some(vec!["deadbeef".repeat(8)]),
             journal_path: None,
@@ -1329,6 +1405,7 @@ mod tests {
         // 1 distinct attestor; authoritative K=3 ⇒ degraded-intact.
         let policy = VerifyPolicy {
             now: Some(4_100_000_000),
+            max_future_skew_secs: 2,
             required_k: Some(3),
             allow_roster: None,
             journal_path: None,
@@ -1815,6 +1892,7 @@ mod tests {
         // K=2: shortfall disclosed (degraded-intact with 1 of 2).
         let policy = VerifyPolicy {
             now: Some(4_100_000_000),
+            max_future_skew_secs: 2,
             required_k: Some(2),
             allow_roster: None,
             journal_path: None,
@@ -1830,6 +1908,7 @@ mod tests {
         // K=1: met by the non-revoked attestor alone.
         let policy = VerifyPolicy {
             now: Some(4_100_000_000),
+            max_future_skew_secs: 2,
             required_k: Some(1),
             allow_roster: None,
             journal_path: None,

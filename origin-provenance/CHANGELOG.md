@@ -1,5 +1,19 @@
 # Changelog — origin-provenance
 
+## 0.4.5 (2026-09-21) — timestamp skew fix (writer/verifier contract)
+
+- **Bug fix (found by live same-second dogfood):** `create` + `append` in
+  one wall-clock second made amendment H's strictly-increasing rule stamp
+  `last + 1` — a timestamp one second in the FUTURE — which the verifier's
+  step 6 then rejected: an author could not verify their own just-written
+  manifest until the clock ticked. Step 6 now accepts checkpoints up to
+  `VerifyPolicy::max_future_skew_secs` (new field, default 2s,
+  verifier-owned per ZTNA) beyond verifier-local now; futures beyond skew
+  still fail `manifest-invalid (timestamp)`. Regression tests:
+  `same_second_batch_edit_verifies_immediately_within_skew`,
+  `future_beyond_skew_is_still_timestamp_failure`,
+  `default_policy_carries_two_second_skew` (111 tests).
+
 ## 0.4.4 (2026-09-21) — revocation integration (P-05)
 
 - Verify engine step 7 wired to the origin-attest revocation journal:

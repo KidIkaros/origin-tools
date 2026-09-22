@@ -366,6 +366,7 @@ fn cmd_verify_manifest(args: VerifyManifestArgs) -> Result<(), String> {
 
     let policy = crate::verify::VerifyPolicy {
         now: None,
+        max_future_skew_secs: 2,
         required_k: args.k,
         allow_roster,
         journal_path: None,
