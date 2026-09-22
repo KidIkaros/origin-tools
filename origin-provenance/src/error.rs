@@ -26,6 +26,9 @@ pub enum ProvenanceError {
     #[error("anchor file exists at {0} — refusing to overwrite (publish it, or delete it to re-anchor)")]
     AnchorExists(String),
 
+    #[error("manifest already exists at {0} — refusing to overwrite (delete it to start over; re-sealing wipes prior history)")]
+    ManifestExists(String),
+
     #[error("signature verification failed: {0}")]
     SignatureError(String),
 

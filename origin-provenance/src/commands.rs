@@ -48,6 +48,20 @@ fn cmd_anchor(args: AnchorArgs) -> Result<(), String> {
         return Err(format!("manifest not found: {sidecar} (run 'create' first)"));
     }
     let opm = opm::load(sidecar_path).map_err(|e| format!("load: {e}"))?;
+    // R2-1 (red team pass 2): an anchor only means something when signed by
+    // the manifest's own signer — the verifier now rejects anything else
+    // (head-anchor invalid). Refuse at authoring time rather than emit an
+    // anchor that can never verify.
+    if let Some(last_cp) = opm.checkpoints.last() {
+        if last_cp.signer_fingerprint != signer.fingerprint_hex() {
+            return Err(format!(
+                "signer mismatch: manifest is signed by {} but this seed derives {} \
+                 — an anchor must be published by the manifest's own signer",
+                last_cp.signer_fingerprint,
+                signer.fingerprint_hex()
+            ));
+        }
+    }
     let anchor = opm.anchor(&signer).map_err(|e| format!("anchor: {e}"))?;
     let out_path = args
         .output

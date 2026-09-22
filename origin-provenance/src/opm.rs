@@ -175,7 +175,17 @@ pub mod content {
 impl Opm {
     /// Create a new manifest binding the CURRENT bytes of `asset` as the
     /// first edit (`Capture` by default; callers pass the initial action).
+    /// Refuses to run when the asset already has a sidecar manifest —
+    /// sealing is the start of a history, and silently replacing one
+    /// destroys it (B1, red team pass 2; the basanite shell had this
+    /// guard at v0.1.1, the engine now enforces it too).
     pub fn create(asset: &Path, signer: &Signer, action: Action, chunk_size: u32) -> Result<Self> {
+        let sidecar = sidecar_path(asset);
+        if sidecar.exists() {
+            return Err(ProvenanceError::ManifestExists(
+                sidecar.to_string_lossy().into_owned(),
+            ));
+        }
         let data = std::fs::read(asset)?;
         Self::create_from_bytes(&data, signer, action, chunk_size)
     }
@@ -431,6 +441,23 @@ impl Opm {
         let recomputed = crate::encoding::signer_fingerprint(&ed, &falcon)
             .map_err(|e| ProvenanceError::InvalidManifest(format!("anchor fp: {e}")))?;
         if hex::encode(recomputed) != anchor.signer_fingerprint {
+            return Ok(false);
+        }
+        // R2-1 (red team pass 2): the anchor must be signed by the SAME key
+        // that signs the manifest's checkpoints. The payload binds only
+        // recomputable facts (edit_count, manifest_id, asset_id), so
+        // without this check ANY third party could author a "valid"
+        // anchor for someone else's manifest — including for a truncated
+        // one — resurrecting the F1 truncation blind spot. With it, an
+        // attacker-authored anchor is exactly as dead as a forged one.
+        let manifest_signer = self
+            .checkpoints
+            .last()
+            .map(|c| c.signer_fingerprint.as_str())
+            .ok_or_else(|| {
+                ProvenanceError::InvalidManifest("manifest has no checkpoints".into())
+            })?;
+        if anchor.signer_fingerprint != manifest_signer {
             return Ok(false);
         }
         let sig = Signer::hybrid_sig_from_base64(&anchor.signature)?;

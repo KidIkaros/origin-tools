@@ -1809,6 +1809,63 @@ mod tests {
         assert_eq!(outcome.headline(), "manifest-invalid (head-anchor)");
     }
 
+    /// R2-1 (red team pass 2): an anchor signed by a DIFFERENT key than the
+    /// manifest's signer must fail the pipeline. The anchor payload binds
+    /// only recomputable facts, so without the signer binding any third
+    /// party could author a valid-looking anchor — including for a
+    /// truncated history, defeating the F1 fix.
+    #[test]
+    fn rt2_foreign_signer_anchor_rejected() {
+        let dir = tempfile::tempdir().unwrap();
+        let (file, sidecar) = enrolled_manifest(&dir);
+        let attacker = Signer::from_seed(&OTHER_SEED).unwrap();
+        let foreign = opm::load(&sidecar).unwrap().anchor(&attacker).unwrap();
+        let policy = VerifyPolicy {
+            anchor: Some(foreign),
+            ..policy_now(4_100_000_000)
+        };
+        let outcome = verify(&file, Some(&sidecar), &policy);
+        assert_eq!(
+            outcome.headline(),
+            "manifest-invalid (head-anchor)",
+            "attacker-authored anchor must not verify"
+        );
+
+        // Positive control: the manifest signer's own anchor still passes.
+        let own = opm::load(&sidecar).unwrap().anchor(&signer()).unwrap();
+        let policy_own = VerifyPolicy {
+            anchor: Some(own),
+            ..policy_now(4_100_000_000)
+        };
+        assert!(intact(&verify(&file, Some(&sidecar), &policy_own)));
+    }
+
+    /// B1 (red team pass 2): the engine's `create`/seal must refuse to
+    /// overwrite an existing manifest — the guard previously lived only
+    /// in the basanite shell, so engine users silently clobbered history.
+    #[test]
+    fn rt2_engine_create_refuses_overwrite() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("asset.bin");
+        std::fs::write(&file, b"first version").unwrap();
+        let first = Opm::create(&file, &signer(), Action::Capture, DEFAULT_CHUNK_SIZE).unwrap();
+        crate::opm::save(&first, &opm::sidecar_path(&file)).unwrap();
+        // Append so the existing manifest is visibly multi-edit.
+        let mut m = opm::load(&opm::sidecar_path(&file)).unwrap();
+        m.append_edit(&file, &signer(), Action::Edit, None).unwrap();
+        crate::opm::save(&m, &opm::sidecar_path(&file)).unwrap();
+
+        let err = Opm::create(&file, &signer(), Action::Capture, DEFAULT_CHUNK_SIZE)
+            .unwrap_err();
+        assert!(
+            matches!(err, crate::error::ProvenanceError::ManifestExists(_)),
+            "expected ManifestExists, got: {err:?}"
+        );
+        // The original history survived.
+        let m2 = opm::load(&opm::sidecar_path(&file)).unwrap();
+        assert_eq!(m2.edits.len(), 2);
+    }
+
     /// Intact output carries the signer fingerprint (the sidecar is
     /// attacker-reauthorable; the fingerprint is what a verifier checks
     /// against out-of-band knowledge).
