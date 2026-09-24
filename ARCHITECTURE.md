@@ -9,7 +9,7 @@ tools that compose.
 ## Crate Dependency Graph
 
 ```
-                    origin-crypto-sdk (v0.7.1-rc.4, immutable sibling candidate)
+                    origin-crypto-sdk (v0.7.1-rc.10, exact sibling candidate)
                     ├── XChaCha20-Poly1305 AEAD (+ AAD)
                     ├── Argon2id KDF (tiered)
                     ├── HKDF-SHA3-256
@@ -57,6 +57,54 @@ via the SDK's Ed25519 + Falcon-1024 hybrid bundle), and reconciliation
 against PSP settlement files. It depends on every suite crate plus the
 SDK; the Stoa pay surface is reached through `origin-wallet` (which owns
 `stoa` as its embedded mesh).
+
+## Platform taxonomy and repository boundaries
+
+`origin-tools` is an internal platform/incubator, not the canonical repository
+for every project that consumes its capabilities.
+
+### SDK adapters and reference tools
+
+These crates are thin adapters around `origin-crypto-sdk` or small reference
+implementations: `origin-seed`, `origin-shard`, `origin-proof`,
+`origin-entropy`, `origin-schnorr`, `origin-stealth`, and `origin-seal`.
+They expose typed APIs, CLI adapters, compatibility logic, and dogfood
+examples. They must not duplicate SDK primitives.
+
+### Platform infrastructure
+
+`origin-common`, `origin-identity`, `origin-provenance`, `origin-attest`,
+`origin-channel`, and `origin-secrets` provide shared application seams,
+identity/home conventions, protocol adapters, and versioned formats.
+Dependencies point inward toward the SDK and stable platform abstractions.
+
+### Suite products and integrations
+
+`origin-pass`, `origin-wallet`, `origin-payments`, `origin-network`,
+`origin-vcs`, `origin-archive`, and `origin-crawler` compose the platform into
+product-oriented workflows. They may depend on platform crates, but lower
+layers must not depend on product behavior.
+
+### Standalone sibling projects
+
+`origin-db`, `origin-memory`, and `origin-web` are independent repositories
+under the parent `Gold/` directory. They are not workspace members. They
+consume released or Git versions of the platform crates and use local Cargo
+path patches only for development. Their own persistence, memory-graph, and
+WASM/browser lifecycles remain outside this workspace.
+
+### Promotion lifecycle and stability
+
+Reusable work follows:
+
+```text
+experiment → reference crate → reusable library → standalone project
+```
+
+Each capability is labeled `experimental`, `reference`, `stable`, or
+`frozen`; definitions and the problem-oriented catalog live in
+`CAPABILITIES.md`. A promotion requires a typed API, a dogfood example,
+negative-path tests, and compatibility notes for persisted formats.
 
 ## Design Principles
 

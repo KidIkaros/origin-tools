@@ -1,15 +1,16 @@
 # origin-tools
 
-A coherent, interoperable suite of cryptographic CLI tools built on the
-[origin-crypto-sdk](../origin-crypto-sdk) `0.7.1-rc.4` candidate. Modeled on Office 365 / Google
-Workspace: one identity, one shared store, tools that compose.
+A reusable internal platform and reference workspace for interoperable CLI
+and library capabilities built on the sibling `origin-crypto-sdk` `0.7.1-rc.10`.
+It is a springboard: build a capability once here, then apply it to multiple
+projects without copying implementation code.
 
 > **🌐 Try it in your browser:** [kidikaros.github.io/origin-web](https://kidikaros.github.io/origin-web)
 > — a zero-server WASM demo running the same crypto, entirely client-side.
 >
-> **SDK candidate:** `origin-crypto-sdk 0.7.1-rc.4`, pinned by exact version and
-> immutable Git tag. This is an evidence-backed release candidate, not an
-> independent security audit or blanket production approval for every module.
+> **SDK candidate:** `origin-crypto-sdk 0.7.1-rc.10`, pinned by exact version.
+> This is an evidence-backed release candidate, not an independent security
+> audit or blanket production approval for every module.
 
 ## Architecture
 
@@ -28,6 +29,13 @@ origin-common/     Shared infrastructure crate
 
 origin-crypto-sdk/ Sole cryptographic provider (all tools depend on this)
 ```
+
+The parent workspace contains reusable foundations and reference tools. The
+standalone products `origin-db`, `origin-memory`, and `origin-web` live as
+sibling repositories under `Gold/` and consume these foundations through
+released/Git dependencies. During local development, their Cargo manifests
+use path patches to the sibling checkouts; those patches are not required for
+CI or published dependency resolution.
 
 ## Tools
 
@@ -123,9 +131,20 @@ cargo build --workspace
 cargo test --workspace
 ```
 
-## Documentation
+For constrained development machines, verify one package at a time:
 
-- **[ARCHITECTURE.md](ARCHITECTURE.md)** — Crate dependency graph, design principles, formats
+```bash
+CARGO_BUILD_JOBS=1 CARGO_INCREMENTAL=0 cargo test -p <crate> -j1 -- --test-threads=1
+```
+
+Never use `fs::read("/dev/urandom")`: the device has no EOF and an unbounded
+read can allocate until the process is OOM-killed. Use bounded reads or
+`origin_crypto_sdk::fill_random`.
+
+## Reuse and documentation
+
+- **[CAPABILITIES.md](CAPABILITIES.md)** — Find an existing capability by problem
+- **[ARCHITECTURE.md](ARCHITECTURE.md)** — Crate dependency graph, platform taxonomy, design principles, formats
 - **[COOKBOOK.md](COOKBOOK.md)** — Practical recipes for composing tools
 - **Per-crate READMEs** — Each tool has its own README with usage examples
 

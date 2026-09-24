@@ -1,8 +1,9 @@
 # Origin-Tools Design Specification
 
-> **Status**: Draft (v0.3.0+)  
-> **SDK dependency**: sibling `origin-crypto-sdk =0.7.1-rc.4` (immutable revision in CI)
-> **Last updated**: 2026-07-27
+> **Status**: Internal platform specification (v0.4.0+)  
+> **SDK dependency**: sibling `origin-crypto-sdk =0.7.1-rc.10` (exact constraint)
+> **Repository model**: reusable origin-tools workspace plus standalone sibling projects
+> **Last updated**: 2026-09-24
 
 This document covers the **origin-tools** workspace. The shared cryptographic
 format, key-derivation tree, and cross-cutting threat model are inherited
@@ -15,7 +16,33 @@ design and adds per-binary details that the SDK doc does not pin down.
 
 ---
 
-## 1. Tool inventory
+## 1. Platform boundary
+
+`origin-tools` is an internal springboard and reusable capability catalog. It
+contains SDK adapters, shared platform infrastructure, reference tools, and
+suite products that benefit from one workspace and cross-tool tests.
+
+The following are standalone sibling repositories rather than workspace
+members:
+
+- `origin-db` — embedded provenance-tagged database;
+- `origin-memory` — higher-level memory graph built on `origin-db`;
+- `origin-web` — browser/WASM bindings and web distribution.
+
+Standalone projects depend on released or Git versions of origin-tools crates.
+Their local manifests may use uncommitted path patches to sibling checkouts,
+but those patches are development overlays and are not part of the published
+contract. See `CAPABILITIES.md` for reuse guidance and stability labels.
+
+The promotion path is:
+
+```text
+experiment → reference crate → reusable library → standalone project
+```
+
+---
+
+## Tool inventory
 
 | Tool             | Crate              | Purpose                                                      | Status  |
 |------------------|--------------------|--------------------------------------------------------------|---------|
