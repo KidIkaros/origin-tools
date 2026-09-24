@@ -50,7 +50,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let wire = alice_sess.encrypt(plaintext)?;
     let decrypted = bob_sess.decrypt(&wire)?;
     assert_eq!(decrypted, plaintext);
-    println!("✓ ratchet encrypt → decrypt round-trip ({} bytes on wire)", wire.wire_size());
+    println!(
+        "✓ ratchet encrypt → decrypt round-trip ({} bytes on wire)",
+        wire.wire_size()
+    );
 
     // ── tamper rejection: flip one ciphertext byte ────────────────────
     let mut tampered_bytes = wire.to_bytes();
@@ -66,7 +69,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // ── replay protection: same sequence number must be refused ───────
     let mut window = ReplayWindow::new(64);
     let seq = 7u64;
-    window.accept(seq).expect("first sight of seq must be accepted");
+    window
+        .accept(seq)
+        .expect("first sight of seq must be accepted");
     assert!(
         window.accept(seq).is_err(),
         "duplicate sequence number must be refused by the replay window"

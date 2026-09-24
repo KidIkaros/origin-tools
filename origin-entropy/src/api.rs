@@ -150,14 +150,13 @@ mod tests {
 
     #[test]
     fn random_data_passes_quality_check() {
-        // Real random data should pass
-        use std::fs;
-        if let Ok(data) = fs::read("/dev/urandom") {
-            if data.len() >= 256 {
-                let report = quality_check(&data[..256], 256).unwrap();
-                assert!(report.passed, "random data should pass quality gates");
-            }
-        }
+        // Real random data should pass. Sourced from the SDK CSPRNG: a
+        // `fs::read("/dev/urandom")` never returns (character device, no
+        // EOF) and allocates until the OOM killer fires.
+        let mut data = [0u8; 512];
+        origin_crypto_sdk::fill_random(&mut data).expect("CSPRNG available");
+        let report = quality_check(&data, 256).unwrap();
+        assert!(report.passed, "random data should pass quality gates");
     }
 
     #[test]
@@ -172,7 +171,10 @@ mod tests {
         // 16 bytes < 32-byte minimum for 256 bits, and below the 256-byte
         // threshold, so only the length gate applies.
         let report = quality_check(&[0x42u8; 16], 256).unwrap();
-        assert!(!report.passed, "16 bytes < 32-byte minimum only fails on length");
+        assert!(
+            !report.passed,
+            "16 bytes < 32-byte minimum only fails on length"
+        );
         assert_eq!(report.issues.len(), 1);
     }
 

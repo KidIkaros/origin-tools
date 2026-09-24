@@ -39,7 +39,7 @@ pub struct Address {
 impl Address {
     /// Create address from Ed25519 public key.
     pub fn from_ed25519(
-        pk: &ed25519_dalek::VerifyingKey,
+        pk: &origin_crypto_sdk::Ed25519VerifyingKey,
         address_type: AddressType,
         network: Network,
     ) -> Self {
@@ -230,7 +230,7 @@ mod tests {
     #[test]
     fn test_address_bech32_roundtrip() {
         // Create a dummy public key
-        let sk = ed25519_dalek::SigningKey::from_bytes(&[1u8; 32]);
+        let sk = origin_crypto_sdk::Ed25519SigningKey::from_bytes(&[1u8; 32]);
         let pk = sk.verifying_key();
 
         let addr = Address::from_ed25519(&pk, AddressType::Bech32, Network::Mainnet);
@@ -244,7 +244,7 @@ mod tests {
 
     #[test]
     fn test_address_base58check_roundtrip() {
-        let sk = ed25519_dalek::SigningKey::from_bytes(&[1u8; 32]);
+        let sk = origin_crypto_sdk::Ed25519SigningKey::from_bytes(&[1u8; 32]);
         let pk = sk.verifying_key();
 
         let addr = Address::from_ed25519(&pk, AddressType::Base58Check, Network::Mainnet);

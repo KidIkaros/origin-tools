@@ -9,10 +9,10 @@
 //! bytes signed are reproducible from the manifest alone.
 
 use crate::manifest::CanaryManifest;
-use origin_crypto_sdk::{Ed25519Signature, Ed25519VerifyingKey};
 use origin_crypto_sdk::pqc::falcon1024::FalconPublicKey;
 use origin_crypto_sdk::pqc::falcon1024::FalconSignature;
 use origin_crypto_sdk::signing::hybrid::{Ed25519Falcon1024, HybridSigningKeyBundle};
+use origin_crypto_sdk::{Ed25519Signature, Ed25519VerifyingKey};
 use serde::{Deserialize, Serialize};
 
 /// Return the exact canonical bytes that a commitment signs over.

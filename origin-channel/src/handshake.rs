@@ -247,9 +247,9 @@ impl Handshake {
 /// (all-zero/low-order peer key) into a handshake failure labeled with the
 /// exact operation, so a hostile key is diagnosable in logs.
 fn dh_or_handshake(op: &str, secret: &DhSecret, peer: &DhPublic) -> Result<[u8; 32]> {
-    secret.diffie_hellman(peer).map_err(|e| {
-        ChannelError::Handshake(format!("{op}: {e}"))
-    })
+    secret
+        .diffie_hellman(peer)
+        .map_err(|e| ChannelError::Handshake(format!("{op}: {e}")))
 }
 
 #[cfg(test)]

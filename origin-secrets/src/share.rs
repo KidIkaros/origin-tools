@@ -1,9 +1,9 @@
 //! Share data structures and operations
 
-use ed25519_dalek::Signature as Ed25519Signature;
 use origin_crypto_sdk::pqc::falcon1024::FalconSignature;
 use origin_crypto_sdk::signing::hybrid::Ed25519Falcon1024;
 use origin_crypto_sdk::CryptoError;
+use origin_crypto_sdk::Ed25519Signature;
 use serde::{Deserialize, Serialize};
 use zeroize::{Zeroize, ZeroizeOnDrop};
 
@@ -76,13 +76,13 @@ pub struct ShareVerifier {
 }
 
 impl ShareVerifier {
-    pub fn ed25519_pk(&self) -> Result<ed25519_dalek::VerifyingKey, CryptoError> {
+    pub fn ed25519_pk(&self) -> Result<origin_crypto_sdk::Ed25519VerifyingKey, CryptoError> {
         let bytes: [u8; 32] = self
             .ed25519
             .as_slice()
             .try_into()
             .map_err(|_| CryptoError::InvalidParameter("bad ed25519 pubkey length".into()))?;
-        ed25519_dalek::VerifyingKey::from_bytes(&bytes)
+        origin_crypto_sdk::Ed25519VerifyingKey::from_bytes(&bytes)
             .map_err(|e| CryptoError::InvalidParameter(format!("{e}")))
     }
 

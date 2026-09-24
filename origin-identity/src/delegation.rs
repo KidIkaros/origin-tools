@@ -23,8 +23,8 @@ use std::collections::{HashMap, HashSet};
 
 use serde::{Deserialize, Serialize};
 
-use origin_crypto_sdk::{Ed25519Signature, Ed25519VerifyingKey};
 use origin_crypto_sdk::signing::hybrid::{Ed25519Falcon1024, HybridSigningKeyBundle};
+use origin_crypto_sdk::{Ed25519Signature, Ed25519VerifyingKey};
 
 use crate::capabilities::CapabilitySet;
 

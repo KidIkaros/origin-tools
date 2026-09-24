@@ -126,7 +126,7 @@ impl Account {
 
     /// Sign data with hybrid signature (Ed25519 + Falcon-1024).
     pub fn sign(&self, data: &[u8]) -> Result<Ed25519Falcon1024> {
-        let ed_sk = ed25519_dalek::SigningKey::from_bytes(
+        let ed_sk = origin_crypto_sdk::Ed25519SigningKey::from_bytes(
             self.ed25519_sk
                 .as_slice()
                 .try_into()
@@ -141,7 +141,7 @@ impl Account {
 
     /// Get Ed25519 public key bytes.
     pub fn ed25519_pk(&self) -> Result<[u8; 32]> {
-        let sk = ed25519_dalek::SigningKey::from_bytes(
+        let sk = origin_crypto_sdk::Ed25519SigningKey::from_bytes(
             self.ed25519_sk
                 .as_slice()
                 .try_into()
@@ -174,7 +174,7 @@ impl Account {
             .map_err(|e| WalletError::KeyDerivation(e.to_string()))?;
 
         // Generate address from spending secret
-        let spending_sk = ed25519_dalek::SigningKey::from_bytes(&keys.spending_secret);
+        let spending_sk = origin_crypto_sdk::Ed25519SigningKey::from_bytes(&keys.spending_secret);
         let address = Address::from_ed25519(
             &spending_sk.verifying_key(),
             AddressType::Bech32,

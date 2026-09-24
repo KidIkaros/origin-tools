@@ -178,7 +178,9 @@ impl ChunkReport {
 pub enum InvalidReason {
     Unparseable,
     NonCanonical,
-    ContentHash { chunk: Option<usize> },
+    ContentHash {
+        chunk: Option<usize>,
+    },
     History,
     HistoryRewind,
     /// Two distinct signer fingerprints across checkpoints (design H:
@@ -187,7 +189,9 @@ pub enum InvalidReason {
     KeyBinding,
     SignerSignature,
     Timestamp,
-    SignerRevoked { journal_tip: i64 },
+    SignerRevoked {
+        journal_tip: i64,
+    },
     AttestationBinding,
     /// A publisher head anchor was supplied and does not verify for this
     /// manifest (ticket T-RT1): truncated, substituted, or wrong/stale
@@ -422,8 +426,8 @@ pub fn load_sibling_anchor(asset: &Path) -> Result<Option<crate::opm::Anchor>, S
 /// — a silently-empty roster would fail every manifest, which is safe
 /// but confusing; the error says so instead.
 pub fn load_roster(path: &Path) -> Result<Vec<String>, String> {
-    let text =
-        std::fs::read_to_string(path).map_err(|e| format!("read roster {}: {e}", path.display()))?;
+    let text = std::fs::read_to_string(path)
+        .map_err(|e| format!("read roster {}: {e}", path.display()))?;
     let fps: Vec<String> = text
         .lines()
         .map(str::trim)
@@ -669,7 +673,8 @@ fn verify_loaded(
         k_discrepancy: threshold.k_discrepancy,
         c2pa: ann,
         revocation: revocation_state,
-        signer: opm.checkpoints
+        signer: opm
+            .checkpoints
             .last()
             .map(|c| c.signer_fingerprint.clone())
             .unwrap_or_default(),
@@ -1898,8 +1903,7 @@ mod tests {
         m.append_edit(&file, &signer(), Action::Edit, None).unwrap();
         crate::opm::save(&m, &opm::sidecar_path(&file)).unwrap();
 
-        let err = Opm::create(&file, &signer(), Action::Capture, DEFAULT_CHUNK_SIZE)
-            .unwrap_err();
+        let err = Opm::create(&file, &signer(), Action::Capture, DEFAULT_CHUNK_SIZE).unwrap_err();
         assert!(
             matches!(err, crate::error::ProvenanceError::ManifestExists(_)),
             "expected ManifestExists, got: {err:?}"

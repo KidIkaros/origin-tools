@@ -25,7 +25,9 @@ pub fn split(data: &[u8], data_shards: usize, parity_shards: usize) -> Result<Ve
         ));
     }
     if data.is_empty() {
-        return Err(ShardError::InvalidConfig("input data must not be empty".into()));
+        return Err(ShardError::InvalidConfig(
+            "input data must not be empty".into(),
+        ));
     }
 
     let codec = ReedSolomonCodec::new(data_shards, parity_shards);

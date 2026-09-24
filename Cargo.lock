@@ -1760,7 +1760,6 @@ name = "origin-canary"
 version = "0.1.0"
 dependencies = [
  "clap",
- "ed25519-dalek",
  "hex",
  "origin-crypto-sdk",
  "rpassword",
@@ -1774,13 +1773,11 @@ name = "origin-channel"
 version = "0.4.3"
 dependencies = [
  "clap",
- "ed25519-dalek",
  "hex",
  "origin-common",
  "origin-crypto-sdk",
  "serde",
  "serde_json",
- "subtle",
  "tempfile",
  "thiserror 2.0.19",
  "zeroize",
@@ -1831,7 +1828,7 @@ dependencies = [
 
 [[package]]
 name = "origin-crypto-sdk"
-version = "0.7.1-rc.9"
+version = "0.7.1-rc.10"
 dependencies = [
  "argon2",
  "blake3",
@@ -1886,7 +1883,6 @@ name = "origin-identity"
 version = "0.4.3"
 dependencies = [
  "clap",
- "ed25519-dalek",
  "hex",
  "origin-common",
  "origin-crypto-sdk",
@@ -1901,7 +1897,6 @@ version = "0.4.3"
 dependencies = [
  "async-trait",
  "clap",
- "ed25519-dalek",
  "hex",
  "landlock",
  "origin-attest",
@@ -1916,7 +1911,6 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.19",
  "tokio",
- "x25519-dalek",
  "zeroize",
 ]
 
@@ -1956,7 +1950,6 @@ dependencies = [
  "origin-pass",
  "origin-proof",
  "origin-provenance",
- "origin-schnorr",
  "origin-seal",
  "origin-secrets",
  "origin-seed",
@@ -2044,7 +2037,6 @@ version = "0.4.3"
 dependencies = [
  "clap",
  "clap_complete",
- "ed25519-dalek",
  "hex",
  "origin-common",
  "origin-crypto-sdk",
@@ -2109,7 +2101,6 @@ version = "0.4.3"
 dependencies = [
  "async-trait",
  "clap",
- "ed25519-dalek",
  "hex",
  "libc",
  "origin-channel",
@@ -2136,14 +2127,12 @@ dependencies = [
  "bincode",
  "chrono",
  "clap",
- "ed25519-dalek",
  "hex",
  "origin-common",
  "origin-crypto-sdk",
  "origin-entropy",
  "origin-identity",
  "origin-proof",
- "origin-schnorr",
  "origin-seal",
  "origin-seed",
  "origin-shard",

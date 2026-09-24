@@ -48,10 +48,6 @@ pub struct ProveArgs {
     #[arg(long)]
     pub secret: Option<String>,
 
-    /// Public key (hex)
-    #[arg(long)]
-    pub public: Option<String>,
-
     /// Use the suite identity for key generation
     #[arg(long)]
     pub identity: bool,

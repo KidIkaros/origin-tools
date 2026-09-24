@@ -40,7 +40,7 @@ authors = ["Origin SDK Contributors"]
 # [patch.crates-io] section at the bottom of this file:
 #   [patch.crates-io]
 #   origin-crypto-sdk = { path = "../origin-crypto-sdk" }
-origin-crypto-sdk = "=0.7.1-rc.9"
+origin-crypto-sdk = "=0.7.1-rc.10"
 origin-common = { path = "origin-common" }
 origin-identity = { path = "origin-identity" }
 origin-pass = { path = "origin-pass" }
@@ -67,7 +67,6 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 hex = "0.4"
 rpassword = "7"
-ed25519-dalek = "2"
 
 # Local sibling SDK checkpoint for development. Comment out to use crates.io.
 [patch.crates-io]

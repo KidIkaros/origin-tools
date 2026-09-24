@@ -9,12 +9,12 @@ use std::path::{Path, PathBuf};
 
 use origin_crypto_sdk::{
     blake3,
-    Ed25519Signature,
     blob::{create_blob, recover_seed},
     recovery::unicode_cipher::{decode_phrase, encode_phrase, PhraseLength, UnicodeWordlist},
     seed::gen::{generate, SeedVariant},
     signing::hybrid::{Ed25519Falcon1024, HybridSigningKeyBundle},
     tier::MemoryTier,
+    Ed25519Signature,
 };
 
 use crate::cli::{
@@ -474,10 +474,9 @@ impl CombinedSignature {
                 raw.len()
             ));
         }
-        let ed = Ed25519Signature::from_slice(
-            &raw[Self::LEN_PREFIX..Self::LEN_PREFIX + Self::ED_LEN],
-        )
-        .map_err(|e| format!("invalid ed25519 signature: {e}"))?;
+        let ed =
+            Ed25519Signature::from_slice(&raw[Self::LEN_PREFIX..Self::LEN_PREFIX + Self::ED_LEN])
+                .map_err(|e| format!("invalid ed25519 signature: {e}"))?;
         let falcon = origin_crypto_sdk::pqc::falcon1024::FalconSignature::from_bytes(
             &raw[Self::LEN_PREFIX + Self::ED_LEN..],
         )
@@ -1228,7 +1227,7 @@ mod tests {
 
     #[test]
     fn combined_signature_accepts_sdk_falcon1024_maximum() {
-        let ed = ed25519_dalek::Signature::from_bytes(&[0xAAu8; 64]);
+        let ed = origin_crypto_sdk::Ed25519Signature::from_bytes(&[0xAAu8; 64]);
         let falcon = origin_crypto_sdk::pqc::falcon1024::FalconSignature::from_bytes(
             &vec![0x55u8; origin_crypto_sdk::pqc::falcon1024::sizes::SIGNATURE_MAX],
         )
@@ -2975,11 +2974,11 @@ mod tests {
     // is reproducible.
     #[test]
     fn combined_signature_golden_vector_v1() {
-        use ed25519_dalek::{Signer, Verifier};
         use origin_crypto_sdk::pqc::falcon1024;
+        use origin_crypto_sdk::signing::hybrid::{Signer, Verifier};
 
         let msg = b"combined signature golden vector";
-        let ed_sk = ed25519_dalek::SigningKey::from_bytes(&[0x55; 32]);
+        let ed_sk = origin_crypto_sdk::Ed25519SigningKey::from_bytes(&[0x55; 32]);
         let ed = ed_sk.sign(msg);
         let (falcon_pk, falcon_sk) =
             falcon1024::generate_keypair_from_seed(&[0x99; 32]).expect("falcon keygen");
@@ -3018,4 +3017,3 @@ mod tests {
         falcon1024::verify(msg, &parsed.falcon, &falcon_pk).expect("falcon verify");
     }
 }
-

@@ -9,7 +9,7 @@ cargo-fuzz = true
 
 [dependencies]
 origin-common = { path = "../origin-common" }
-origin-crypto-sdk = "=0.7.1-rc.4"
+origin-crypto-sdk = "=0.7.1-rc.10"
 origin-network = { path = "../origin-network" }
 serde_json = "1"
 toml = "0.8"

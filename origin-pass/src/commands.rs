@@ -549,7 +549,10 @@ pub fn cmd_tokens(args: TokensArgs) -> Result<(), String> {
                 eprintln!("no session tokens in {}", dir.display());
             } else {
                 let valid = tokens.iter().filter(|t| token_status(t) == "valid").count();
-                let expired = tokens.iter().filter(|t| token_status(t) == "expired").count();
+                let expired = tokens
+                    .iter()
+                    .filter(|t| token_status(t) == "expired")
+                    .count();
                 let unreadable = tokens.iter().filter(|t| t.unreadable).count();
                 eprintln!("summary: {valid} valid, {expired} expired, {unreadable} unreadable");
             }
@@ -583,9 +586,9 @@ pub fn cmd_tokens(args: TokensArgs) -> Result<(), String> {
                 "renewed {}: same bearer key, expires {} (+{}s)",
                 renew.name,
                 fmt_utc(token.expires_at),
-                renew.ttl.unwrap_or_else(|| {
-                    (token.expires_at - token.created_at).max(1) as u64
-                }),
+                renew
+                    .ttl
+                    .unwrap_or_else(|| { (token.expires_at - token.created_at).max(1) as u64 }),
             );
             Ok(())
         }
@@ -622,7 +625,11 @@ pub fn cmd_tokens(args: TokensArgs) -> Result<(), String> {
                 eprintln!(
                     "pruned: {} ({})",
                     t.name,
-                    if t.unreadable { "unreadable" } else { "expired" }
+                    if t.unreadable {
+                        "unreadable"
+                    } else {
+                        "expired"
+                    }
                 );
             }
             eprintln!("pruned {} token(s) from {}", doomed.len(), dir.display());
@@ -671,7 +678,12 @@ fn fmt_remaining(expires_at: i64) -> String {
     if diff <= 0 {
         return "expired".to_string();
     }
-    let (d, h, m, s) = (diff / 86_400, (diff % 86_400) / 3600, (diff % 3600) / 60, diff % 60);
+    let (d, h, m, s) = (
+        diff / 86_400,
+        (diff % 86_400) / 3600,
+        (diff % 3600) / 60,
+        diff % 60,
+    );
     if d > 0 {
         format!("{d}d {h}h")
     } else if h > 0 {
@@ -946,8 +958,14 @@ fn cmd_add_ocra(args: AddArgs) -> Result<(), String> {
         origin_crypto_sdk::drbg::otp::HashAlgorithm::Sha512 => "SHA512",
     };
     let now = unix_now();
-    let mut payload =
-        EntryPayload::ocra(&args.name, &key, &suite_str, suite.digits, algo, args.counter);
+    let mut payload = EntryPayload::ocra(
+        &args.name,
+        &key,
+        &suite_str,
+        suite.digits,
+        algo,
+        args.counter,
+    );
     payload.url = args.url.clone();
     payload.notes = args.notes.clone();
     payload.updated_at = now;
@@ -1053,10 +1071,12 @@ fn cmd_code_otp(args: CodeArgs) -> Result<(), String> {
             .to_string());
     }
     if args.passphrase_file.is_none() && !session_token_available(args.session_token.as_deref()) {
-        return Err("TOTP/HOTP code requires a passphrase or session token to unlock the vault. \
+        return Err(
+            "TOTP/HOTP code requires a passphrase or session token to unlock the vault. \
              Pass --passphrase-file <path> or --session-token <path> (or set $ORIGIN_PASS_TOKEN), \
              or run from a terminal for interactive unlock."
-            .to_string());
+                .to_string(),
+        );
     }
 
     let path = resolve_vault_path(&args.vault)?;
@@ -1268,8 +1288,12 @@ fn cmd_code_ocra(args: CodeArgs) -> Result<(), String> {
         Some(a) => a,
         None => match suite.algo {
             origin_crypto_sdk::drbg::otp::HashAlgorithm::Sha1 => crate::cli::HashAlgorithm::Sha1,
-            origin_crypto_sdk::drbg::otp::HashAlgorithm::Sha256 => crate::cli::HashAlgorithm::Sha256,
-            origin_crypto_sdk::drbg::otp::HashAlgorithm::Sha512 => crate::cli::HashAlgorithm::Sha512,
+            origin_crypto_sdk::drbg::otp::HashAlgorithm::Sha256 => {
+                crate::cli::HashAlgorithm::Sha256
+            }
+            origin_crypto_sdk::drbg::otp::HashAlgorithm::Sha512 => {
+                crate::cli::HashAlgorithm::Sha512
+            }
         },
     };
     let digits = args.digits.unwrap_or(suite.digits);
@@ -1277,7 +1301,10 @@ fn cmd_code_ocra(args: CodeArgs) -> Result<(), String> {
     // Counter: only suites with a `C` component use a non-zero counter;
     // the stored counter auto-increments per use (like HOTP) unless the
     // caller overrides with --counter.
-    let stored_counter: u64 = ocra_json.get("counter").and_then(|c| c.as_u64()).unwrap_or(0);
+    let stored_counter: u64 = ocra_json
+        .get("counter")
+        .and_then(|c| c.as_u64())
+        .unwrap_or(0);
     let counter = if suite.has_counter {
         args.counter.unwrap_or(stored_counter)
     } else {
@@ -1309,8 +1336,8 @@ fn cmd_code_ocra(args: CodeArgs) -> Result<(), String> {
 
     // Replay-nonce ledger: applies to challenge-based suites without a
     // timestamp (time-based replay is bounded by the time window).
-    let ledger_applies = suite.challenge.kind != crate::ocra_suite::ChallengeKind::None
-        && timestamp.is_none();
+    let ledger_applies =
+        suite.challenge.kind != crate::ocra_suite::ChallengeKind::None && timestamp.is_none();
     if ledger_applies {
         let fp = ledger::challenge_fingerprint(&challenge_bytes, counter);
         let replay = ledger::record_use(&path, &args.name, &fp, unix_now(), args.force)?;
@@ -1725,7 +1752,10 @@ pub fn cmd_generate(args: GenerateArgs) -> Result<(), String> {
         let phrase = generate::generate_passphrase(words)?;
         let bits = generate::passphrase_entropy_bits(words);
         println!("{phrase}");
-        eprintln!("entropy: {bits:.1} bits ({words} words × {:.1} bits/word)", (generate::WORDLIST.len() as f64).log2());
+        eprintln!(
+            "entropy: {bits:.1} bits ({words} words × {:.1} bits/word)",
+            (generate::WORDLIST.len() as f64).log2()
+        );
         return Ok(());
     }
 
@@ -1737,11 +1767,18 @@ pub fn cmd_generate(args: GenerateArgs) -> Result<(), String> {
             generate::MAX_LENGTH
         ));
     }
-    let charset = generate::build_charset(args.exclude_symbols, args.exclude_digits, args.exclude_upper)?;
+    let charset = generate::build_charset(
+        args.exclude_symbols,
+        args.exclude_digits,
+        args.exclude_upper,
+    )?;
     let password = generate::generate_password(length, &charset)?;
     let bits = generate::password_entropy_bits(length, &charset);
     println!("{password}");
-    eprintln!("entropy: {bits:.1} bits ({length} chars × {:.1} bits/char)", (charset.len() as f64).log2());
+    eprintln!(
+        "entropy: {bits:.1} bits ({length} chars × {:.1} bits/char)",
+        (charset.len() as f64).log2()
+    );
     Ok(())
 }
 
@@ -2086,7 +2123,10 @@ mod tests {
         // v0.5 keeps no in-process vault state, so `lock` must be told
         // which session token to revoke — a bare `lock` is a no-op with
         // nothing to do and must say so.
-        let err = cmd_lock(LockArgs { session_token: None }).expect_err("bare lock must error");
+        let err = cmd_lock(LockArgs {
+            session_token: None,
+        })
+        .expect_err("bare lock must error");
         assert!(
             err.contains("session-token"),
             "error should point at --session-token, got: {err}"
@@ -2120,8 +2160,14 @@ mod tests {
             }),
         })
         .unwrap();
-        assert!(!store.join("work.token").exists(), "revoked token must be deleted");
-        assert!(store.join("home.token").exists(), "other tokens must survive");
+        assert!(
+            !store.join("work.token").exists(),
+            "revoked token must be deleted"
+        );
+        assert!(
+            store.join("home.token").exists(),
+            "other tokens must survive"
+        );
 
         // Revoking the same name again must error (surfaces typos).
         let err = cmd_tokens(TokensArgs {
@@ -2153,13 +2199,15 @@ mod tests {
         // Expired token: rewrite its expiry into the past via the file.
         session::write_session_token(&store.join("expired.token"), &key, 1, None, None).unwrap();
         {
-            let mut t: session::SessionToken = serde_json::from_slice(
-                &std::fs::read(store.join("expired.token")).unwrap(),
+            let mut t: session::SessionToken =
+                serde_json::from_slice(&std::fs::read(store.join("expired.token")).unwrap())
+                    .unwrap();
+            t.expires_at -= 100;
+            origin_common::io::atomic_write(
+                &store.join("expired.token"),
+                &serde_json::to_vec(&t).unwrap(),
             )
             .unwrap();
-            t.expires_at -= 100;
-            origin_common::io::atomic_write(&store.join("expired.token"), &serde_json::to_vec(&t).unwrap())
-                .unwrap();
         }
 
         cmd_tokens(TokensArgs {
@@ -2191,13 +2239,15 @@ mod tests {
         // Expired token: rewrite its expiry into the past via the file.
         session::write_session_token(&store.join("expired.token"), &key, 1, None, None).unwrap();
         {
-            let mut t: session::SessionToken = serde_json::from_slice(
-                &std::fs::read(store.join("expired.token")).unwrap(),
+            let mut t: session::SessionToken =
+                serde_json::from_slice(&std::fs::read(store.join("expired.token")).unwrap())
+                    .unwrap();
+            t.expires_at -= 100;
+            origin_common::io::atomic_write(
+                &store.join("expired.token"),
+                &serde_json::to_vec(&t).unwrap(),
             )
             .unwrap();
-            t.expires_at -= 100;
-            origin_common::io::atomic_write(&store.join("expired.token"), &serde_json::to_vec(&t).unwrap())
-                .unwrap();
         }
         // Unreadable (corrupt) token — prune cleans it too.
         std::fs::write(store.join("garbage.token"), b"not json").unwrap();
@@ -2209,8 +2259,14 @@ mod tests {
         })
         .unwrap();
 
-        assert!(store.join("keep.token").exists(), "valid tokens must survive prune");
-        assert!(!store.join("expired.token").exists(), "expired tokens must be pruned");
+        assert!(
+            store.join("keep.token").exists(),
+            "valid tokens must survive prune"
+        );
+        assert!(
+            !store.join("expired.token").exists(),
+            "expired tokens must be pruned"
+        );
         assert!(
             !store.join("garbage.token").exists(),
             "unreadable tokens must be pruned"
@@ -2304,7 +2360,10 @@ mod tests {
         })
         .unwrap();
 
-        assert!(!store.join("a.token").exists(), "matching token must be revoked");
+        assert!(
+            !store.join("a.token").exists(),
+            "matching token must be revoked"
+        );
         assert!(
             store.join("b.token").exists(),
             "tokens bound to other vaults must survive"
@@ -2324,9 +2383,14 @@ mod tests {
         let dir = fresh_vault_dir();
         let store = dir.path().join("tokens");
         let key = zeroize::Zeroizing::new([7u8; 32]);
-        let original =
-        session::write_session_token(&store.join("work.token"), &key, 3600, Some(Path::new("/v/a.vault")), None)
-            .unwrap();
+        let original = session::write_session_token(
+            &store.join("work.token"),
+            &key,
+            3600,
+            Some(Path::new("/v/a.vault")),
+            None,
+        )
+        .unwrap();
 
         cmd_tokens(TokensArgs {
             command: TokensCommand::Rotate(crate::cli::TokensRotateArgs {
@@ -2358,7 +2422,9 @@ mod tests {
         );
         // The unsealed master key is unchanged, so the rotated token still unlocks.
         assert_eq!(
-            session::read_session_token(&store.join("work.token")).unwrap().as_ref(),
+            session::read_session_token(&store.join("work.token"))
+                .unwrap()
+                .as_ref(),
             key.as_ref()
         );
     }
@@ -2461,9 +2527,14 @@ mod tests {
         let dir = fresh_vault_dir();
         let store = dir.path().join("tokens");
         let key = zeroize::Zeroizing::new([7u8; 32]);
-        let original =
-            session::write_session_token(&store.join("work.token"), &key, 30, Some(Path::new("/v/a.vault")), None)
-                .unwrap();
+        let original = session::write_session_token(
+            &store.join("work.token"),
+            &key,
+            30,
+            Some(Path::new("/v/a.vault")),
+            None,
+        )
+        .unwrap();
 
         cmd_tokens(TokensArgs {
             command: TokensCommand::Renew(crate::cli::TokensRenewArgs {
@@ -2475,9 +2546,18 @@ mod tests {
         .unwrap();
 
         let renewed = session::parse_token_file(&store.join("work.token")).unwrap();
-        assert_eq!(renewed.token_id, original.token_id, "renew must keep the token id");
-        assert_eq!(renewed.token_key, original.token_key, "renew must keep the bearer key");
-        assert_ne!(renewed.expires_at, original.expires_at, "renew must extend expiry");
+        assert_eq!(
+            renewed.token_id, original.token_id,
+            "renew must keep the token id"
+        );
+        assert_eq!(
+            renewed.token_key, original.token_key,
+            "renew must keep the bearer key"
+        );
+        assert_ne!(
+            renewed.expires_at, original.expires_at,
+            "renew must extend expiry"
+        );
         let remaining = renewed.expires_at - unix_now();
         assert!(
             (7199..=7200).contains(&remaining),
@@ -2486,7 +2566,9 @@ mod tests {
         // The vault binding survives and the token still unseals.
         assert_eq!(renewed.vault.as_deref(), Some("/v/a.vault"));
         assert_eq!(
-            session::read_session_token(&store.join("work.token")).unwrap().as_ref(),
+            session::read_session_token(&store.join("work.token"))
+                .unwrap()
+                .as_ref(),
             key.as_ref()
         );
     }
@@ -2499,13 +2581,14 @@ mod tests {
         session::write_session_token(&store.join("work.token"), &key, 1, None, None).unwrap();
         // Backdate the expiry into the past.
         {
-            let mut t: session::SessionToken = serde_json::from_slice(
-                &std::fs::read(store.join("work.token")).unwrap(),
+            let mut t: session::SessionToken =
+                serde_json::from_slice(&std::fs::read(store.join("work.token")).unwrap()).unwrap();
+            t.expires_at -= 100;
+            origin_common::io::atomic_write(
+                &store.join("work.token"),
+                &serde_json::to_vec(&t).unwrap(),
             )
             .unwrap();
-            t.expires_at -= 100;
-            origin_common::io::atomic_write(&store.join("work.token"), &serde_json::to_vec(&t).unwrap())
-                .unwrap();
         }
 
         let err = cmd_tokens(TokensArgs {

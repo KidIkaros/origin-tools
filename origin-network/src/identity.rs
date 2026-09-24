@@ -11,11 +11,12 @@
 //!   directory entry that carries that binding (out-of-band exchange / TOFU).
 
 use serde::{Deserialize, Serialize};
-use x25519_dalek::{PublicKey as X25519PublicKey, StaticSecret};
 use zeroize::Zeroize;
 
 use origin_crypto_sdk::pqc::falcon1024::{FalconPublicKey, FalconSignature};
 use origin_crypto_sdk::signing::hybrid::{Ed25519Falcon1024, HybridSigningKeyBundle};
+use origin_crypto_sdk::x25519::X25519KeyPair;
+use origin_crypto_sdk::{Ed25519Signature, Ed25519VerifyingKey};
 
 use crate::address::Fingerprint;
 use crate::error::{NetworkError, Result};
@@ -39,8 +40,9 @@ const FALCON_SIG_MAX: usize = origin_crypto_sdk::pqc::falcon1024::sizes::SIGNATU
 
 /// Derive a device's X25519 transport static secret from the identity
 /// seed. Deterministic: same seed + device index → same key. Zeroized on
-/// drop.
-pub fn derive_transport_secret(seed: &[u8; 32], device_index: u32) -> Result<StaticSecret> {
+/// drop; an all-zero derived scalar is rejected by the SDK rather than
+/// silently accepted (dalek's `StaticSecret::from` would have allowed it).
+pub fn derive_transport_secret(seed: &[u8; 32], device_index: u32) -> Result<X25519KeyPair> {
     let mut bytes = [0u8; 32];
     {
         let mut derived = origin_crypto_sdk::seed::SeedHandle::new(seed, None)
@@ -49,12 +51,15 @@ pub fn derive_transport_secret(seed: &[u8; 32], device_index: u32) -> Result<Sta
         bytes.copy_from_slice(&derived[..32]);
         derived.zeroize();
     }
-    Ok(StaticSecret::from(bytes))
+    let pair = X25519KeyPair::from_secret_key(&bytes)
+        .map_err(|e| NetworkError::Crypto(format!("invalid transport secret: {e}")))?;
+    bytes.zeroize();
+    Ok(pair)
 }
 
 /// The X25519 public key for a derived transport secret.
-pub fn transport_public_key(secret: &StaticSecret) -> [u8; 32] {
-    X25519PublicKey::from(secret).to_bytes()
+pub fn transport_public_key(secret: &X25519KeyPair) -> [u8; 32] {
+    *secret.public_key().as_bytes()
 }
 
 /// Serialize a hybrid signature to wire bytes:
@@ -89,9 +94,8 @@ pub fn hybrid_sig_from_wire(raw: &[u8]) -> Result<Ed25519Falcon1024> {
             raw.len()
         )));
     }
-    let ed_sig =
-        ed25519_dalek::Signature::from_slice(&raw[SIG_LEN_PREFIX..SIG_LEN_PREFIX + ED_SIG_LEN])
-            .map_err(|e| NetworkError::Auth(format!("bad ed25519 signature: {e}")))?;
+    let ed_sig = Ed25519Signature::from_slice(&raw[SIG_LEN_PREFIX..SIG_LEN_PREFIX + ED_SIG_LEN])
+        .map_err(|e| NetworkError::Auth(format!("bad ed25519 signature: {e}")))?;
     let falcon_sig = FalconSignature::from_bytes(&raw[SIG_LEN_PREFIX + ED_SIG_LEN..])
         .map_err(|e| NetworkError::Auth(format!("bad falcon signature: {e}")))?;
     Ok(Ed25519Falcon1024 {
@@ -225,7 +229,7 @@ pub fn verify_auth_claim(
         ));
     }
     let ed_pk_bytes: [u8; 32] = peer.ed25519_pk[..32].try_into().unwrap();
-    let ed_pk = ed25519_dalek::VerifyingKey::from_bytes(&ed_pk_bytes)
+    let ed_pk = Ed25519VerifyingKey::from_bytes(&ed_pk_bytes)
         .map_err(|e| NetworkError::Auth(format!("bad ed25519 public key: {e}")))?;
     let falcon_pk = FalconPublicKey::from_bytes(&peer.falcon_pk)
         .map_err(|e| NetworkError::Auth(format!("bad falcon public key: {e}")))?;

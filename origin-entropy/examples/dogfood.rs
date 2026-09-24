@@ -24,11 +24,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "✓ analyze: shannon={:.4} bits/byte, chi²={:.2}, min-entropy={:.4}",
         stats.shannon, stats.chi_squared, stats.min_entropy
     );
-    assert!(stats.is_random(), "CSPRNG sample must pass the heuristic verdict");
+    assert!(
+        stats.is_random(),
+        "CSPRNG sample must pass the heuristic verdict"
+    );
 
     // ── check: quality gate for a 256-bit seed ────────────────────────
     let report = quality_check(&random, 256)?;
-    assert!(report.passed, "random sample must pass: {:?}", report.issues);
+    assert!(
+        report.passed,
+        "random sample must pass: {:?}",
+        report.issues
+    );
     assert!(report.issues.is_empty());
     println!("✓ quality_check passes for a random 4096-byte seed (256 bits)");
 

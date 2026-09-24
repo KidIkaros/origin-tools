@@ -8,10 +8,10 @@
 //! `origin-seal`/`origin-secrets` use. All crypto goes through
 //! `origin-crypto-sdk`; nothing external here.
 
-use ed25519_dalek::Signature as Ed25519Signature;
 use origin_crypto_sdk::pqc::falcon1024;
 use origin_crypto_sdk::signing::classical::Ed25519Signer;
 use origin_crypto_sdk::signing::hybrid::{Ed25519Falcon1024, HybridSigningKeyBundle};
+use origin_crypto_sdk::Ed25519Signature;
 use serde::{Deserialize, Serialize};
 use zeroize::Zeroize;
 

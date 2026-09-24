@@ -116,9 +116,9 @@ fn parse_crypto_function(crypto: &str) -> Result<(HashAlgorithm, u32), String> {
     let rest = crypto
         .strip_prefix("HOTP-")
         .ok_or_else(|| format!("unsupported crypto function `{crypto}`: only HOTP-<hash>-<digits> is defined by RFC 6287"))?;
-    let (hash, digits_str) = rest
-        .rsplit_once('-')
-        .ok_or_else(|| format!("malformed crypto function `{crypto}`: expected HOTP-<hash>-<digits>"))?;
+    let (hash, digits_str) = rest.rsplit_once('-').ok_or_else(|| {
+        format!("malformed crypto function `{crypto}`: expected HOTP-<hash>-<digits>")
+    })?;
     let algo = match hash {
         "SHA1" => HashAlgorithm::Sha1,
         "SHA256" => HashAlgorithm::Sha256,
@@ -141,11 +141,11 @@ fn parse_crypto_function(crypto: &str) -> Result<(HashAlgorithm, u32), String> {
 }
 
 type DataInput = (
-    bool,                       // has_counter
-    OcraChallenge,              // challenge
-    Option<HashAlgorithm>,      // pin_algo
-    Option<usize>,              // session_len
-    Option<u64>,                // timestamp_step_secs
+    bool,                  // has_counter
+    OcraChallenge,         // challenge
+    Option<HashAlgorithm>, // pin_algo
+    Option<usize>,         // session_len
+    Option<u64>,           // timestamp_step_secs
 );
 
 /// `[C] [Q<fmt><len>] [P<hash>] [S<len>] [T<num><unit>]`, hyphen-separated.
@@ -165,7 +165,9 @@ fn parse_data_input(data: &str) -> Result<DataInput, String> {
 
     for comp in data.split('-') {
         if comp.is_empty() {
-            return Err(format!("empty DataInput component in `{data}` (double hyphen?)"));
+            return Err(format!(
+                "empty DataInput component in `{data}` (double hyphen?)"
+            ));
         }
         match comp.as_bytes()[0] {
             b'C' if comp.len() == 1 => {
@@ -269,9 +271,9 @@ fn parse_session_len(comp: &str) -> Result<usize, String> {
             "malformed session component `{comp}`: expected S<064|128|256|512> (3-digit length)"
         ));
     }
-    let n: usize = comp[1..]
-        .parse()
-        .map_err(|_| format!("malformed session component `{comp}`: expected S<064|128|256|512>"))?;
+    let n: usize = comp[1..].parse().map_err(|_| {
+        format!("malformed session component `{comp}`: expected S<064|128|256|512>")
+    })?;
     match n {
         64 | 128 | 256 | 512 => Ok(n),
         other => Err(format!(
@@ -294,8 +296,8 @@ fn parse_timestamp_step(comp: &str) -> Result<u64, String> {
         b'H' => (&comp[1..comp.len() - 1], 3600u64, 48u64),
         _ => {
             return Err(format!(
-                "malformed timestamp component `{comp}`: expected T<num><S|M|H> (e.g. T1M, T20S, T24H)"
-            ))
+            "malformed timestamp component `{comp}`: expected T<num><S|M|H> (e.g. T1M, T20S, T24H)"
+        ))
         }
     };
     if num_str.is_empty() || !num_str.chars().all(|c| c.is_ascii_digit()) {
@@ -327,10 +329,7 @@ fn parse_timestamp_step(comp: &str) -> Result<u64, String> {
 /// (a QN08 suite accepts a 4-digit question; the verifier computes over
 /// the exact challenge bytes it sent). Only the character set and the
 /// upper bound are enforced.
-pub fn validate_challenge(
-    suite: &OcraSuite,
-    challenge: Option<&str>,
-) -> Result<(), String> {
+pub fn validate_challenge(suite: &OcraSuite, challenge: Option<&str>) -> Result<(), String> {
     match suite.challenge.kind {
         ChallengeKind::None => {
             if challenge.is_some() {
@@ -361,9 +360,7 @@ pub fn validate_challenge(
             let valid = match kind {
                 ChallengeKind::Numeric => ch.chars().all(|c| c.is_ascii_digit()),
                 ChallengeKind::Hex => ch.chars().all(|c| c.is_ascii_hexdigit()),
-                ChallengeKind::Alphanumeric => {
-                    ch.chars().all(|c| c.is_ascii_alphanumeric())
-                }
+                ChallengeKind::Alphanumeric => ch.chars().all(|c| c.is_ascii_alphanumeric()),
                 ChallengeKind::None => unreachable!(),
             };
             if !valid {
@@ -479,9 +476,24 @@ mod tests {
 
     #[test]
     fn timestamp_step_units() {
-        assert_eq!(parse_suite("OCRA-1:HOTP-SHA1-6:QN08-T20S").unwrap().timestamp_step_secs, Some(20));
-        assert_eq!(parse_suite("OCRA-1:HOTP-SHA1-6:QN08-T5M").unwrap().timestamp_step_secs, Some(300));
-        assert_eq!(parse_suite("OCRA-1:HOTP-SHA1-6:QN08-T24H").unwrap().timestamp_step_secs, Some(86_400));
+        assert_eq!(
+            parse_suite("OCRA-1:HOTP-SHA1-6:QN08-T20S")
+                .unwrap()
+                .timestamp_step_secs,
+            Some(20)
+        );
+        assert_eq!(
+            parse_suite("OCRA-1:HOTP-SHA1-6:QN08-T5M")
+                .unwrap()
+                .timestamp_step_secs,
+            Some(300)
+        );
+        assert_eq!(
+            parse_suite("OCRA-1:HOTP-SHA1-6:QN08-T24H")
+                .unwrap()
+                .timestamp_step_secs,
+            Some(86_400)
+        );
     }
 
     #[test]
@@ -496,25 +508,25 @@ mod tests {
     #[test]
     fn rejects_bad_suites() {
         for bad in [
-            "OCRA-2:HOTP-SHA1-6:QN08",     // wrong algorithm version
-            "HOTP-SHA1-6:QN08",            // missing algorithm
-            "OCRA-1:HOTP-SHA1-6",          // missing data input
-            "OCRA-1:TOTP-SHA1-6:QN08",     // TOTP crypto function not defined by RFC 6287
-            "OCRA-1:HOTP-MD5-6:QN08",      // bad hash
-            "OCRA-1:HOTP-SHA1-3:QN08",     // digits out of range
-            "OCRA-1:HOTP-SHA1-6:QN03",     // challenge length too small
-            "OCRA-1:HOTP-SHA1-6:QN65",     // challenge length too big
-            "OCRA-1:HOTP-SHA1-6:QN008",    // length must be 1 or 2 digits (QN08 / QH8 per RFC §6.4)
-            "OCRA-1:HOTP-SHA1-6:S64",      // session length must be 3 digits (S064, not S64)
-            "OCRA-1:HOTP-SHA1-6:QN08-P",   // pin without hash
-            "OCRA-1:HOTP-SHA1-6:S999",     // bad session length
-            "OCRA-1:HOTP-SHA1-6:T0M",      // zero time step
-            "OCRA-1:HOTP-SHA1-6:T60S",     // time step out of range (1..=59 seconds)
-            "OCRA-1:HOTP-SHA1-6:T60M",     // time step out of range (1..=59 minutes)
-            "OCRA-1:HOTP-SHA1-6:T49H",     // time step out of range (0..=48 hours)
-            "OCRA-1:HOTP-SHA1-6:QN08-X",   // unknown component
+            "OCRA-2:HOTP-SHA1-6:QN08",      // wrong algorithm version
+            "HOTP-SHA1-6:QN08",             // missing algorithm
+            "OCRA-1:HOTP-SHA1-6",           // missing data input
+            "OCRA-1:TOTP-SHA1-6:QN08",      // TOTP crypto function not defined by RFC 6287
+            "OCRA-1:HOTP-MD5-6:QN08",       // bad hash
+            "OCRA-1:HOTP-SHA1-3:QN08",      // digits out of range
+            "OCRA-1:HOTP-SHA1-6:QN03",      // challenge length too small
+            "OCRA-1:HOTP-SHA1-6:QN65",      // challenge length too big
+            "OCRA-1:HOTP-SHA1-6:QN008", // length must be 1 or 2 digits (QN08 / QH8 per RFC §6.4)
+            "OCRA-1:HOTP-SHA1-6:S64",   // session length must be 3 digits (S064, not S64)
+            "OCRA-1:HOTP-SHA1-6:QN08-P", // pin without hash
+            "OCRA-1:HOTP-SHA1-6:S999",  // bad session length
+            "OCRA-1:HOTP-SHA1-6:T0M",   // zero time step
+            "OCRA-1:HOTP-SHA1-6:T60S",  // time step out of range (1..=59 seconds)
+            "OCRA-1:HOTP-SHA1-6:T60M",  // time step out of range (1..=59 minutes)
+            "OCRA-1:HOTP-SHA1-6:T49H",  // time step out of range (0..=48 hours)
+            "OCRA-1:HOTP-SHA1-6:QN08-X", // unknown component
             "OCRA-1:HOTP-SHA1-6:QN08-QN08", // duplicate challenge
-            "OCRA-1:HOTP-SHA1-6:",         // empty data input
+            "OCRA-1:HOTP-SHA1-6:",      // empty data input
         ] {
             assert!(parse_suite(bad).is_err(), "suite `{bad}` must be rejected");
         }
@@ -549,11 +561,17 @@ mod tests {
     #[test]
     fn challenge_encoding_per_format() {
         let qn = parse_suite("OCRA-1:HOTP-SHA1-6:QN08").unwrap();
-        assert_eq!(encode_challenge(&qn, Some("12345678")).unwrap(), b"12345678");
+        assert_eq!(
+            encode_challenge(&qn, Some("12345678")).unwrap(),
+            b"12345678"
+        );
 
         let qh = parse_suite("OCRA-1:HOTP-SHA1-6:QH08").unwrap();
         // Hex decodes to binary: "a1b2c3d4" → 4 bytes.
-        assert_eq!(encode_challenge(&qh, Some("a1b2c3d4")).unwrap(), vec![0xa1, 0xb2, 0xc3, 0xd4]);
+        assert_eq!(
+            encode_challenge(&qh, Some("a1b2c3d4")).unwrap(),
+            vec![0xa1, 0xb2, 0xc3, 0xd4]
+        );
 
         let qa = parse_suite("OCRA-1:HOTP-SHA1-6:QA04").unwrap();
         assert_eq!(encode_challenge(&qa, Some("Ab12")).unwrap(), b"Ab12");

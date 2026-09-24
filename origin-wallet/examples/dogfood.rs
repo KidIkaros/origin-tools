@@ -82,7 +82,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("✓ hybrid sign → ed25519-leg verify (tamper rejected)");
 
     // Encrypted memo round-trip (AAD = tx id).
-    let memo_key = origin_crypto_sdk::aead::generate_key();
+    let memo_key = origin_crypto_sdk::aead::try_generate_key().map_err(|e| e.to_string())?;
     tx.encrypt_memo(&memo_key, b"invoice #42")
         .map_err(|e| e.to_string())?;
     assert_eq!(

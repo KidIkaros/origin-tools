@@ -764,7 +764,9 @@ fn cmd_generate_excluded_charset_and_passphrase() {
         "passphrase must have 4 words, got: `{phrase}`"
     );
     assert!(
-        words.iter().all(|w| !w.is_empty() && w.chars().all(|c| c.is_ascii_lowercase())),
+        words
+            .iter()
+            .all(|w| !w.is_empty() && w.chars().all(|c| c.is_ascii_lowercase())),
         "passphrase words must be lowercase, got: `{phrase}`"
     );
     let stderr = String::from_utf8_lossy(&out.stderr);
@@ -987,7 +989,10 @@ fn tokens_command_lists_and_revokes_session_tokens() {
     let table = String::from_utf8_lossy(&list.stdout);
     assert!(table.contains("work.token"), "table must list work.token");
     assert!(table.contains("home.token"), "table must list home.token");
-    assert!(table.contains("valid"), "unexpired tokens show status valid");
+    assert!(
+        table.contains("valid"),
+        "unexpired tokens show status valid"
+    );
 
     // JSON listing is parseable and complete.
     let json_out = Command::new(origin_pass_bin())
@@ -1001,26 +1006,20 @@ fn tokens_command_lists_and_revokes_session_tokens() {
         ])
         .output()
         .expect("tokens list --format json");
-    assert!(json_out.status.success(), "tokens list --format json must succeed");
+    assert!(
+        json_out.status.success(),
+        "tokens list --format json must succeed"
+    );
     let parsed: serde_json::Value =
         serde_json::from_slice(&json_out.stdout).expect("json listing must parse");
     let rows = parsed.as_array().expect("json listing must be an array");
     assert_eq!(rows.len(), 2, "json listing must contain both tokens");
-    let names: Vec<&str> = rows
-        .iter()
-        .filter_map(|r| r["name"].as_str())
-        .collect();
+    let names: Vec<&str> = rows.iter().filter_map(|r| r["name"].as_str()).collect();
     assert!(names.contains(&"work.token") && names.contains(&"home.token"));
 
     // Revoke one token by bare name, resolved into the custom store.
     let revoke = Command::new(origin_pass_bin())
-        .args([
-            "tokens",
-            "revoke",
-            "work",
-            "--dir",
-            store.to_str().unwrap(),
-        ])
+        .args(["tokens", "revoke", "work", "--dir", store.to_str().unwrap()])
         .output()
         .expect("tokens revoke");
     assert!(
@@ -1028,8 +1027,14 @@ fn tokens_command_lists_and_revokes_session_tokens() {
         "tokens revoke must succeed; stderr={}",
         String::from_utf8_lossy(&revoke.stderr)
     );
-    assert!(!store.join("work.token").exists(), "revoked token file must be deleted");
-    assert!(store.join("home.token").exists(), "other tokens must survive");
+    assert!(
+        !store.join("work.token").exists(),
+        "revoked token file must be deleted"
+    );
+    assert!(
+        store.join("home.token").exists(),
+        "other tokens must survive"
+    );
 
     // The revoked token no longer unlocks the vault.
     let get = Command::new(origin_pass_bin())
@@ -1051,12 +1056,7 @@ fn tokens_command_lists_and_revokes_session_tokens() {
 
     // Revoke-all clears the rest.
     let revoke_all = Command::new(origin_pass_bin())
-        .args([
-            "tokens",
-            "revoke-all",
-            "--dir",
-            store.to_str().unwrap(),
-        ])
+        .args(["tokens", "revoke-all", "--dir", store.to_str().unwrap()])
         .output()
         .expect("tokens revoke-all");
     assert!(
@@ -1064,7 +1064,10 @@ fn tokens_command_lists_and_revokes_session_tokens() {
         "tokens revoke-all must succeed; stderr={}",
         String::from_utf8_lossy(&revoke_all.stderr)
     );
-    assert!(!store.join("home.token").exists(), "revoke-all must clear the store");
+    assert!(
+        !store.join("home.token").exists(),
+        "revoke-all must clear the store"
+    );
 }
 
 // ──────────────────────────────────────────────────────────────────────
@@ -1124,8 +1127,14 @@ fn bare_name_lock_lock_all_and_token_rotation() {
         "lock --session-token work (bare) must succeed; stderr={}",
         String::from_utf8_lossy(&lock.stderr)
     );
-    assert!(!store.join("work.token").exists(), "bare-name lock must revoke");
-    assert!(store.join("home.token").exists(), "other tokens must survive");
+    assert!(
+        !store.join("work.token").exists(),
+        "bare-name lock must revoke"
+    );
+    assert!(
+        store.join("home.token").exists(),
+        "other tokens must survive"
+    );
 
     // `tokens rotate home` refreshes the token in place (no passphrase).
     let rotate = run(&["tokens", "rotate", "home", "--ttl", "7200"]);
@@ -1252,13 +1261,11 @@ fn env_var_token_and_auto_rotate_and_list_summary() {
     // use also triggers auto-rotation: remaining (~3s) < default 900s
     // threshold, so the file is refreshed with a new bearer key + id.
     let get = run(
-        &[
-            "get",
-            "--vault",
-            vault_path.to_str().unwrap(),
-            "github.com",
-        ],
-        Some(("ORIGIN_PASS_TOKEN", store.join("work.token").to_str().unwrap())),
+        &["get", "--vault", vault_path.to_str().unwrap(), "github.com"],
+        Some((
+            "ORIGIN_PASS_TOKEN",
+            store.join("work.token").to_str().unwrap(),
+        )),
     );
     assert!(
         get.status.success(),
@@ -1280,7 +1287,10 @@ fn env_var_token_and_auto_rotate_and_list_summary() {
     let list = run(&["tokens", "list"], None);
     assert!(list.status.success(), "tokens list must succeed");
     let table = String::from_utf8_lossy(&list.stdout);
-    assert!(table.contains("remaining"), "table must have a remaining column");
+    assert!(
+        table.contains("remaining"),
+        "table must have a remaining column"
+    );
     let stderr = String::from_utf8_lossy(&list.stderr);
     assert!(
         stderr.contains("summary: 1 valid"),
@@ -1290,14 +1300,20 @@ fn env_var_token_and_auto_rotate_and_list_summary() {
     // `lock` works from the env var alone (no flag).
     let lock = run(
         &["lock"],
-        Some(("ORIGIN_PASS_TOKEN", store.join("work.token").to_str().unwrap())),
+        Some((
+            "ORIGIN_PASS_TOKEN",
+            store.join("work.token").to_str().unwrap(),
+        )),
     );
     assert!(
         lock.status.success(),
         "lock via ORIGIN_PASS_TOKEN must succeed; stderr={}",
         String::from_utf8_lossy(&lock.stderr)
     );
-    assert!(!store.join("work.token").exists(), "env-var lock must revoke");
+    assert!(
+        !store.join("work.token").exists(),
+        "env-var lock must revoke"
+    );
 }
 
 /// Read the token_id field from a token file (for rotation assertions).
@@ -1366,12 +1382,11 @@ fn remaining_filter_exit_codes_and_renew() {
     // Renew `soon`: same token id + bearer key, expiry pushed out.
     let soon_path = store.join("soon.token");
     let id_before = read_token_id(&soon_path);
-    let expires_before: i64 = serde_json::from_str::<serde_json::Value>(
-        &std::fs::read_to_string(&soon_path).unwrap(),
-    )
-    .unwrap()["expires_at"]
-    .as_i64()
-    .unwrap();
+    let expires_before: i64 =
+        serde_json::from_str::<serde_json::Value>(&std::fs::read_to_string(&soon_path).unwrap())
+            .unwrap()["expires_at"]
+            .as_i64()
+            .unwrap();
 
     let renew = run(&["tokens", "renew", "soon", "--ttl", "7200"]);
     assert!(
@@ -1379,7 +1394,8 @@ fn remaining_filter_exit_codes_and_renew() {
         "tokens renew must succeed; stderr={}",
         String::from_utf8_lossy(&renew.stderr)
     );
-    let renewed: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&soon_path).unwrap()).unwrap();
+    let renewed: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&soon_path).unwrap()).unwrap();
     assert_eq!(
         renewed["token_id"].as_str().unwrap(),
         id_before,
@@ -1392,7 +1408,11 @@ fn remaining_filter_exit_codes_and_renew() {
 
     // After renew, `soon` no longer matches a 5-minute window → exit 0.
     let after = run(&["tokens", "list", "--remaining", "5"]);
-    assert_eq!(after.status.code(), Some(0), "renewed token must no longer match");
+    assert_eq!(
+        after.status.code(),
+        Some(0),
+        "renewed token must no longer match"
+    );
 }
 
 // ──────────────────────────────────────────────────────────────────────
@@ -1446,7 +1466,11 @@ fn prune_and_json_remaining_exit_codes() {
         .iter()
         .filter_map(|r| r["name"].as_str())
         .collect();
-    assert_eq!(names, vec!["soon.token"], "only the near-expiry token matches");
+    assert_eq!(
+        names,
+        vec!["soon.token"],
+        "only the near-expiry token matches"
+    );
 
     // Backdate soon's expiry so prune treats it as expired (a 60s token
     // is still valid this soon after minting).
@@ -1454,11 +1478,13 @@ fn prune_and_json_remaining_exit_codes() {
         let path = store.join("soon.token");
         let mut v: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
-        v["expires_at"] = serde_json::json!(std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_secs() as i64
-            - 10);
+        v["expires_at"] = serde_json::json!(
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs() as i64
+                - 10
+        );
         std::fs::write(&path, serde_json::to_vec_pretty(&v).unwrap()).unwrap();
     }
 
@@ -1466,10 +1492,19 @@ fn prune_and_json_remaining_exit_codes() {
     let prune = run(&["tokens", "prune"]);
     assert!(prune.status.success(), "prune must succeed");
     let stderr = String::from_utf8_lossy(&prune.stderr);
-    assert!(stderr.contains("pruned: soon.token (expired)"), "stderr: {stderr}");
-    assert!(stderr.contains("pruned: garbage.token (unreadable)"), "stderr: {stderr}");
+    assert!(
+        stderr.contains("pruned: soon.token (expired)"),
+        "stderr: {stderr}"
+    );
+    assert!(
+        stderr.contains("pruned: garbage.token (unreadable)"),
+        "stderr: {stderr}"
+    );
     assert!(stderr.contains("pruned 2 token(s)"), "stderr: {stderr}");
-    assert!(store.join("later.token").exists(), "valid tokens must survive");
+    assert!(
+        store.join("later.token").exists(),
+        "valid tokens must survive"
+    );
     assert!(!store.join("soon.token").exists());
     assert!(!store.join("garbage.token").exists());
 
@@ -1477,7 +1512,11 @@ fn prune_and_json_remaining_exit_codes() {
     let after = run(&["tokens", "list", "--remaining", "5", "--format", "json"]);
     assert_eq!(after.status.code(), Some(0), "no matches must exit 0");
     let rows: serde_json::Value = serde_json::from_slice(&after.stdout).expect("json array");
-    assert_eq!(rows.as_array().unwrap().len(), 0, "empty array when nothing matches");
+    assert_eq!(
+        rows.as_array().unwrap().len(),
+        0,
+        "empty array when nothing matches"
+    );
 }
 
 // ──────────────────────────────────────────────────────────────────────
@@ -1692,7 +1731,9 @@ fn cmd_add_ocra_counter_suite_auto_increments() {
         .output()
         .expect("counter override");
     assert!(override_run.status.success(), "override run must succeed");
-    let out_override = String::from_utf8_lossy(&override_run.stdout).trim().to_string();
+    let out_override = String::from_utf8_lossy(&override_run.stdout)
+        .trim()
+        .to_string();
 
     // Plain run with --force (the fp was already recorded by the override).
     let plain = Command::new(origin_pass_bin())

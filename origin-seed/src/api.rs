@@ -129,7 +129,10 @@ mod tests {
     fn blob_roundtrip() {
         let seed = [0x42u8; 32];
         let blob = seal_blob(&seed, b"pass", MemoryTier::Standard).unwrap();
-        assert_eq!(recover_blob(&blob, b"pass", MemoryTier::Standard).unwrap(), seed);
+        assert_eq!(
+            recover_blob(&blob, b"pass", MemoryTier::Standard).unwrap(),
+            seed
+        );
     }
 
     #[test]

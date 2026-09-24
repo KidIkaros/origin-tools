@@ -48,7 +48,7 @@ fn seed_shard_recover_schnorr_roundtrip() {
 
     // 6. Sign and verify
     let msg = b"cross-tool composability test";
-    let proof = ec_schnorr::prove(&secret, &public, msg).expect("prove");
+    let proof = ec_schnorr::prove(&secret, msg).expect("prove");
     assert!(ec_schnorr::verify(&proof, &public, msg).expect("verify"));
 
     // 7. Wrong message must fail
@@ -87,7 +87,7 @@ fn seed_blob_recover_schnorr_sign_verify() {
     sk.copy_from_slice(&recovered);
     let (secret, public) = ec_schnorr::generate_keypair(&sk);
     let msg = b"identity-bound message";
-    let proof = ec_schnorr::prove(&secret, &public, msg).expect("prove");
+    let proof = ec_schnorr::prove(&secret, msg).expect("prove");
     assert!(ec_schnorr::verify(&proof, &public, msg).expect("verify"));
 }
 
@@ -176,7 +176,7 @@ fn entropy_quality_gate_then_schnorr() {
     sk.copy_from_slice(&entropy);
     let (secret, public) = ec_schnorr::generate_keypair(&sk);
     let msg = b"quality-gated message";
-    let proof = ec_schnorr::prove(&secret, &public, msg).expect("prove");
+    let proof = ec_schnorr::prove(&secret, msg).expect("prove");
     assert!(ec_schnorr::verify(&proof, &public, msg).expect("verify"));
 }
 
@@ -223,7 +223,7 @@ fn full_pipeline_seed_blob_shard_recover_sign() {
     sk.copy_from_slice(&recovered_seed);
     let (secret, public) = ec_schnorr::generate_keypair(&sk);
     let msg = b"full pipeline message";
-    let proof = ec_schnorr::prove(&secret, &public, msg).expect("prove");
+    let proof = ec_schnorr::prove(&secret, msg).expect("prove");
     assert!(ec_schnorr::verify(&proof, &public, msg).expect("verify"));
 }
 
@@ -258,7 +258,7 @@ fn batch_schnorr_multi_identity() {
     let proofs: Vec<EcSchnorrProof> = keypairs
         .iter()
         .zip(messages.iter())
-        .map(|((sk, pk), msg)| ec_schnorr::prove(sk, pk, msg).expect("prove"))
+        .map(|((sk, _pk), msg)| ec_schnorr::prove(sk, msg).expect("prove"))
         .collect();
 
     let pks: Vec<Vec<u8>> = keypairs.iter().map(|(_, pk)| pk.clone()).collect();

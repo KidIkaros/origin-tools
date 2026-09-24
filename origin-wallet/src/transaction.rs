@@ -98,7 +98,7 @@ impl Transaction {
 
     /// Verify the transaction signature.
     pub fn verify(&self, signer_pk: &[u8; 32], falcon_pk: &[u8]) -> Result<()> {
-        use ed25519_dalek::VerifyingKey;
+        use origin_crypto_sdk::Ed25519VerifyingKey as VerifyingKey;
 
         if self.signature.is_empty() {
             return Err(WalletError::Transaction("No signature to verify".into()));
@@ -117,7 +117,7 @@ impl Transaction {
         let ed_sig_bytes: [u8; 64] = self.signature[..64]
             .try_into()
             .map_err(|_| WalletError::Transaction("Invalid Ed25519 signature".into()))?;
-        let ed_sig = ed25519_dalek::Signature::from_bytes(&ed_sig_bytes);
+        let ed_sig = origin_crypto_sdk::Ed25519Signature::from_bytes(&ed_sig_bytes);
 
         let falcon_len = u32::from_le_bytes(
             self.signature[64..68]
@@ -149,7 +149,7 @@ impl Transaction {
 
     /// Encrypt a memo for this transaction.
     pub fn encrypt_memo(&mut self, key: &[u8; 32], memo: &[u8]) -> Result<()> {
-        let nonce = origin_crypto_sdk::aead::generate_nonce();
+        let nonce = origin_crypto_sdk::aead::try_generate_nonce()?;
         let encrypted =
             origin_crypto_sdk::aead::XChaCha20Poly1305::encrypt_aad(key, &nonce, memo, &self.id)?;
 
@@ -226,7 +226,7 @@ mod tests {
     use crate::wallet::Wallet;
 
     fn dummy_address() -> Address {
-        let sk = ed25519_dalek::SigningKey::from_bytes(&[1u8; 32]);
+        let sk = origin_crypto_sdk::Ed25519SigningKey::from_bytes(&[1u8; 32]);
         let pk = sk.verifying_key();
         Address::from_ed25519(&pk, AddressType::Bech32, Network::Mainnet)
     }

@@ -178,9 +178,9 @@ impl Wallet {
     /// validates its entropy, and creates a SeedHandle with TTL and memory protection.
     pub fn create(_passphrase: &str) -> Result<Self> {
         // 1. Generate seed using SDK's multi-hash generation
-        let generated = origin_crypto_sdk::seed::gen::generate(
+        let generated = origin_crypto_sdk::seed::gen::try_generate(
             origin_crypto_sdk::seed::gen::SeedVariant::Blake2bShake256,
-        );
+        )?;
 
         // 2. Validate entropy
         let metrics = origin_crypto_sdk::entropy::analyze(&generated.seed);
@@ -286,7 +286,7 @@ impl Wallet {
     /// plaintext.
     pub fn save(&self, path: &Path, passphrase: &str) -> Result<()> {
         // 1. Random Argon2id salt for this file
-        let salt_bytes = origin_crypto_sdk::aead::generate_key(); // 32 random bytes
+        let salt_bytes = origin_crypto_sdk::aead::try_generate_key()?; // 32 random bytes
         let mut argon2_salt = [0u8; 16];
         argon2_salt.copy_from_slice(&salt_bytes[..16]);
 
@@ -326,7 +326,7 @@ impl Wallet {
         let plaintext = bincode::serialize(&payload)?;
 
         // 6. Encrypt the whole payload
-        let nonce = origin_crypto_sdk::aead::generate_nonce();
+        let nonce = origin_crypto_sdk::aead::try_generate_nonce()?;
         let ciphertext =
             origin_crypto_sdk::aead::XChaCha20Poly1305::encrypt(&key, &nonce, &plaintext)?;
 
@@ -374,7 +374,7 @@ impl Wallet {
                 .map_err(|e| WalletError::KeyDerivation(e.to_string()))?;
 
         // Generate address from Ed25519 public key
-        let ed_sk = ed25519_dalek::SigningKey::from_bytes(
+        let ed_sk = origin_crypto_sdk::Ed25519SigningKey::from_bytes(
             ed_key
                 .as_slice()
                 .try_into()

@@ -345,7 +345,14 @@ impl EntryPayload {
     /// Create an OCRA entry payload. `counter` is the initial counter
     /// for suites with a `C` component; it auto-increments per use (like
     /// HOTP) inside `cmd_code_ocra`.
-    pub fn ocra(name: &str, key: &[u8], suite: &str, digits: u32, algo: &str, counter: u64) -> Self {
+    pub fn ocra(
+        name: &str,
+        key: &[u8],
+        suite: &str,
+        digits: u32,
+        algo: &str,
+        counter: u64,
+    ) -> Self {
         Self {
             name: name.to_string(),
             entry_type: "ocra".to_string(),
@@ -562,7 +569,8 @@ pub fn init_vault(path: &Path, passphrase: &str, tier: MemoryTier) -> Result<(),
     let header_key = derive_header_key(master_key.as_ref());
 
     // 2. Header nonce + encrypt the empty entry index.
-    let header_nonce = ChaCha20Blake3::generate_nonce();
+    let header_nonce = ChaCha20Blake3::try_generate_nonce()
+        .map_err(|e| format!("nonce generation failed: {e}"))?;
     let index_bytes = build_index_bytes(&[])?;
     let header_ct = ChaCha20Blake3::encrypt(&header_key, &header_nonce, &index_bytes, &[])
         .map_err(|e| format!("ChaCha20-BLAKE3 header encrypt: {e:?}"))?;
@@ -736,7 +744,8 @@ pub fn persist_vault(path: &Path, vault: &Vault) -> Result<(), String> {
     // 1. Re-encrypt each entry with a fresh nonce.
     let mut entry_data: Vec<(EntryMetadata, Vec<u8>)> = Vec::new();
     for (name, payload) in &vault.entries {
-        let entry_nonce = ChaCha20Blake3::generate_nonce();
+        let entry_nonce = ChaCha20Blake3::try_generate_nonce()
+            .map_err(|e| format!("nonce generation failed: {e}"))?;
         let name_hash = hash_name(name);
         let entry_key = derive_entry_key(vault.master_key.as_ref(), &entry_nonce);
         let aad = build_entry_aad(&name_hash, &entry_nonce);
@@ -770,7 +779,8 @@ pub fn persist_vault(path: &Path, vault: &Vault) -> Result<(), String> {
     )?;
 
     // 3. Encrypt the index.
-    let header_nonce = ChaCha20Blake3::generate_nonce();
+    let header_nonce = ChaCha20Blake3::try_generate_nonce()
+        .map_err(|e| format!("nonce generation failed: {e}"))?;
     let header_key = derive_header_key(vault.master_key.as_ref());
     let header_ct = ChaCha20Blake3::encrypt(&header_key, &header_nonce, &index_bytes, &[])
         .map_err(|e| format!("ChaCha20-BLAKE3 header encrypt: {e:?}"))?;

@@ -22,7 +22,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // ── encrypt / decrypt round-trip ─────────────────────────────────
     let plaintext = b"the quick brown fox jumps over the lazy dog";
-    let envelope = api::encrypt(plaintext, b"dogfood-pw", origin_seal::MemoryTier::Nano, true)?;
+    let envelope = api::encrypt(
+        plaintext,
+        b"dogfood-pw",
+        origin_seal::MemoryTier::Nano,
+        true,
+    )?;
     let decrypted = api::decrypt(&envelope, b"dogfood-pw")?;
     assert_eq!(decrypted, plaintext, "encrypt → decrypt round-trip");
     println!("✓ encrypt → decrypt (XChaCha20-Poly1305 + Argon2id, compressed)");

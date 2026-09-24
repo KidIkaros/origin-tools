@@ -10,10 +10,10 @@
 //! local JSONL ledger — no network.
 
 use crate::commitment::{canonicalize, derive_bundle_domain, SignedCommitment, Verification};
-use origin_crypto_sdk::{Ed25519Signature, Ed25519VerifyingKey};
 use origin_crypto_sdk::blake3;
 use origin_crypto_sdk::pqc::falcon1024::{FalconPublicKey, FalconSignature};
 use origin_crypto_sdk::signing::hybrid::Ed25519Falcon1024;
+use origin_crypto_sdk::{Ed25519Signature, Ed25519VerifyingKey};
 use serde::{Deserialize, Serialize};
 use std::io::Read;
 use std::path::Path;

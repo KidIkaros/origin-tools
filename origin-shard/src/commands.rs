@@ -123,7 +123,12 @@ fn cmd_recover(args: RecoverArgs) -> Result<(), String> {
         ));
     }
 
-    let decoded = api::recover(&shards, args.data_shards, args.parity_shards, original_data_len)?;
+    let decoded = api::recover(
+        &shards,
+        args.data_shards,
+        args.parity_shards,
+        original_data_len,
+    )?;
 
     origin_common::write_output(args.output.as_deref(), &decoded)?;
     eprintln!(

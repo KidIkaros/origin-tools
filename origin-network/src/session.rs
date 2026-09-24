@@ -16,10 +16,9 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use origin_crypto_sdk::x25519::X25519KeyPair;
 use tokio::sync::Mutex;
-use x25519_dalek::StaticSecret;
 
-use origin_channel::dh::{DhPublic, DhSecret};
 use origin_channel::handshake::Handshake;
 use origin_channel::message::HandshakeMessage;
 use origin_channel::ratchet::init_ratchet;
@@ -145,7 +144,7 @@ pub struct Endpoint {
     seed: [u8; 32],
     device_index: u32,
     fingerprint: Fingerprint,
-    static_secret: StaticSecret,
+    static_secret: X25519KeyPair,
     transport: Arc<dyn Transport>,
     resolver: Arc<dyn PeerResolver>,
     replay: Arc<Mutex<HandshakeReplayTracker>>,
@@ -242,7 +241,7 @@ impl Endpoint {
         let (hs, msg1_bytes, msg2_bytes, msg3_bytes) = if is_initiator {
             let peer_pk = origin_channel::dh::DhPublic::from_bytes(peer_hint.transport_pk_bytes()?);
             let mut hs = Handshake::new(
-                origin_channel::dh::DhSecret::from_bytes(self.static_secret.to_bytes()),
+                origin_channel::dh::DhSecret::from_bytes(self.static_secret.secret_key_bytes()),
                 peer_pk,
                 true,
             );
@@ -285,7 +284,7 @@ impl Endpoint {
 
             let initiator_static = initiator_static_from_msg1(&msg1)?;
             let mut hs = Handshake::new(
-                origin_channel::dh::DhSecret::from_bytes(self.static_secret.to_bytes()),
+                origin_channel::dh::DhSecret::from_bytes(self.static_secret.secret_key_bytes()),
                 origin_channel::dh::DhPublic::from_bytes(initiator_static),
                 false,
             );
@@ -565,7 +564,6 @@ mod backoff_tests {
 mod tests {
     use super::*;
     use crate::transport::TcpTransport;
-    use x25519_dalek::PublicKey;
 
     fn seed_a() -> [u8; 32] {
         [0xA1; 32]
@@ -662,13 +660,17 @@ mod tests {
         let tc = TcpTransport::connector();
         let mut conn = tc.connect(addr).await.unwrap();
         let secret = derive_transport_secret(&seed_a(), 0).unwrap();
-        let peer_pk = DhPublic::from_bytes(
+        let peer_pk = origin_channel::dh::DhPublic::from_bytes(
             PeerKeys::from_seed(&seed_b(), 0)
                 .unwrap()
                 .transport_pk_bytes()
                 .unwrap(),
         );
-        let mut hs = Handshake::new(DhSecret::from_bytes(secret.to_bytes()), peer_pk, true);
+        let mut hs = Handshake::new(
+            origin_channel::dh::DhSecret::from_bytes(secret.secret_key_bytes()),
+            peer_pk,
+            true,
+        );
         let mut msg1 = hs.start().unwrap();
         msg1.payload
             .extend_from_slice(transport_public_key(&secret).as_slice());
@@ -827,13 +829,17 @@ mod tests {
             let tc = TcpTransport::connector();
             let mut conn = tc.connect(&addr).await.unwrap();
             let secret = derive_transport_secret(&seed_a(), 0).unwrap();
-            let peer_pk = DhPublic::from_bytes(
+            let peer_pk = origin_channel::dh::DhPublic::from_bytes(
                 PeerKeys::from_seed(&seed_b(), 0)
                     .unwrap()
                     .transport_pk_bytes()
                     .unwrap(),
             );
-            let mut hs = Handshake::new(DhSecret::from_bytes(secret.to_bytes()), peer_pk, true);
+            let mut hs = Handshake::new(
+                origin_channel::dh::DhSecret::from_bytes(secret.secret_key_bytes()),
+                peer_pk,
+                true,
+            );
             let mut msg1 = hs.start().unwrap();
             msg1.payload
                 .extend_from_slice(transport_public_key(&secret).as_slice());

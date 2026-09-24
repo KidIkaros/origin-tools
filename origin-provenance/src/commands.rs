@@ -45,7 +45,9 @@ fn cmd_anchor(args: AnchorArgs) -> Result<(), String> {
         .unwrap_or_else(|| opm::sidecar_path(asset).to_string_lossy().into_owned());
     let sidecar_path = Path::new(&sidecar);
     if !sidecar_path.exists() {
-        return Err(format!("manifest not found: {sidecar} (run 'create' first)"));
+        return Err(format!(
+            "manifest not found: {sidecar} (run 'create' first)"
+        ));
     }
     let opm = opm::load(sidecar_path).map_err(|e| format!("load: {e}"))?;
     // R2-1 (red team pass 2): an anchor only means something when signed by
@@ -412,11 +414,11 @@ fn cmd_verify_manifest(args: VerifyManifestArgs) -> Result<(), String> {
 
     let expected_manifest_id = match &args.expect_manifest_id {
         Some(s) => {
-            let bytes = hex::decode(s.trim())
-                .map_err(|e| format!("--expect-manifest-id: bad hex: {e}"))?;
-            let arr: [u8; 32] = bytes
-                .try_into()
-                .map_err(|_| "--expect-manifest-id: expected 64 hex chars (32 bytes)".to_string())?;
+            let bytes =
+                hex::decode(s.trim()).map_err(|e| format!("--expect-manifest-id: bad hex: {e}"))?;
+            let arr: [u8; 32] = bytes.try_into().map_err(|_| {
+                "--expect-manifest-id: expected 64 hex chars (32 bytes)".to_string()
+            })?;
             Some(arr)
         }
         None => None,
@@ -428,8 +430,10 @@ fn cmd_verify_manifest(args: VerifyManifestArgs) -> Result<(), String> {
     let anchor = match &args.anchor {
         Some(p) => {
             let text = std::fs::read_to_string(p).map_err(|e| format!("read anchor {p}: {e}"))?;
-            Some(serde_json::from_str::<opm::Anchor>(&text)
-                .map_err(|e| format!("parse anchor {p}: {e}"))?)
+            Some(
+                serde_json::from_str::<opm::Anchor>(&text)
+                    .map_err(|e| format!("parse anchor {p}: {e}"))?,
+            )
         }
         None => crate::verify::load_sibling_anchor(asset)?,
     };

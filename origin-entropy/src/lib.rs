@@ -14,7 +14,9 @@ pub mod cli;
 pub mod commands;
 pub mod error;
 
-pub use api::{chi_squared, min_entropy, quality_check, shannon_entropy, EntropyStats, QualityReport};
+pub use api::{
+    chi_squared, min_entropy, quality_check, shannon_entropy, EntropyStats, QualityReport,
+};
 pub use error::{EntropyError, Result};
 // SDK entropy types (for access to full metrics beyond the backward-compatible subset)
 pub use origin_crypto_sdk::entropy::{analyze, check_quality, EntropyMetrics, QualityRequirements};

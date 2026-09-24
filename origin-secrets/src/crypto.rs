@@ -9,21 +9,18 @@ use origin_crypto_sdk::{aead::XChaCha20Poly1305, blake3};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
-/// Fill `dest` with cryptographically secure random bytes sourced from the
-/// `origin-crypto-sdk` OS-CSPRNG wrapper (`getrandom(2)` / `/dev/urandom` /
-/// `BCryptGenRandom`). Origin-facing secret material (master seed, salt, nonce)
-/// MUST be generated through this helper — never via a raw `rand` instance — so
-/// every random byte in the system has a single, audited provenance.
+/// Fill `dest` with cryptographically secure random bytes via the shared
+/// `origin_common` adapter, which owns the single `fill_random` boundary to
+/// the SDK. Origin-facing secret material (master seed, salt, nonce) MUST be
+/// generated through this helper — never via a raw `rand` instance — so every
+/// random byte in the system has a single, audited provenance.
 pub fn random_bytes(dest: &mut [u8]) -> Result<(), Error> {
-    origin_crypto_sdk::fill_random(dest)
-        .map_err(|e| Error::CryptoError(format!("RNG failure: {e}")))
+    origin_common::random_bytes(dest).map_err(Error::CryptoError)
 }
 
-/// Generate an N-byte random array via the SDK CSPRNG.
+/// Generate an N-byte random array via the shared SDK CSPRNG adapter.
 pub fn random_array<const N: usize>() -> Result<[u8; N], Error> {
-    let mut buf = [0u8; N];
-    random_bytes(&mut buf)?;
-    Ok(buf)
+    origin_common::random_array().map_err(Error::CryptoError)
 }
 
 /// Encrypted vault data

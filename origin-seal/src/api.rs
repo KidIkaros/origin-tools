@@ -15,11 +15,7 @@
 
 use origin_common::{tier_from_byte, tier_to_byte, MemoryTier};
 use origin_crypto_sdk::{
-    aead::XChaCha20Poly1305,
-    blake3,
-    compression,
-    hmac_sha3_256,
-    sha3_256, sha3_512,
+    aead::XChaCha20Poly1305, blake3, compression, hmac_sha3_256, sha3_256, sha3_512,
     signing::hybrid::HybridSigningKeyBundle,
 };
 
@@ -50,9 +46,8 @@ pub fn hash(kind: HashKind, data: &[u8], key: Option<&[u8]>) -> Result<Vec<u8>> 
         HashKind::Sha3_512 => Ok(sha3_512(data).to_vec()),
         HashKind::Blake3 => Ok(blake3::hash(data).as_bytes().to_vec()),
         HashKind::HmacSha3_256 => {
-            let key = key.ok_or_else(|| {
-                SealError::Validation("HMAC-SHA3-256 requires a key".into())
-            })?;
+            let key =
+                key.ok_or_else(|| SealError::Validation("HMAC-SHA3-256 requires a key".into()))?;
             hmac_sha3_256(key, data)
                 .map_err(|e| SealError::Crypto(format!("HMAC failed: {e:?}")))
                 .map(|m| m.to_vec())
@@ -66,12 +61,7 @@ pub fn hash(kind: HashKind, data: &[u8], key: Option<&[u8]>) -> Result<Vec<u8>> 
 
 /// Derive a key of `len` bytes from a passphrase + salt using Argon2id at the
 /// given tier. Deterministic: same (passphrase, salt, tier, len) → same key.
-pub fn kdf(
-    passphrase: &[u8],
-    salt: &[u8; 16],
-    tier: MemoryTier,
-    len: usize,
-) -> Result<Vec<u8>> {
+pub fn kdf(passphrase: &[u8], salt: &[u8; 16], tier: MemoryTier, len: usize) -> Result<Vec<u8>> {
     let params = tier.argon2_params(len);
     origin_crypto_sdk::kdf::Argon2idBuilder::new()
         .memory_kib(params.m_cost())
@@ -147,11 +137,13 @@ pub fn encrypt(
     compress: bool,
 ) -> Result<Vec<u8>> {
     let mut salt = [0u8; 16];
-    origin_crypto_sdk::fill_random(&mut salt).map_err(|e| SealError::Crypto(format!("salt generation failed: {e}")))?;
+    origin_crypto_sdk::fill_random(&mut salt)
+        .map_err(|e| SealError::Crypto(format!("salt generation failed: {e}")))?;
 
     let key = derive_key(passphrase, &salt, tier)?;
     let mut nonce = [0u8; 24];
-    origin_crypto_sdk::fill_random(&mut nonce).map_err(|e| SealError::Crypto(format!("nonce generation failed: {e}")))?;
+    origin_crypto_sdk::fill_random(&mut nonce)
+        .map_err(|e| SealError::Crypto(format!("nonce generation failed: {e}")))?;
 
     let (payload, compressed) = if compress {
         let c = compression::compress(plaintext)
@@ -187,10 +179,12 @@ pub fn decrypt(envelope: &[u8], passphrase: &[u8]) -> Result<Vec<u8>> {
         ));
     }
     let key = derive_key(passphrase, &header.salt, header.tier)?;
-    let pt = XChaCha20Poly1305::decrypt(&key, &header.nonce, payload)
-        .map_err(|_| SealError::Verification("decryption failed (wrong passphrase or corrupt data)".into()))?;
+    let pt = XChaCha20Poly1305::decrypt(&key, &header.nonce, payload).map_err(|_| {
+        SealError::Verification("decryption failed (wrong passphrase or corrupt data)".into())
+    })?;
     if header.flags & FLAG_COMPRESSED != 0 {
-        compression::decompress(&pt).map_err(|e| SealError::Crypto(format!("decompression failed: {e}")))
+        compression::decompress(&pt)
+            .map_err(|e| SealError::Crypto(format!("decompression failed: {e}")))
     } else {
         Ok(pt)
     }
@@ -335,29 +329,23 @@ pub fn sign(seed: &[u8; 32], domain: &str, data: &[u8]) -> Result<HybridSignatur
 
 /// Verify a hybrid signature. Returns `Ok(())` when both components verify,
 /// or a `SealError::Verification` naming the failing component.
-pub fn verify(
-    seed: &[u8; 32],
-    domain: &str,
-    data: &[u8],
-    sig: &HybridSignature,
-) -> Result<()> {
+pub fn verify(seed: &[u8; 32], domain: &str, data: &[u8], sig: &HybridSignature) -> Result<()> {
     let bundle = HybridSigningKeyBundle::from_seed(seed, domain)
         .map_err(|e| SealError::KeyDerivation(format!("bundle derivation failed: {e:?}")))?;
     // Verify each component with the SDK's raw-byte APIs — no direct dalek
     // dependency (same pattern as the CLI's cmd_verify).
-    let ed_ok =
-        origin_crypto_sdk::signing::classical::Ed25519Signer::verify_with_pubkey(
-            &bundle.ed25519_pk().to_bytes(),
-            data,
-            &sig.ed25519,
-        );
-    let falcon_ok = match
-        origin_crypto_sdk::pqc::falcon1024::FalconSignature::from_bytes(&sig.falcon1024)
-    {
-        Ok(f) => origin_crypto_sdk::pqc::falcon1024::verify(data, &f, bundle.falcon1024_pk())
-            .is_ok(),
-        Err(_) => false,
-    };
+    let ed_ok = origin_crypto_sdk::signing::classical::Ed25519Signer::verify_with_pubkey(
+        &bundle.ed25519_pk().to_bytes(),
+        data,
+        &sig.ed25519,
+    );
+    let falcon_ok =
+        match origin_crypto_sdk::pqc::falcon1024::FalconSignature::from_bytes(&sig.falcon1024) {
+            Ok(f) => {
+                origin_crypto_sdk::pqc::falcon1024::verify(data, &f, bundle.falcon1024_pk()).is_ok()
+            }
+            Err(_) => false,
+        };
     if ed_ok && falcon_ok {
         Ok(())
     } else {
@@ -553,4 +541,3 @@ mod tests {
         assert_eq!(pt, plaintext);
     }
 }
-

@@ -83,11 +83,9 @@ impl License {
         let ed = hex::decode(&self.issuer_keys.ed25519_pk).map_err(|e| {
             ProvenanceError::InvalidLicense(format!("bad issuer ed25519_pk hex: {e}"))
         })?;
-        let ed: [u8; 32] = ed
-            .try_into()
-            .map_err(|_| {
-                ProvenanceError::InvalidLicense("issuer ed25519_pk must be 32 bytes".into())
-            })?;
+        let ed: [u8; 32] = ed.try_into().map_err(|_| {
+            ProvenanceError::InvalidLicense("issuer ed25519_pk must be 32 bytes".into())
+        })?;
         let falcon = hex::decode(&self.issuer_keys.falcon_pk).map_err(|e| {
             ProvenanceError::InvalidLicense(format!("bad issuer falcon_pk hex: {e}"))
         })?;
@@ -150,10 +148,9 @@ impl License {
             ));
         }
         let sig = SignerKeys::hybrid_sig_from_base64(&self.sig)?;
-        sig.verify(&keys.0, &keys.1, &self.payload())
-            .map_err(|e| {
-                ProvenanceError::InvalidLicense(format!("license signature invalid: {e}"))
-            })?;
+        sig.verify(&keys.0, &keys.1, &self.payload()).map_err(|e| {
+            ProvenanceError::InvalidLicense(format!("license signature invalid: {e}"))
+        })?;
         Ok(())
     }
 
@@ -259,14 +256,16 @@ mod tests {
             expires_at: Some(1_800_000_000),
             issuer_keys: issuer.public_keys(),
             sig: {
-                let sig = issuer.sign(&license_payload_input(
-                    LICENSE_VERSION,
-                    "lic-123",
-                    1,
-                    "user@example.com",
-                    1_700_000_000,
-                    Some(1_800_000_000),
-                )).expect("sign");
+                let sig = issuer
+                    .sign(&license_payload_input(
+                        LICENSE_VERSION,
+                        "lic-123",
+                        1,
+                        "user@example.com",
+                        1_700_000_000,
+                        Some(1_800_000_000),
+                    ))
+                    .expect("sign");
                 SignerKeys::hybrid_sig_to_base64(&sig).expect("b64")
             },
         }
@@ -276,7 +275,8 @@ mod tests {
     fn issue_verify_roundtrip() {
         let iss = issuer();
         let lic = sample(&iss);
-        lic.verify(&iss.fingerprint_raw()).expect("valid license verifies");
+        lic.verify(&iss.fingerprint_raw())
+            .expect("valid license verifies");
     }
 
     #[test]
@@ -328,7 +328,8 @@ mod tests {
         let text = write(&lic).expect("write");
         let back = parse(&text).expect("parse");
         assert_eq!(lic, back);
-        back.verify(&iss.fingerprint_raw()).expect("roundtrip verifies");
+        back.verify(&iss.fingerprint_raw())
+            .expect("roundtrip verifies");
     }
 
     #[test]

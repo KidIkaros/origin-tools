@@ -105,10 +105,12 @@ pub fn write_session_token(
     random_bytes(&mut token_id_bytes).map_err(|e| format!("token id generation failed: {e}"))?;
     let mut token_key = [0u8; TOKEN_KEY_LEN];
     random_bytes(&mut token_key).map_err(|e| format!("token key generation failed: {e}"))?;
-    let nonce = ChaCha20Blake3::generate_nonce();
+    let nonce = ChaCha20Blake3::try_generate_nonce()
+        .map_err(|e| format!("nonce generation failed: {e}"))?;
 
-    let sealed = ChaCha20Blake3::encrypt(&token_key, &nonce, master_key.as_ref(), SESSION_TOKEN_AAD)
-        .map_err(|e| format!("session token seal failed: {e:?}"))?;
+    let sealed =
+        ChaCha20Blake3::encrypt(&token_key, &nonce, master_key.as_ref(), SESSION_TOKEN_AAD)
+            .map_err(|e| format!("session token seal failed: {e:?}"))?;
 
     let token = SessionToken {
         version: SESSION_TOKEN_VERSION,
@@ -169,7 +171,8 @@ fn unseal_master_key(token: &SessionToken) -> Result<Zeroizing<[u8; 32]>, String
 
     let mut plain = ChaCha20Blake3::decrypt(&token_key, &nonce, &sealed, SESSION_TOKEN_AAD)
         .map_err(|_| {
-            "session token unseal failed — file tampered or truncated; re-run `origin-pass unlock`".to_string()
+            "session token unseal failed — file tampered or truncated; re-run `origin-pass unlock`"
+                .to_string()
         })?;
     if plain.len() != 32 {
         return Err(format!(
@@ -275,8 +278,9 @@ pub fn revoke_session_token(path: &Path) -> Result<(), String> {
 
 /// The managed token store directory: `~/.origin/tokens`.
 pub fn token_store_dir() -> Result<PathBuf, String> {
-    let home = std::env::var("HOME")
-        .map_err(|_| "$HOME is unset; cannot resolve ~/.origin/tokens. Pass an explicit path.".to_string())?;
+    let home = std::env::var("HOME").map_err(|_| {
+        "$HOME is unset; cannot resolve ~/.origin/tokens. Pass an explicit path.".to_string()
+    })?;
     Ok(PathBuf::from(home).join(".origin").join("tokens"))
 }
 
@@ -581,7 +585,8 @@ mod tests {
     fn zero_ttl_rejected() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("session.token");
-        let err = write_session_token(&path, &test_key(), 0, None, None).expect_err("must reject 0 ttl");
+        let err =
+            write_session_token(&path, &test_key(), 0, None, None).expect_err("must reject 0 ttl");
         assert!(err.contains("ttl"));
     }
 
@@ -630,17 +635,27 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let key = test_key();
         // Two valid tokens, one expired, one corrupt, one foreign file.
-        write_session_token(&dir.path().join("a.token"), &key, 3600, Some(Path::new("/v/a.vault")), None)
-            .unwrap();
+        write_session_token(
+            &dir.path().join("a.token"),
+            &key,
+            3600,
+            Some(Path::new("/v/a.vault")),
+            None,
+        )
+        .unwrap();
         write_session_token(&dir.path().join("b.token"), &key, 3600, None, None).unwrap();
         write_session_token(&dir.path().join("c.token"), &key, 1, None, None).unwrap();
         // Expire c by rewriting its expiry into the past.
         {
             let mut t: SessionToken =
-                serde_json::from_slice(&std::fs::read(dir.path().join("c.token")).unwrap()).unwrap();
+                serde_json::from_slice(&std::fs::read(dir.path().join("c.token")).unwrap())
+                    .unwrap();
             t.expires_at = unix_now() - 10;
-            origin_common::io::atomic_write(&dir.path().join("c.token"), &serde_json::to_vec(&t).unwrap())
-                .unwrap();
+            origin_common::io::atomic_write(
+                &dir.path().join("c.token"),
+                &serde_json::to_vec(&t).unwrap(),
+            )
+            .unwrap();
         }
         std::fs::write(dir.path().join("z.token"), b"not json").unwrap();
         std::fs::write(dir.path().join("ignore.txt"), b"x").unwrap();
@@ -656,7 +671,10 @@ mod tests {
         assert_eq!(a.vault.as_deref(), Some("/v/a.vault"));
         assert!(!a.unreadable);
         let z = listed.iter().find(|t| t.name == "z.token").unwrap();
-        assert!(z.unreadable, "corrupt file must be surfaced, not crash the listing");
+        assert!(
+            z.unreadable,
+            "corrupt file must be surfaced, not crash the listing"
+        );
 
         // expired-only revocation clears expired + corrupt, keeps valid.
         assert_eq!(revoke_all_tokens(dir.path(), true).unwrap(), 2);
@@ -670,7 +688,10 @@ mod tests {
         // full revocation clears everything; the foreign file survives.
         assert_eq!(revoke_all_tokens(dir.path(), false).unwrap(), 2);
         assert!(list_tokens(dir.path()).unwrap().is_empty());
-        assert!(dir.path().join("ignore.txt").exists(), "foreign files must survive revoke-all");
+        assert!(
+            dir.path().join("ignore.txt").exists(),
+            "foreign files must survive revoke-all"
+        );
     }
 
     #[test]
@@ -682,8 +703,8 @@ mod tests {
             threshold: 900,
             ttl: 3600,
         };
-        let original = write_session_token(&path, &key, 30, Some(Path::new("/v/a.vault")), Some(cfg))
-            .unwrap();
+        let original =
+            write_session_token(&path, &key, 30, Some(Path::new("/v/a.vault")), Some(cfg)).unwrap();
 
         let renewed = renew_session_token(&path, Some(3600)).unwrap();
         let remaining = renewed.expires_at - unix_now();
@@ -692,11 +713,23 @@ mod tests {
             "expiry must extend by the new ttl, got remaining {remaining}s"
         );
         // Unchanged-key rotation: id, key, nonce, seal, and vault all stay.
-        assert_eq!(renewed.token_id, original.token_id, "renew must keep the token id");
-        assert_eq!(renewed.token_key, original.token_key, "renew must keep the bearer key");
+        assert_eq!(
+            renewed.token_id, original.token_id,
+            "renew must keep the token id"
+        );
+        assert_eq!(
+            renewed.token_key, original.token_key,
+            "renew must keep the bearer key"
+        );
         assert_eq!(renewed.nonce, original.nonce, "renew must keep the nonce");
-        assert_eq!(renewed.sealed_master_key, original.sealed_master_key, "renew must keep the seal");
-        assert_eq!(renewed.vault, original.vault, "renew must keep the vault binding");
+        assert_eq!(
+            renewed.sealed_master_key, original.sealed_master_key,
+            "renew must keep the seal"
+        );
+        assert_eq!(
+            renewed.vault, original.vault,
+            "renew must keep the vault binding"
+        );
         assert!(renewed.auto_rotate.is_some(), "renew must keep the policy");
         // Still unseals to the same master key.
         assert_eq!(read_session_token(&path).unwrap().as_ref(), key.as_ref());
@@ -723,7 +756,8 @@ mod tests {
             t.expires_at = unix_now() - 10;
             origin_common::io::atomic_write(&path, &serde_json::to_vec(&t).unwrap()).unwrap();
         }
-        let err = renew_session_token(&path, Some(3600)).expect_err("expired token must be refused");
+        let err =
+            renew_session_token(&path, Some(3600)).expect_err("expired token must be refused");
         assert!(err.contains("expired"), "error: {err}");
     }
 
@@ -739,10 +773,20 @@ mod tests {
         let original = write_session_token(&path, &key, 30, None, Some(cfg)).unwrap();
 
         // Remaining lifetime (≈30s) is below the 900s threshold → rotate.
-        assert!(maybe_auto_rotate(&path).unwrap(), "must rotate below threshold");
+        assert!(
+            maybe_auto_rotate(&path).unwrap(),
+            "must rotate below threshold"
+        );
         let rotated = parse_token_file(&path).unwrap();
-        assert_ne!(rotated.token_id, original.token_id, "rotation must mint a new id");
-        assert_eq!(rotated.expires_at - rotated.created_at, 3600, "must adopt the policy ttl");
+        assert_ne!(
+            rotated.token_id, original.token_id,
+            "rotation must mint a new id"
+        );
+        assert_eq!(
+            rotated.expires_at - rotated.created_at,
+            3600,
+            "must adopt the policy ttl"
+        );
         assert!(
             rotated.auto_rotate.is_some(),
             "auto-rotate policy must survive rotation"
@@ -777,4 +821,3 @@ mod tests {
         assert!(!maybe_auto_rotate(&dir.path().join("missing.token")).unwrap());
     }
 }
-

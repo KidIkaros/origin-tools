@@ -1,13 +1,13 @@
 # Origin Crypto SDK Follow-up Ledger
 
-This ledger records SDK concerns discovered while making `origin-tools` depend on the sibling `origin-crypto-sdk` `0.6.7` revision. The SDK remains the sole cryptographic implementation; origin-tools must not duplicate a primitive to work around an item in this ledger.
+This ledger records SDK concerns discovered while making `origin-tools` depend on the sibling `origin-crypto-sdk` — review target now `0.7.1-rc.10` (initial review was `0.6.7`). The SDK remains the sole cryptographic implementation; origin-tools must not duplicate a primitive to work around an item in this ledger.
 
 The SDK is experimental and has not received an independent security audit. The entries below are engineering follow-ups, not claims that the SDK is unsafe. Each item requires validation in the SDK repository before being promoted to a defect.
 
 ## Review status
 
-- Reviewed SDK target: `0.6.7`
-- Reviewed revision: `a692cbdcf92799ef9375d6a9e906416103d3aa99`
+- Reviewed SDK target: `0.7.1-rc.10`
+- Reviewed revision: `e13962e` (rc.10 — k256 migration, NIST KAT fixes, design-audit remediation); initial review at `a692cbdcf92799ef9375d6a9e906416103d3aa99` (0.6.7)
 - Origin-tools policy: use SDK APIs and report missing or unsafe ergonomics upstream
 - Confirmed critical vulnerabilities: none identified during the initial origin-tools dependency review
 
@@ -104,6 +104,36 @@ The SDK is experimental and has not received an independent security audit. The 
   - **Removed direct `getrandom` dependency** from 3 crates: origin-channel, origin-attest, origin-identity
   - **Removed direct `rand` dependency** from 2 crates: origin-pass, origin-seal
   - All 344 downstream tests pass after migration.
+
+### SDK-008 — Incremental `Sha3_256` update diverges from one-shot digest
+
+- **Status:** Needs SDK review
+- **Impact:** The SDK's internal incremental SHA-3 hasher does not reproduce the one-shot `sha3_256` digest across `update` boundaries, so downstream streaming users cannot reach the SDK for incremental hashing and must keep an external `sha3` crate dependency — a second crypto provider in the tree.
+- **Evidence:** `origin-vcs/src/stream.rs:92-96` documents that the SDK `internal::sha3` incremental `update` is byte-order correct but does not reproduce one-shot digests; `origin-vcs` therefore uses `sha3::Sha3_256` (external crate) for streaming digests. One-shot digests elsewhere in `origin-vcs` already use `origin_crypto_sdk::sha3_256`.
+- **Recommendation:** Fix or remove the SDK incremental SHA-3 hasher, and expose a public incremental hasher whose `update`/`finalize` is proven equivalent to the one-shot digest via property tests over varied chunk splits.
+- **Required validation:** Property test: for all chunkings of a message, incremental hashing equals `sha3_256(message)`.
+- **Workaround:** `origin-vcs` keeps `sha3` (external crate) for the streaming path only. Deliberate and scoped; do not extend it to other uses.
+
+### SDK-009 — No public SHA-256/RIPEMD-160 for legacy address formats
+
+- **Status:** Needs SDK review
+- **Impact:** `origin-wallet` derives Bitcoin-style addresses requiring `SHA-256` + `RIPEMD-160` (Base58Check/legacy pubkey-hash pipeline). The SDK deliberately exposes SHA-3/BLAKE3 but no SHA-256 or RIPEMD-160, forcing direct `sha2` + `ripemd` dependencies — additional crypto providers outside the single-provider policy.
+- **Evidence:** `origin-wallet/src/address.rs` uses `sha2::Sha256` and `ripemd::Ripemd160` for `Address::from_ed25519` / Base58Check.
+- **Recommendation:** Either expose SHA-256/RIPEMD-160 as "legacy format" primitives in the SDK (clearly marked non-preferred), or bless the external crates as the protocol-required exception and document that in the SDK README's downstream guidance.
+- **Required validation:** Known-answer tests against standard Base58Check vectors.
+
+### SDK-010 — Downstream migration to `0.7.1-rc.10`
+
+- **Status:** Addressed in origin-tools working tree (unreleased)
+- **Impact:** rc.10 changed `ec_schnorr::prove` from `prove(secret, public_key, message)` to `prove(secret, message)` — the SDK now derives the public key internally so a caller-supplied mismatched key can no longer produce unverifiable proofs. rc.10 also exposes a public `x25519` module (`X25519KeyPair`/`X25519PublicKey`/`X25519SharedSecret`) that rejects all-zero secrets, replacing downstream's direct `x25519-dalek` usage which silently accepted them.
+- **Resolution:**
+  - **Workspace pin:** `origin-crypto-sdk` bumped `=0.7.1-rc.9` → `=0.7.1-rc.10`; `origin-canary` switched from a stale `0.7.1-rc.5` pin to the workspace dependency. `cargo tree` shows a single SDK version (rc.10).
+  - **`ec_schnorr::prove` arity:** all call sites migrated to the 2-argument form — `origin-schnorr` api/commands/cli/example and `origin-cross-tests`.
+  - **X25519 migration in `origin-network`:** `x25519_dalek::StaticSecret`/`PublicKey` replaced by `origin_crypto_sdk::x25519::X25519KeyPair` in `identity.rs` (transport secret derivation + public key), `session.rs` (endpoint static secret), `relay_server.rs` (relay static), `client.rs`. Wire bytes unchanged (same clamping → same public keys); derived secrets are now validated at construction. `x25519-dalek` dependency dropped.
+  - **Ed25519 dedup:** all `ed25519_dalek::` references replaced with SDK re-exports (`Ed25519SigningKey`/`Ed25519VerifyingKey`/`Ed25519Signature` at crate root; `Signer`/`Verifier` via `signing::hybrid`) in `origin-wallet`, `origin-identity`, `origin-secrets`, `origin-vcs`, `origin-network`, `origin-canary`. Direct `ed25519-dalek` deps removed.
+  - **Fallible RNG:** remaining panicking RNG variants migrated to the rc.10 fallible APIs — `seed::gen::try_generate` (`origin-wallet`), `aead::try_generate_key`/`try_generate_nonce` (`origin-wallet`), `ChaCha20Blake3::try_generate_nonce` (`origin-pass`). Completes the SDK-004/SDK-006 direction.
+  - **Random-helper dedup:** `origin-secrets::crypto::random_bytes`/`random_array` now delegate to the single `origin_common::random` adapter instead of a second `fill_random` boundary.
+  - **Dead deps dropped:** `origin-schnorr` from `origin-payments`/`origin-wallet` (never imported), `subtle` from `origin-channel`, `ed25519-dalek` declared-but-unused in `origin-channel`/`origin-canary`.
 
 ## Process
 

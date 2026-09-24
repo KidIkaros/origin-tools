@@ -22,7 +22,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("✓ keypair (deterministic from seed, 33-byte compressed public key)");
 
     // ── prove → verify round-trip ─────────────────────────────────────
-    let proof = prove(&secret, &public, message)?;
+    let proof = prove(&secret, message)?;
     assert!(verify(&proof, &public, message)?, "proof must verify");
     println!("✓ prove → verify round-trip");
 
@@ -47,8 +47,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             r
         },
     };
-    assert!(!verify(&tampered, &public, message)?, "tampered proof must not verify");
-    assert!(!verify(&proof, &public, b"a different message")?, "wrong message must not verify");
+    assert!(
+        !verify(&tampered, &public, message)?,
+        "tampered proof must not verify"
+    );
+    assert!(
+        !verify(&proof, &public, b"a different message")?,
+        "wrong message must not verify"
+    );
     let (_, pk2) = keypair(&[0x07u8; 32]);
     assert!(!verify(&proof, &pk2, message)?, "wrong key must not verify");
     println!("✓ tampered proof / wrong message / wrong key all rejected (Ok(false))");
@@ -60,7 +66,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     for i in 0..3u8 {
         let (sk, pk) = keypair(&[i; 32]);
         let msg = format!("batch message {i}").into_bytes();
-        proofs.push(prove(&sk, &pk, &msg)?);
+        proofs.push(prove(&sk, &msg)?);
         keys.push(pk);
         msgs.push(msg);
     }

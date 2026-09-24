@@ -23,13 +23,13 @@ pub fn keypair(seed: &[u8; 32]) -> ([u8; 32], Vec<u8>) {
     ec_schnorr::generate_keypair(seed)
 }
 
-/// Generate a zero-knowledge proof that `secret` matches `public_key`
-/// for `message`.
-pub fn prove(secret: &[u8; 32], public_key: &[u8], message: &[u8]) -> Result<EcSchnorrProof> {
-    if public_key.is_empty() {
-        return Err(SchnorrError::Validation("public_key is empty".into()));
-    }
-    ec_schnorr::prove(secret, public_key, message).map_err(|e| SchnorrError::Proof(e.to_string()))
+/// Generate a zero-knowledge proof of knowledge of `secret` for `message`.
+///
+/// The public key is derived inside the SDK (`P = secret·G`) — a
+/// caller-supplied key could be mismatched, producing a proof that can
+/// never verify.
+pub fn prove(secret: &[u8; 32], message: &[u8]) -> Result<EcSchnorrProof> {
+    ec_schnorr::prove(secret, message).map_err(|e| SchnorrError::Proof(e.to_string()))
 }
 
 /// Verify a proof. `Ok(false)` means the proof is invalid (not an error).
@@ -79,7 +79,10 @@ pub fn proof_from_json(content: &str) -> Result<EcSchnorrProof> {
             .ok_or_else(|| SchnorrError::Validation("missing proof.response".into()))?,
     )
     .map_err(|e| SchnorrError::Validation(format!("invalid response hex: {e}")))?;
-    Ok(EcSchnorrProof { commitment, response })
+    Ok(EcSchnorrProof {
+        commitment,
+        response,
+    })
 }
 
 #[cfg(test)]
@@ -93,14 +96,14 @@ mod tests {
     #[test]
     fn prove_verify_roundtrip() {
         let (sk, pk) = keypair(42);
-        let proof = prove(&sk, &pk, b"hello").unwrap();
+        let proof = prove(&sk, b"hello").unwrap();
         assert!(verify(&proof, &pk, b"hello").unwrap());
     }
 
     #[test]
     fn tampered_message_fails() {
         let (sk, pk) = keypair(42);
-        let proof = prove(&sk, &pk, b"original").unwrap();
+        let proof = prove(&sk, b"original").unwrap();
         assert!(!verify(&proof, &pk, b"tampered").unwrap());
     }
 
@@ -108,20 +111,14 @@ mod tests {
     fn wrong_key_fails() {
         let (sk, _) = keypair(1);
         let (_, pk2) = keypair(2);
-        let proof = prove(&sk, &pk2, b"msg").unwrap();
+        let proof = prove(&sk, b"msg").unwrap();
         assert!(!verify(&proof, &pk2, b"msg").unwrap());
     }
 
     #[test]
-    fn empty_public_key_rejected() {
-        let (sk, _) = keypair(42);
-        assert!(prove(&sk, &[], b"msg").is_err());
-    }
-
-    #[test]
     fn batch_length_mismatch_rejected() {
-        let (sk, pk) = keypair(42);
-        let proof = prove(&sk, &pk, b"msg").unwrap();
+        let (sk, _pk) = keypair(42);
+        let proof = prove(&sk, b"msg").unwrap();
         let err = batch_verify(&[proof], &[], &[]).unwrap_err();
         assert!(err.to_string().contains("length mismatch"));
     }
@@ -129,7 +126,7 @@ mod tests {
     #[test]
     fn batch_roundtrip() {
         let (sk, pk) = keypair(42);
-        let proofs = vec![prove(&sk, &pk, b"a").unwrap(), prove(&sk, &pk, b"b").unwrap()];
+        let proofs = vec![prove(&sk, b"a").unwrap(), prove(&sk, b"b").unwrap()];
         let keys = vec![pk.clone(), pk.clone()];
         let msgs = vec![b"a".to_vec(), b"b".to_vec()];
         assert!(batch_verify(&proofs, &keys, &msgs).unwrap());
@@ -137,8 +134,8 @@ mod tests {
 
     #[test]
     fn json_roundtrip() {
-        let (sk, pk) = keypair(42);
-        let proof = prove(&sk, &pk, b"json").unwrap();
+        let (sk, _pk) = keypair(42);
+        let proof = prove(&sk, b"json").unwrap();
         let json = serde_json::json!({
             "commitment": hex::encode(&proof.commitment),
             "response": hex::encode(&proof.response),

@@ -54,6 +54,8 @@ fn cmd_keygen(args: KeygenArgs) -> Result<(), String> {
 fn cmd_prove(args: ProveArgs) -> Result<(), String> {
     let message = read_input(args.input.as_deref())?;
 
+    // The SDK derives the public key inside `prove` — only the identity
+    // path knows it ahead of time (via `generate_keypair`) for echoing.
     let (secret, public) = if args.identity {
         let home = origin_common::OriginHome::load()?;
         let passphrase = resolve_passphrase(args.passphrase_file.as_deref())?;
@@ -61,7 +63,8 @@ fn cmd_prove(args: ProveArgs) -> Result<(), String> {
         let derived = store.derive_key("origin-schnorr-ed25519", 32)?;
         let mut sk = [0u8; 32];
         sk.copy_from_slice(&derived);
-        ec_schnorr::generate_keypair(&sk)
+        let (secret, public) = ec_schnorr::generate_keypair(&sk);
+        (secret, Some(public))
     } else {
         let secret_hex = args
             .secret
@@ -74,26 +77,19 @@ fn cmd_prove(args: ProveArgs) -> Result<(), String> {
         }
         let mut secret = [0u8; 32];
         secret.copy_from_slice(&secret_bytes);
-        let public_hex = args
-            .public
-            .as_ref()
-            .ok_or("--public required with --secret")?;
-        let public = hex::decode(public_hex.trim()).map_err(|e| format!("invalid public: {e}"))?;
-        (secret, public)
+        (secret, None)
     };
 
-    let proof = crate::api::prove(&secret, &public, &message)
-        .map_err(|e| e.to_string())?;
+    let proof = crate::api::prove(&secret, &message).map_err(|e| e.to_string())?;
 
-    println!(
-        "{}",
-        serde_json::to_string_pretty(&serde_json::json!({
-            "commitment": hex::encode(&proof.commitment),
-            "response": hex::encode(&proof.response),
-            "public_key": hex::encode(&public),
-        }))
-        .unwrap()
-    );
+    let mut out = serde_json::json!({
+        "commitment": hex::encode(&proof.commitment),
+        "response": hex::encode(&proof.response),
+    });
+    if let Some(public) = public {
+        out["public_key"] = serde_json::Value::String(hex::encode(&public));
+    }
+    println!("{}", serde_json::to_string_pretty(&out).unwrap());
     Ok(())
 }
 
@@ -237,29 +233,29 @@ mod tests {
     fn prove_verify_roundtrip() {
         let (sk, pk) = keypair(42);
         let msg = b"hello world";
-        let proof = ec_schnorr::prove(&sk, &pk, msg).unwrap();
+        let proof = ec_schnorr::prove(&sk, msg).unwrap();
         assert!(ec_schnorr::verify(&proof, &pk, msg).unwrap());
     }
 
     #[test]
     fn verify_wrong_message_fails() {
         let (sk, pk) = keypair(42);
-        let proof = ec_schnorr::prove(&sk, &pk, b"original").unwrap();
+        let proof = ec_schnorr::prove(&sk, b"original").unwrap();
         assert!(!ec_schnorr::verify(&proof, &pk, b"tampered").unwrap());
     }
 
     #[test]
     fn verify_wrong_key_fails() {
-        let (sk1, pk1) = keypair(1);
+        let (sk1, _pk1) = keypair(1);
         let (_, pk2) = keypair(2);
-        let proof = ec_schnorr::prove(&sk1, &pk1, b"msg").unwrap();
+        let proof = ec_schnorr::prove(&sk1, b"msg").unwrap();
         assert!(!ec_schnorr::verify(&proof, &pk2, b"msg").unwrap());
     }
 
     #[test]
     fn verify_empty_message() {
         let (sk, pk) = keypair(42);
-        let proof = ec_schnorr::prove(&sk, &pk, b"").unwrap();
+        let proof = ec_schnorr::prove(&sk, b"").unwrap();
         assert!(ec_schnorr::verify(&proof, &pk, b"").unwrap());
     }
 
@@ -267,7 +263,7 @@ mod tests {
     fn verify_large_message() {
         let (sk, pk) = keypair(42);
         let msg = vec![0xCDu8; 100_000];
-        let proof = ec_schnorr::prove(&sk, &pk, &msg).unwrap();
+        let proof = ec_schnorr::prove(&sk, &msg).unwrap();
         assert!(ec_schnorr::verify(&proof, &pk, &msg).unwrap());
     }
 
@@ -275,23 +271,23 @@ mod tests {
 
     #[test]
     fn proof_commitment_is_33_bytes() {
-        let (sk, pk) = keypair(42);
-        let proof = ec_schnorr::prove(&sk, &pk, b"test").unwrap();
+        let (sk, _pk) = keypair(42);
+        let proof = ec_schnorr::prove(&sk, b"test").unwrap();
         assert_eq!(proof.commitment.len(), 33);
     }
 
     #[test]
     fn proof_response_is_32_bytes() {
-        let (sk, pk) = keypair(42);
-        let proof = ec_schnorr::prove(&sk, &pk, b"test").unwrap();
+        let (sk, _pk) = keypair(42);
+        let proof = ec_schnorr::prove(&sk, b"test").unwrap();
         assert_eq!(proof.response.len(), 32);
     }
 
     #[test]
     fn proofs_are_randomized() {
         let (sk, pk) = keypair(42);
-        let p1 = ec_schnorr::prove(&sk, &pk, b"same").unwrap();
-        let p2 = ec_schnorr::prove(&sk, &pk, b"same").unwrap();
+        let p1 = ec_schnorr::prove(&sk, b"same").unwrap();
+        let p2 = ec_schnorr::prove(&sk, b"same").unwrap();
         // Random nonce means different commitments
         assert_ne!(p1.commitment, p2.commitment);
         // But both verify
@@ -304,7 +300,7 @@ mod tests {
     #[test]
     fn tampered_commitment_fails() {
         let (sk, pk) = keypair(42);
-        let mut proof = ec_schnorr::prove(&sk, &pk, b"msg").unwrap();
+        let mut proof = ec_schnorr::prove(&sk, b"msg").unwrap();
         proof.commitment[0] ^= 0xFF;
         // Should either fail verification or return an error
         let result = ec_schnorr::verify(&proof, &pk, b"msg");
@@ -316,7 +312,7 @@ mod tests {
     #[test]
     fn tampered_response_fails() {
         let (sk, pk) = keypair(42);
-        let mut proof = ec_schnorr::prove(&sk, &pk, b"msg").unwrap();
+        let mut proof = ec_schnorr::prove(&sk, b"msg").unwrap();
         proof.response[15] ^= 0x01;
         let result = ec_schnorr::verify(&proof, &pk, b"msg");
         if let Ok(valid) = result {
@@ -327,7 +323,7 @@ mod tests {
     #[test]
     fn truncated_response_fails() {
         let (sk, pk) = keypair(42);
-        let mut proof = ec_schnorr::prove(&sk, &pk, b"msg").unwrap();
+        let mut proof = ec_schnorr::prove(&sk, b"msg").unwrap();
         proof.response.truncate(16);
         assert!(ec_schnorr::verify(&proof, &pk, b"msg").is_err());
     }
@@ -352,7 +348,7 @@ mod tests {
         for i in 0..5u8 {
             let (sk, pk) = keypair(i);
             let msg = format!("batch message {i}").into_bytes();
-            proofs.push(ec_schnorr::prove(&sk, &pk, &msg).unwrap());
+            proofs.push(ec_schnorr::prove(&sk, &msg).unwrap());
             pks.push(pk);
             msgs.push(msg);
         }
@@ -367,7 +363,7 @@ mod tests {
         for i in 0..3u8 {
             let (sk, pk) = keypair(i);
             let msg = format!("msg {i}").into_bytes();
-            proofs.push(ec_schnorr::prove(&sk, &pk, &msg).unwrap());
+            proofs.push(ec_schnorr::prove(&sk, &msg).unwrap());
             pks.push(pk);
             msgs.push(msg);
         }
@@ -378,14 +374,14 @@ mod tests {
 
     #[test]
     fn batch_verify_empty() {
-        assert!(ec_schnorr::batch_verify(&[], &[], &[]).unwrap());
+        assert!(ec_schnorr::batch_verify(&[], &[] as &[Vec<u8>], &[] as &[Vec<u8>]).unwrap());
     }
 
     #[test]
     fn batch_verify_mismatched_lengths() {
         let (sk, pk) = keypair(1);
-        let proof = ec_schnorr::prove(&sk, &pk, b"msg").unwrap();
-        let result = ec_schnorr::batch_verify(&[proof], &[pk], &[]);
+        let proof = ec_schnorr::prove(&sk, b"msg").unwrap();
+        let result = ec_schnorr::batch_verify(&[proof], &[pk], &[] as &[Vec<u8>]);
         assert!(result.is_err());
     }
 
@@ -393,7 +389,7 @@ mod tests {
     fn batch_verify_single() {
         let (sk, pk) = keypair(99);
         let msg = b"single batch entry".to_vec();
-        let proof = ec_schnorr::prove(&sk, &pk, &msg).unwrap();
+        let proof = ec_schnorr::prove(&sk, &msg).unwrap();
         assert!(ec_schnorr::batch_verify(&[proof], &[pk], &[msg]).unwrap());
     }
 }

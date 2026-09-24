@@ -21,7 +21,6 @@ origin-seed       = { workspace = true }
 origin-shard      = { workspace = true }
 origin-proof      = { workspace = true }
 origin-stealth    = { workspace = true }
-origin-schnorr    = { workspace = true }
 origin-entropy    = { workspace = true }
 origin-pass       = { workspace = true }
 origin-attest     = { workspace = true }

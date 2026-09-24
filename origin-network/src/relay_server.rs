@@ -157,7 +157,7 @@ pub struct RelayServer {
     /// phase where spoofed sources become possible.
     ingress: tokio::sync::Mutex<crate::gate::IngressGate>,
     /// Relay's own static key for Noise IK (X25519 secret bytes).
-    relay_static: x25519_dalek::StaticSecret,
+    relay_static: origin_crypto_sdk::x25519::X25519KeyPair,
     /// Presence subscription registry (spec §8.2).
     presence: tokio::sync::Mutex<PresenceRegistry>,
     /// Outbound relay-data senders, keyed by connected client fingerprint.
@@ -327,7 +327,7 @@ impl RelayServer {
         initiator_pk.copy_from_slice(&msg1.payload[..32]);
 
         let mut hs = origin_channel::handshake::Handshake::new(
-            origin_channel::dh::DhSecret::from_bytes(self.relay_static.to_bytes()),
+            origin_channel::dh::DhSecret::from_bytes(self.relay_static.secret_key_bytes()),
             origin_channel::dh::DhPublic::from_bytes(initiator_pk),
             false,
         );
@@ -702,7 +702,7 @@ mod tests {
             &crate::identity::derive_transport_secret(&relay_seed(), 0)?,
         );
         let mut hs = origin_channel::handshake::Handshake::new(
-            origin_channel::dh::DhSecret::from_bytes(secret.to_bytes()),
+            origin_channel::dh::DhSecret::from_bytes(secret.secret_key_bytes()),
             origin_channel::dh::DhPublic::from_bytes(relay_pk),
             true,
         );
@@ -1024,7 +1024,7 @@ mod tests {
             &crate::identity::derive_transport_secret(&relay_seed(), 0).unwrap(),
         );
         let mut hs = origin_channel::handshake::Handshake::new(
-            origin_channel::dh::DhSecret::from_bytes(secret.to_bytes()),
+            origin_channel::dh::DhSecret::from_bytes(secret.secret_key_bytes()),
             origin_channel::dh::DhPublic::from_bytes(relay_pk),
             true,
         );
@@ -1124,7 +1124,7 @@ mod tests {
             &crate::identity::derive_transport_secret(&relay_seed(), 0).unwrap(),
         );
         let mut hs = origin_channel::handshake::Handshake::new(
-            origin_channel::dh::DhSecret::from_bytes(secret.to_bytes()),
+            origin_channel::dh::DhSecret::from_bytes(secret.secret_key_bytes()),
             origin_channel::dh::DhPublic::from_bytes(relay_pk),
             true,
         );
@@ -1177,7 +1177,7 @@ mod tests {
             &crate::identity::derive_transport_secret(&relay_seed(), 0).unwrap(),
         );
         let mut hs = origin_channel::handshake::Handshake::new(
-            origin_channel::dh::DhSecret::from_bytes(secret.to_bytes()),
+            origin_channel::dh::DhSecret::from_bytes(secret.secret_key_bytes()),
             origin_channel::dh::DhPublic::from_bytes(relay_pk),
             true,
         );

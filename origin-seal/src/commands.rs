@@ -78,8 +78,7 @@ pub fn cmd_hash(args: HashArgs) -> Result<(), String> {
     } else {
         None
     };
-    let digest = crate::api::hash(kind, &data, key.as_deref())
-        .map_err(|e| e.to_string())?;
+    let digest = crate::api::hash(kind, &data, key.as_deref()).map_err(|e| e.to_string())?;
 
     if args.raw {
         write_output(None, &digest)
