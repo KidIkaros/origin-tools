@@ -518,4 +518,39 @@ mod tests {
         wire.extend_from_slice(&[0u8; 5]);
         assert!(HybridSignature::from_wire(&wire).is_err());
     }
+
+    // SEAL v1 golden vector — FORMAT_REGISTRY.md priority 6. Fixed
+    // (passphrase, salt, nonce, tier) make the envelope deterministic:
+    // `derive_key` and XChaCha20-Poly1305 are pure functions of their
+    // inputs. The pinned hex is the canonical v1 encoding; the parse +
+    // decrypt half proves the fixture still round-trips.
+    #[test]
+    fn seal_envelope_golden_vector_v1() {
+        let passphrase = b"golden seal passphrase";
+        let salt = [0x11u8; 16];
+        let nonce = [0x22u8; 24];
+        let plaintext = b"origin seal golden vector";
+
+        let key = derive_key(passphrase, &salt, TIER).expect("derive key");
+        let ct = XChaCha20Poly1305::encrypt(&key, &nonce, plaintext).expect("encrypt");
+
+        let mut blob = Vec::new();
+        blob.extend_from_slice(MAGIC);
+        blob.push(VERSION);
+        blob.push(0); // flags: uncompressed, non-streamed
+        blob.push(tier_to_byte(TIER));
+        blob.push(0); // reserved
+        blob.extend_from_slice(&salt);
+        blob.extend_from_slice(&nonce);
+        blob.extend_from_slice(&ct);
+
+        const EXPECTED: &str = "5345414c010000001111111111111111111111111111111122222222222222222222222222222222222222222222222219cd21e4fad504a5c1c59b6bf94c09347cd3a83e594b649578007eb2c857f3c0e0d5124d4de908db57";
+        assert_eq!(hex::encode(&blob), EXPECTED);
+
+        // The pinned fixture must parse and decrypt to the known plaintext.
+        let pt = decrypt(&hex::decode(EXPECTED).expect("decode golden"), passphrase)
+            .expect("decrypt golden vector");
+        assert_eq!(pt, plaintext);
+    }
 }
+

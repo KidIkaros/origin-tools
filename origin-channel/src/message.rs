@@ -183,4 +183,37 @@ mod tests {
         // 4 (frame prefix) + 33 (header) + 48 (ciphertext) = 85
         assert_eq!(msg.wire_size(), 4 + HEADER_SIZE + 48);
     }
+
+    // Channel-message golden vector — FORMAT_REGISTRY.md priority 6.
+    // The ciphertext is a real XChaCha20-Poly1305 output under a fixed
+    // key/nonce so the fixture pins wire layout AND crypto binding.
+    #[test]
+    fn channel_message_golden_vector_v1() {
+        let key = [0x42u8; 32];
+        let nonce = [0x33u8; 24];
+        let plaintext = b"channel message golden vector";
+        let ct = origin_crypto_sdk::aead::XChaCha20Poly1305::encrypt(&key, &nonce, plaintext)
+            .expect("encrypt");
+
+        let msg = ChannelMessage {
+            msg_type: MSG_DATA,
+            seq: 0x0102_0304_0506_0708,
+            nonce,
+            ciphertext: ct,
+        };
+        let wire = msg.to_bytes();
+
+        const EXPECTED: &str = "1001020304050607083333333333333333333333333333333333333333333333334174aa6d98325562fec9250135cefbc4faf06e4b229cef331f6d56bbfb8745b2a5e4395951a7ba3a041855c805";
+        assert_eq!(hex::encode(&wire), EXPECTED);
+
+        let parsed = ChannelMessage::from_bytes(&hex::decode(EXPECTED).expect("decode golden"))
+            .expect("parse golden vector");
+        assert_eq!(parsed.msg_type, MSG_DATA);
+        assert_eq!(parsed.seq, 0x0102_0304_0506_0708);
+        assert_eq!(parsed.nonce, nonce);
+        let pt =
+            origin_crypto_sdk::aead::XChaCha20Poly1305::decrypt(&key, &nonce, &parsed.ciphertext)
+                .expect("decrypt golden vector");
+        assert_eq!(pt, plaintext);
+    }
 }

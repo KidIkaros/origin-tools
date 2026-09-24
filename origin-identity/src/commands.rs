@@ -2968,4 +2968,54 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         let _ = std::fs::remove_file(&pw_path);
     }
+
+    // CombinedSignature v1 golden vector — FORMAT_REGISTRY.md priority 6.
+    // Both halves are deterministic: Ed25519 by RFC 8032 and Falcon via
+    // `sign_deterministic`'s explicit nonce seed, so the whole wire blob
+    // is reproducible.
+    #[test]
+    fn combined_signature_golden_vector_v1() {
+        use ed25519_dalek::{Signer, Verifier};
+        use origin_crypto_sdk::pqc::falcon1024;
+
+        let msg = b"combined signature golden vector";
+        let ed_sk = ed25519_dalek::SigningKey::from_bytes(&[0x55; 32]);
+        let ed = ed_sk.sign(msg);
+        let (falcon_pk, falcon_sk) =
+            falcon1024::generate_keypair_from_seed(&[0x99; 32]).expect("falcon keygen");
+        let falcon =
+            falcon1024::sign_deterministic(msg, &falcon_sk, &[0xBB; 32]).expect("falcon sign");
+
+        let combined = CombinedSignature { ed, falcon };
+        let wire = combined.to_wire_bytes();
+
+        // The wire blob is ~1.2 KB — pin its SHA3-256 digest plus the
+        // exact structural layout rather than a giant hex literal.
+        const EXPECTED_SHA3_256: &str =
+            "36f57ff2a642ed2759f304c99f6ae09d004532b322c3c9e00e23ac914443ea03";
+        assert_eq!(
+            hex::encode(origin_crypto_sdk::sha3_256(&wire)),
+            EXPECTED_SHA3_256
+        );
+
+        // Structure: [falcon_len u32 BE][ed25519 64B][falcon N B].
+        let flen = u32::from_be_bytes(wire[..4].try_into().unwrap()) as usize;
+        assert_eq!(flen, combined.falcon.as_bytes().len());
+        assert_eq!(
+            wire.len(),
+            CombinedSignature::LEN_PREFIX + CombinedSignature::ED_LEN + flen
+        );
+
+        // The pinned layout must parse and re-encode identically.
+        let parsed = CombinedSignature::from_wire(&wire).expect("parse golden vector");
+        assert_eq!(parsed.to_wire_bytes(), wire);
+
+        // Both halves still verify cryptographically.
+        ed_sk
+            .verifying_key()
+            .verify(msg, &parsed.ed)
+            .expect("ed25519 verify");
+        falcon1024::verify(msg, &parsed.falcon, &falcon_pk).expect("falcon verify");
+    }
 }
+
