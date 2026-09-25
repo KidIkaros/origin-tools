@@ -96,7 +96,7 @@ Stability labels:
 - **Recommended sibling projects:** `origin-db`, then `origin-memory`
 - **Use for:** provenance-tagged encrypted multi-table storage and higher-level memory graphs.
 - **Boundary:** these are standalone projects, not parent-workspace members. Consume released/Git `origin-tools` foundations, using local path patches only during development.
-- **Status:** experimental/reference.
+- **Status:** `origin-db` is a production-shaped prototype (audited 2026-09; correctness/security blockers closed, `QueryEnv` seam, mutation funnel, migration + crash-safety tests — see its `AUDIT.md`; no external audit or scale validation). `origin-memory` remains reference/experimental.
 
 ## Browser/WASM bindings
 
