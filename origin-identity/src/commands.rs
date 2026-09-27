@@ -11,6 +11,7 @@ use origin_crypto_sdk::{
     blake3,
     blob::{create_blob, recover_seed},
     recovery::unicode_cipher::{decode_phrase, encode_phrase, PhraseLength, UnicodeWordlist},
+    recovery::Phrase,
     seed::gen::{generate, SeedVariant},
     signing::hybrid::{Ed25519Falcon1024, HybridSigningKeyBundle},
     tier::MemoryTier,
@@ -148,13 +149,9 @@ pub fn write_phrase_file(phrase: &[char], path: &std::path::Path) -> Result<(), 
             phrase.len()
         ));
     }
-    let mut body = String::with_capacity(phrase.len() * 4 + 1);
-    for (i, c) in phrase.iter().enumerate() {
-        if i > 0 {
-            body.push(' ');
-        }
-        body.push(*c);
-    }
+    // Render through the SDK's canonical text form so the on-disk shape cannot
+    // drift from the other Origin tools.
+    let mut body = Phrase::from_symbols(phrase.to_vec()).to_text();
     body.push('\n');
 
     // Build tmp path in the same directory as the target so the rename
@@ -197,40 +194,34 @@ pub fn write_phrase_file(phrase: &[char], path: &std::path::Path) -> Result<(), 
 }
 
 /// Parse a recovery phrase (24 unicode codepoints separated by whitespace).
-/// Each whitespace-delimited token must be exactly one codepoint.
+///
+/// Each whitespace-delimited token must be exactly one codepoint: two symbols
+/// run together is a transcription error, and saying so is more useful than the
+/// codec's symbol-count complaint. Whitespace handling and the final assembly
+/// come from the SDK's canonical [`Phrase`] parser, so they cannot drift from
+/// the other Origin tools.
 pub fn read_phrase(s: &str) -> Result<Vec<char>, String> {
-    let mut text = if let Some(stripped) = s.strip_prefix('@') {
+    let text = if let Some(stripped) = s.strip_prefix('@') {
         std::fs::read_to_string(stripped).map_err(|e| format!("cannot read {}: {}", stripped, e))?
     } else {
         s.to_string()
     };
+    // Strip a leading UTF-8 BOM (U+FEFF) before the token check: phrases pasted
+    // from Windows-authored notes carry one, and it would otherwise look like a
+    // two-codepoint first token.
+    let text = text.strip_prefix('\u{feff}').unwrap_or(&text);
 
-    // Strip a leading UTF-8 BOM (U+FEFF) if present. Common when phrases
-    // are pasted from Windows-pinned notes or email bodies — without this,
-    // decode_phrase rejects U+FEFF as DEFAULT_IGNORABLE with a confusing
-    // codepoint-class error.
-    if let Some(stripped) = text.strip_prefix('\u{feff}') {
-        text = stripped.to_string();
-    }
-
-    let mut chars = Vec::new();
     for token in text.split_whitespace() {
-        let mut iter = token.chars();
-        let c = iter
-            .next()
-            .ok_or_else(|| "empty token in phrase (extra whitespace?)".to_string())?;
-        if iter.next().is_some() {
+        if token.chars().nth(1).is_some() {
             return Err(format!(
                 "phrase token {:?} has more than one codepoint; each word must be one Unicode character",
                 token
             ));
         }
-        chars.push(c);
     }
-    if chars.is_empty() {
-        return Err("phrase is empty".to_string());
-    }
-    Ok(chars)
+
+    let phrase = Phrase::parse(text).map_err(|_| "phrase is empty".to_string())?;
+    Ok(phrase.symbols().to_vec())
 }
 
 // ── Commands ───────────────────────────────────────────────────────

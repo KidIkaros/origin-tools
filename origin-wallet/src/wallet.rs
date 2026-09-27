@@ -7,6 +7,7 @@ use crate::address::{Address, AddressType, Network};
 use crate::error::{Result, WalletError};
 use crate::transaction::Transaction;
 use chrono::Datelike;
+use origin_crypto_sdk::recovery::Phrase;
 use origin_crypto_sdk::seed::SeedHandle;
 use origin_proof::mmr::MmrState;
 use std::path::Path;
@@ -726,8 +727,9 @@ impl Wallet {
         )
         .map_err(|e| WalletError::Recovery(e.to_string()))?;
 
-        // Convert Vec<char> to String
-        Ok(encoded.into_iter().collect())
+        // Render through the SDK's canonical text form, so every Origin tool
+        // prints the phrase the same way (space-separated).
+        Ok(Phrase::from_symbols(encoded).to_text())
     }
 
     /// Reconstruct a wallet from raw seed bytes (e.g. recovered from shards
@@ -758,11 +760,14 @@ impl Wallet {
     /// used as the seed — no padding — so derived account keys match the
     /// original wallet.
     pub fn from_phrase(phrase: &str, _passphrase: &str) -> Result<Self> {
-        // Decode phrase to seed bytes
-        let chars: Vec<char> = phrase.chars().collect();
+        // Parse through the SDK's canonical text form. It accepts both the
+        // space-separated form this crate exports and the concatenated form an
+        // older copy may hold; collecting the raw chars rejected any phrase
+        // that contained whitespace at all.
+        let parsed = Phrase::parse(phrase).map_err(|e| WalletError::Recovery(e.to_string()))?;
         let wordlist = origin_crypto_sdk::recovery::unicode_cipher::UnicodeWordlist::default();
         let seed_bytes =
-            origin_crypto_sdk::recovery::unicode_cipher::decode_phrase(&chars, &wordlist)
+            origin_crypto_sdk::recovery::unicode_cipher::decode_phrase(parsed.symbols(), &wordlist)
                 .map_err(|e| WalletError::Recovery(e.to_string()))?;
 
         Self::from_seed(&seed_bytes)
@@ -1006,6 +1011,27 @@ mod tests {
 
         // Full seed must match exactly (phrase encodes the entire 256-bit seed)
         assert_eq!(original_seed, restored_seed);
+    }
+
+    #[test]
+    fn test_phrase_import_accepts_both_text_conventions() {
+        let wallet = Wallet::create("test-passphrase").unwrap();
+        let expected = wallet.seed_handle.as_bytes().unwrap().to_vec();
+
+        let canonical = wallet.export_phrase().unwrap();
+        // Space-separated is the canonical form; concatenated is what older
+        // exports produced. Both must import to the same seed.
+        assert!(canonical.contains(' '), "export should be space-separated");
+        let concatenated: String = canonical.chars().filter(|c| !c.is_whitespace()).collect();
+
+        for phrase in [canonical, concatenated] {
+            let restored = Wallet::from_phrase(&phrase, "test-passphrase").unwrap();
+            assert_eq!(
+                restored.seed_handle.as_bytes().unwrap().to_vec(),
+                expected,
+                "phrase form {phrase:?} did not import"
+            );
+        }
     }
 
     #[test]
