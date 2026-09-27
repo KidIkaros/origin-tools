@@ -135,13 +135,13 @@ The SDK is experimental and has not received an independent security audit. The 
   - **Random-helper dedup:** `origin-secrets::crypto::random_bytes`/`random_array` now delegate to the single `origin_common::random` adapter instead of a second `fill_random` boundary.
   - **Dead deps dropped:** `origin-schnorr` from `origin-payments`/`origin-wallet` (never imported), `subtle` from `origin-channel`, `ed25519-dalek` declared-but-unused in `origin-channel`/`origin-canary`.
 
-### SDK-011 — Falcon-1024 is not (yet) a finalized FN-DSA/FIPS-206 signature
+### SDK-011 — Falcon-1024: the choice is deliberate, not a compliance gap
 
-- **Status:** Needs SDK review — track NIST FN-DSA standardization
-- **Impact:** Downstream products (arca, origin-attest) sign with hybrid Ed25519 + Falcon-1024 and may describe themselves as "post-quantum." That claim is honest only with a caveat: as of this writing NIST has not published a final FN-DSA standard (draft FIPS-206 remains in progress), and the finalized parameter set/encoding may differ from the round-3 Falcon the SDK implements. Products must not claim FIPS-206 or CNSA alignment on the strength of this code.
-- **Evidence:** arca's vault attestation and Grant signatures (`arca/src/grants.rs`) use `Falcon1024`; the SDK's Falcon module implements the NIST round-3 submission, not a ratified standard.
-- **Recommendation:** Keep hybrid signatures (Ed25519 + Falcon-1024) as the interim PQ story. When NIST publishes final FN-DSA, evaluate whether the SDK's implementation matches, what on-disk migration persisted signatures need (arca vaults/Grants carry Falcon signature bytes), and whether to expose the finalized variant under a distinct API so callers migrate deliberately rather than silently.
-- **Required validation:** Vector/conformance tests against published FN-DSA test vectors once available; a written migration note for persisted hybrid signatures.
+- **Status:** Recorded — informational, no action required
+- **Impact:** Downstream products (arca, origin-attest) sign with hybrid Ed25519 + Falcon-1024. Falcon is the SDK's chosen primitive; NIST standardization status is not a driver of the design. The only operational fact to retain: if FIPS-206/FN-DSA ever finalizes with parameters or encodings differing from round-3 Falcon, arca's signatures will not interoperate with *external* FN-DSA verifiers — arca verifies its own documents and does not consume third-party FN-DSA, so this affects interop claims, not correctness.
+- **Evidence:** arca's vault attestation and Grant signatures (`arca/src/grants.rs`) use `Falcon1024`; the SDK implements the NIST round-3 submission.
+- **Guidance:** Do not claim FIPS-206 or CNSA alignment (the standard does not exist to claim), and do not plan migration merely because a draft standard may land differently. Revisit only if an external consumer needs to verify arca signatures with a standardized FN-DSA implementation.
+- **Required validation:** None. Interop test vectors are a consumer-driven concern.
 
 ## Process
 
