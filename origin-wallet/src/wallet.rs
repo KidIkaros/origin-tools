@@ -10,7 +10,7 @@ use chrono::Datelike;
 use origin_crypto_sdk::recovery::unicode_cipher::{
     decode_phrase, encode_phrase, PhraseLength, UnicodeWordlist,
 };
-use origin_crypto_sdk::recovery::Phrase;
+use origin_crypto_sdk::recovery::{Phrase, RecoveryFormat};
 use origin_crypto_sdk::seed::SeedHandle;
 use origin_proof::mmr::MmrState;
 use std::path::Path;
@@ -714,21 +714,27 @@ impl Wallet {
     ///
     /// Note: the wallet's 32-byte seed is stored encrypted in the wallet
     /// file; the phrase is a second, independent copy of the same seed.
-    pub fn export_phrase(&self) -> Result<String> {
+    /// With `format`, the phrase is written under that custom alphabet (format
+    /// v2) — the pack is then part of the backup, because the phrase cannot
+    /// decode without it. Without one, the built-in symbol set (v1) as always.
+    pub fn export_phrase(&self, format: Option<&RecoveryFormat>) -> Result<String> {
         let seed_bytes = self
             .seed_handle
             .as_bytes()
             .ok_or(WalletError::SeedExpired)?;
 
+        if let Some(format) = format {
+            return format
+                .encode(&seed_bytes[..32])
+                .map(|phrase| phrase.to_text())
+                .map_err(|e| WalletError::Recovery(e.to_string()));
+        }
+
         // Use SDK's unicode cipher to encode first 32 bytes as phrase
         let wordlist = UnicodeWordlist::default();
         let phrase_length = PhraseLength::Words24;
-        let encoded = encode_phrase(
-            &seed_bytes[..32],
-            &wordlist,
-            phrase_length,
-        )
-        .map_err(|e| WalletError::Recovery(e.to_string()))?;
+        let encoded = encode_phrase(&seed_bytes[..32], &wordlist, phrase_length)
+            .map_err(|e| WalletError::Recovery(e.to_string()))?;
 
         // Render through the SDK's canonical text form, so every Origin tool
         // prints the phrase the same way (space-separated).
@@ -762,15 +768,27 @@ impl Wallet {
     /// The phrase encodes the full 256-bit seed. The exact decoded bytes are
     /// used as the seed — no padding — so derived account keys match the
     /// original wallet.
-    pub fn from_phrase(phrase: &str, _passphrase: &str) -> Result<Self> {
+    /// `format` must be the alphabet the phrase was written under — a pack
+    /// phrase cannot decode without its pack.
+    pub fn from_phrase(
+        phrase: &str,
+        _passphrase: &str,
+        format: Option<&RecoveryFormat>,
+    ) -> Result<Self> {
         // Parse through the SDK's canonical text form. It accepts both the
         // space-separated form this crate exports and the concatenated form an
         // older copy may hold; collecting the raw chars rejected any phrase
         // that contained whitespace at all.
         let parsed = Phrase::parse(phrase).map_err(|e| WalletError::Recovery(e.to_string()))?;
-        let wordlist = UnicodeWordlist::default();
-        let seed_bytes = decode_phrase(parsed.symbols(), &wordlist)
-            .map_err(|e| WalletError::Recovery(e.to_string()))?;
+        let seed_bytes = match format {
+            Some(format) => format
+                .decode(&parsed)
+                .map_err(|e| WalletError::Recovery(e.to_string()))?
+                .as_bytes()
+                .to_vec(),
+            None => decode_phrase(parsed.symbols(), &UnicodeWordlist::default())
+                .map_err(|e| WalletError::Recovery(e.to_string()))?,
+        };
 
         Self::from_seed(&seed_bytes)
     }
@@ -999,16 +1017,40 @@ mod tests {
     }
 
     #[test]
+    fn test_pack_phrase_roundtrip_and_needs_its_pack() {
+        // A pack swaps the alphabet (format v2). The pack file is part of the
+        // backup: the phrase cannot decode without it.
+        let runes: String = (0x16A0u32..0x16B8).filter_map(char::from_u32).collect();
+        let pack = origin_common::phrase_pack_from_text(&runes, 32).unwrap();
+        let wallet = Wallet::create("test-passphrase").unwrap();
+        let original_seed = wallet.seed_handle.as_bytes().unwrap().to_vec();
+
+        let phrase = wallet.export_phrase(Some(&pack.format)).unwrap();
+        assert_eq!(
+            phrase.split_whitespace().count(),
+            63,
+            "24 runes need 63 symbols"
+        );
+
+        // Under its own pack the seed comes back byte-for-byte.
+        let restored = Wallet::from_phrase(&phrase, "x", Some(&pack.format)).unwrap();
+        assert_eq!(restored.seed_handle.as_bytes().unwrap(), &original_seed[..]);
+
+        // Without the pack the same phrase is refused, not mis-decoded.
+        assert!(Wallet::from_phrase(&phrase, "x", None).is_err());
+    }
+
+    #[test]
     fn test_export_import_phrase_roundtrip() {
         let wallet = Wallet::create("test-passphrase").unwrap();
         let original_seed = wallet.seed_handle.as_bytes().unwrap().to_vec();
 
         // Export phrase
-        let phrase = wallet.export_phrase().unwrap();
+        let phrase = wallet.export_phrase(None).unwrap();
         assert!(!phrase.is_empty());
 
         // Import phrase
-        let restored = Wallet::from_phrase(&phrase, "test-passphrase").unwrap();
+        let restored = Wallet::from_phrase(&phrase, "test-passphrase", None).unwrap();
         let restored_seed = restored.seed_handle.as_bytes().unwrap().to_vec();
 
         // Full seed must match exactly (phrase encodes the entire 256-bit seed)
@@ -1020,14 +1062,14 @@ mod tests {
         let wallet = Wallet::create("test-passphrase").unwrap();
         let expected = wallet.seed_handle.as_bytes().unwrap().to_vec();
 
-        let canonical = wallet.export_phrase().unwrap();
+        let canonical = wallet.export_phrase(None).unwrap();
         // Space-separated is the canonical form; concatenated is what older
         // exports produced. Both must import to the same seed.
         assert!(canonical.contains(' '), "export should be space-separated");
         let concatenated: String = canonical.chars().filter(|c| !c.is_whitespace()).collect();
 
         for phrase in [canonical, concatenated] {
-            let restored = Wallet::from_phrase(&phrase, "test-passphrase").unwrap();
+            let restored = Wallet::from_phrase(&phrase, "test-passphrase", None).unwrap();
             assert_eq!(
                 restored.seed_handle.as_bytes().unwrap().to_vec(),
                 expected,
@@ -1043,8 +1085,8 @@ mod tests {
         let expected_ed = account.ed25519_sk().to_vec();
         let expected_falcon = account.falcon_sk().to_vec();
 
-        let phrase = wallet.export_phrase().unwrap();
-        let mut restored = Wallet::from_phrase(&phrase, "test-passphrase").unwrap();
+        let phrase = wallet.export_phrase(None).unwrap();
+        let mut restored = Wallet::from_phrase(&phrase, "test-passphrase", None).unwrap();
 
         // Re-derive account 0 on the restored wallet — keys must match exactly
         let restored_account = restored.derive_account(0).unwrap();

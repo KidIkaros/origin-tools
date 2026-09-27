@@ -143,11 +143,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("✓ 3-of-5 shard backup → recovery reproduces account keys");
 
     // ── phrase export / import ───────────────────────────────────────
-    let phrase = wallet.export_phrase().map_err(|e| e.to_string())?;
+    let phrase = wallet.export_phrase(None).map_err(|e| e.to_string())?;
     // The phrase is a unicode-cipher encoding (one contiguous char string,
     // not whitespace-separated words), so assert on char length.
     assert!(phrase.chars().count() > 0, "phrase is non-empty");
-    let mut from_phrase = Wallet::from_phrase(&phrase, "x").map_err(|e| e.to_string())?;
+    let mut from_phrase = Wallet::from_phrase(&phrase, "x", None).map_err(|e| e.to_string())?;
     let re = from_phrase.derive_account(0).map_err(|e| e.to_string())?;
     assert_eq!(re.address(), alice.address());
     println!("✓ phrase export → import reproduces identity");

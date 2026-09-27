@@ -220,6 +220,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         passphrase_file: Some(pw.clone()),
         no_phrase: true,
         phrase_output: None,
+        alphabet_pack: None,
     };
     let _sign_args = SignArgs {
         name: "typed".into(),

@@ -23,6 +23,9 @@ use crate::cli::{
     OutputFormat, RenameArgs, RotatePassphraseArgs, ShowArgs, ShowFormat, SignArgs, VerifyArgs,
 };
 
+/// Bytes in a master seed — the Recovery Phrase encodes exactly this much.
+const SEED_BYTES: usize = 32;
+
 /// Format a byte length with a space before the unit so columns align.
 fn fmt_size(bytes: u64) -> String {
     const UNITS: &[&str] = &["B", "KB", "MB", "GB"];
@@ -119,8 +122,8 @@ pub fn read_bytes(s: &str, hex: bool) -> Result<Vec<u8>, String> {
     }
 }
 
-/// Atomically write a 24-codepoint recovery phrase to `path` as
-/// `<c1> <c2> … <c24>\n` (single-space-separated, single line, trailing
+/// Atomically write a recovery phrase to `path` as
+/// `<c1> <c2> … <cn>\n` (single-space-separated, single line, trailing
 /// newline). The on-disk format is exactly what `read_phrase` accepts
 /// via `split_whitespace`, so a shell-driven restore works:
 ///
@@ -143,11 +146,11 @@ pub fn read_bytes(s: &str, hex: bool) -> Result<Vec<u8>, String> {
 /// NOT created in any of these cases; the tmp sibling may remain on
 /// disk for post-mortem (the caller can `rm` it).
 pub fn write_phrase_file(phrase: &[char], path: &std::path::Path) -> Result<(), String> {
-    if phrase.len() != 24 {
-        return Err(format!(
-            "internal: write_phrase_file expects exactly 24 codepoints; got {}",
-            phrase.len()
-        ));
+    // Length is the format's business, not this writer's: a pack phrase is as
+    // long as its alphabet needs (24 symbols for the built-in set, up to 64
+    // with a pack). Only an empty phrase is a caller bug.
+    if phrase.is_empty() {
+        return Err("internal: write_phrase_file called with an empty phrase".to_string());
     }
     // Render through the SDK's canonical text form so the on-disk shape cannot
     // drift from the other Origin tools.
@@ -193,7 +196,7 @@ pub fn write_phrase_file(phrase: &[char], path: &std::path::Path) -> Result<(), 
     Ok(())
 }
 
-/// Parse a recovery phrase (24 unicode codepoints separated by whitespace).
+/// Parse a recovery phrase (unicode codepoints separated by whitespace).
 ///
 /// Each whitespace-delimited token must be exactly one codepoint: two symbols
 /// run together is a transcription error, and saying so is more useful than the
@@ -242,9 +245,29 @@ pub fn cmd_keygen(args: KeygenArgs) -> Result<(), String> {
         .map_err(|_| "seed not 32 bytes".to_string())?;
 
     // 2. Encode phrase once. (Re-used by both banner and file paths below.)
-    let list = UnicodeWordlist::default();
-    let phrase = encode_phrase(&seed, &list, PhraseLength::Words24)
-        .map_err(|e| format!("phrase encoding failed: {e}"))?;
+    //    A pack swaps the alphabet (format v2); without one the built-in
+    //    24-symbol set (v1) is unchanged.
+    let pack = match &args.alphabet_pack {
+        Some(path) => Some(origin_common::phrase_pack_from_file(path, SEED_BYTES)?),
+        None => None,
+    };
+    let phrase = match &pack {
+        Some(pack) => {
+            if !pack.skipped.is_empty() {
+                eprintln!(
+                    "note: skipped {} unusable symbol(s) from the alphabet pack",
+                    pack.skipped.len()
+                );
+            }
+            pack.format
+                .encode(&seed)
+                .map_err(|e| format!("phrase encoding failed: {e}"))?
+                .symbols()
+                .to_vec()
+        }
+        None => encode_phrase(&seed, &UnicodeWordlist::default(), PhraseLength::Words24)
+            .map_err(|e| format!("phrase encoding failed: {e}"))?,
+    };
 
     // 3. Recovery phrase presentation: file > banner > silent.
     //    --phrase-output writes the file atomically and suppresses the
@@ -264,12 +287,23 @@ pub fn cmd_keygen(args: KeygenArgs) -> Result<(), String> {
         }
         write_phrase_file(&phrase, &out_path)?;
         eprintln!(
-            "Wrote recovery phrase (24 codepoints) to: {}\n  Keep this file offline and secure. It is the ONLY backup for this identity.",
+            "Wrote recovery phrase ({} codepoints) to: {}\n  Keep this file offline and secure. It is the ONLY backup for this identity.",
+            phrase.len(),
             out_path.display()
         );
+        if pack.is_some() {
+            eprintln!(
+                "  It is written under an alphabet pack — keep the pack file with it, \
+                 or the phrase cannot be restored."
+            );
+        }
     } else if !args.no_phrase {
         eprintln!();
-        eprintln!("╔══ RECOVERY PHRASE (24 words) ═══════════════════╗");
+        let label = format!("RECOVERY PHRASE ({} symbols)", phrase.len());
+        eprintln!(
+            "╔══ {label} {}╗",
+            "═".repeat(45usize.saturating_sub(label.len()))
+        );
         eprintln!("║  Write this down. Store it offline.            ║");
         eprintln!("║  It is the ONLY backup for this identity.      ║");
         eprintln!("╚═════════════════════════════════════════════════╝");
@@ -684,10 +718,24 @@ fn print_json(rows: &[ListRow]) {
 pub fn cmd_import(args: ImportArgs) -> Result<(), String> {
     let tier = parse_tier(&args.tier)?;
 
-    // 1. Parse + decode recovery phrase → 32-byte seed.
+    // 1. Parse + decode recovery phrase → 32-byte seed. A pack phrase needs
+    //    the same pack it was written under; without one the built-in
+    //    24-symbol set (v1) is assumed.
     let chars = read_phrase(&args.phrase)?;
-    let entropy = decode_phrase(&chars, &UnicodeWordlist::default())
-        .map_err(|e| format!("phrase decode failed: {e}"))?;
+    let pack = match &args.alphabet_pack {
+        Some(path) => Some(origin_common::phrase_pack_from_file(path, SEED_BYTES)?),
+        None => None,
+    };
+    let entropy = match &pack {
+        Some(pack) => pack
+            .format
+            .decode(&Phrase::from_symbols(chars.clone()))
+            .map_err(|e| format!("phrase decode failed: {e}"))?
+            .as_bytes()
+            .to_vec(),
+        None => decode_phrase(&chars, &UnicodeWordlist::default())
+            .map_err(|e| format!("phrase decode failed: {e}"))?,
+    };
     if entropy.len() != 32 {
         return Err(format!(
             "origin-identity requires 256-bit master seeds (24 words). \
@@ -1424,19 +1472,46 @@ mod tests {
     }
 
     #[test]
-    fn keygen_phrase_output_helper_rejects_non_24_codepoint_input() {
-        // Defensive: if the helper is ever called with an unexpected
-        // length (programmer error), it should refuse instead of writing
-        // bogus content. The check is a guardrail, not a user-facing
-        // error path.
-        let path = fresh_tmp_path("phrase-wrong-len");
-        let short_phrase = UnicodeWordlist::default().as_slice()[..12].to_vec();
-        let result = super::write_phrase_file(&short_phrase, &path);
-        assert!(result.is_err(), "must reject non-24 input");
+    fn keygen_phrase_output_helper_rejects_an_empty_phrase() {
+        // Defensive: only an empty phrase is a caller bug. Length belongs to
+        // the format — a pack phrase is as long as its alphabet needs.
+        let path = fresh_tmp_path("phrase-empty");
+        let result = super::write_phrase_file(&[], &path);
+        assert!(result.is_err(), "must reject an empty phrase");
         assert!(
             !path.exists(),
-            "no target file should be created when input is wrong length"
+            "no target file should be created for an empty phrase"
         );
+    }
+
+    #[test]
+    fn keygen_phrase_output_helper_writes_a_pack_length_phrase() {
+        // A 24-rune pack needs 63 symbols at 256-bit entropy; the writer must
+        // accept it, and `read_phrase` must read it back unchanged.
+        let runes: Vec<char> = (0x16A0u32..0x16B8).filter_map(char::from_u32).collect();
+        let pack = origin_common::phrase_pack_from_text(
+            &runes.iter().collect::<String>(),
+            super::SEED_BYTES,
+        )
+        .unwrap();
+        let phrase = pack
+            .format
+            .encode(&[0x2Au8; 32])
+            .unwrap()
+            .symbols()
+            .to_vec();
+        assert_eq!(phrase.len(), 63);
+
+        let path = fresh_tmp_path("phrase-pack-len");
+        super::write_phrase_file(&phrase, &path).expect("pack-length phrase writes");
+
+        let written = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(
+            super::read_phrase(&written).unwrap(),
+            phrase,
+            "the writer's output must round-trip through read_phrase"
+        );
+        let _ = std::fs::remove_file(&path);
     }
 
     // ─── Helper tests ────────────────────────────────────────────
@@ -1555,6 +1630,7 @@ mod tests {
         std::fs::write(&pw_path, "test-passphrase").unwrap();
 
         let args = KeygenArgs {
+            alphabet_pack: None,
             name: "unit-test-key".to_string(),
             tier: "nano".to_string(),
             dir: dir.to_string_lossy().to_string(),
@@ -1591,6 +1667,7 @@ mod tests {
         let phrase_path = dir.join("phrase.txt");
 
         let args = KeygenArgs {
+            alphabet_pack: None,
             name: "phrase-key".to_string(),
             tier: "nano".to_string(),
             dir: dir.to_string_lossy().to_string(),
@@ -1635,6 +1712,7 @@ mod tests {
             .trim_start()
             .to_string();
         let err = cmd_import(ImportArgs {
+            alphabet_pack: None,
             name: "short".to_string(),
             phrase: phrase_str,
             tier: "nano".to_string(),
@@ -1656,6 +1734,7 @@ mod tests {
         std::fs::write(&pw_path, "pw").unwrap();
 
         let kg_args = KeygenArgs {
+            alphabet_pack: None,
             name: "existing-id".to_string(),
             tier: "nano".to_string(),
             dir: dir.to_string_lossy().to_string(),
@@ -1681,6 +1760,7 @@ mod tests {
             .to_string();
 
         let err = cmd_import(ImportArgs {
+            alphabet_pack: None,
             name: "existing-id".to_string(),
             phrase: phrase_str.clone(),
             tier: "nano".to_string(),
@@ -1704,6 +1784,7 @@ mod tests {
         std::fs::write(&pw_path, "pw").unwrap();
 
         let kg_args = KeygenArgs {
+            alphabet_pack: None,
             name: "force-id".to_string(),
             tier: "nano".to_string(),
             dir: dir.to_string_lossy().to_string(),
@@ -1730,6 +1811,7 @@ mod tests {
             .to_string();
 
         cmd_import(ImportArgs {
+            alphabet_pack: None,
             name: "force-id".to_string(),
             phrase: phrase_str,
             tier: "nano".to_string(),
@@ -1792,6 +1874,7 @@ mod tests {
         std::fs::write(&pw_path, "pw").unwrap();
 
         let kg_args = KeygenArgs {
+            alphabet_pack: None,
             name: "list-me".to_string(),
             tier: "nano".to_string(),
             dir: dir.to_string_lossy().to_string(),
@@ -1821,6 +1904,7 @@ mod tests {
         std::fs::write(&pw_path, "pw").unwrap();
 
         let kg_args = KeygenArgs {
+            alphabet_pack: None,
             name: "csv-id".to_string(),
             tier: "nano".to_string(),
             dir: dir.to_string_lossy().to_string(),
@@ -1849,6 +1933,7 @@ mod tests {
         std::fs::write(&pw_path, "pw").unwrap();
 
         let kg_args = KeygenArgs {
+            alphabet_pack: None,
             name: "json-id".to_string(),
             tier: "nano".to_string(),
             dir: dir.to_string_lossy().to_string(),
@@ -1877,6 +1962,7 @@ mod tests {
         std::fs::write(&pw_path, "pw").unwrap();
 
         let kg_args = KeygenArgs {
+            alphabet_pack: None,
             name: "names-id".to_string(),
             tier: "nano".to_string(),
             dir: dir.to_string_lossy().to_string(),
@@ -2404,6 +2490,7 @@ mod tests {
         std::fs::create_dir(&blob_target).unwrap();
 
         let args = KeygenArgs {
+            alphabet_pack: None,
             name: "target-test".to_string(),
             tier: "nano".to_string(),
             dir: dir.to_string_lossy().to_string(),
@@ -2443,6 +2530,7 @@ mod tests {
         std::fs::write(&pw_path, "standard-pw").unwrap();
 
         let args = KeygenArgs {
+            alphabet_pack: None,
             name: "standard-id".to_string(),
             tier: "standard".to_string(),
             dir: dir.to_string_lossy().to_string(),
@@ -2502,6 +2590,7 @@ mod tests {
 
         // ── KeygenArgs (clap derive → Clone + Debug) ─────────────────
         let kg = KeygenArgs {
+            alphabet_pack: None,
             name: "sentinel".to_string(),
             tier: "nano".to_string(),
             dir: "/tmp/sentinel-keygen".to_string(),
@@ -2518,6 +2607,7 @@ mod tests {
 
         // ── ImportArgs ─────────────────────────────────────────────────
         let ia = ImportArgs {
+            alphabet_pack: None,
             name: "sentinel-import".to_string(),
             phrase: "phrase".to_string(),
             tier: "standard".to_string(),
@@ -2589,6 +2679,7 @@ mod tests {
         let pw_path = dir.join("pw.txt");
         std::fs::write(&pw_path, "rotate-pw").unwrap();
         let args = KeygenArgs {
+            alphabet_pack: None,
             name: "vid".to_string(),
             tier: "nano".to_string(),
             dir: dir.to_string_lossy().to_string(),
@@ -2682,6 +2773,7 @@ mod tests {
         let pw2 = dir.join("pw2.txt");
         std::fs::write(&pw2, "pw2").unwrap();
         cmd_keygen(KeygenArgs {
+            alphabet_pack: None,
             name: "clash".to_string(),
             tier: "nano".to_string(),
             dir: dir.to_string_lossy().to_string(),
@@ -2708,6 +2800,7 @@ mod tests {
         let pw2 = dir.join("pw2.txt");
         std::fs::write(&pw2, "pw2").unwrap();
         cmd_keygen(KeygenArgs {
+            alphabet_pack: None,
             name: "force-target".to_string(),
             tier: "nano".to_string(),
             dir: dir.to_string_lossy().to_string(),

@@ -5,6 +5,34 @@
 use origin_wallet::{Shard, Wallet};
 use std::path::Path;
 
+/// Bytes in a wallet seed — the Recovery Phrase encodes exactly this much.
+const SEED_BYTES: usize = 32;
+
+/// Load a symbol pack, when `--alphabet-pack` was given.
+///
+/// The pack file is part of the backup: a phrase written under it cannot be
+/// restored without it. Symbols the SDK's policy rejects are skipped and
+/// reported — a downloaded pack can legitimately contain them.
+fn load_pack(
+    path: Option<&Path>,
+) -> Result<Option<origin_common::PhrasePack>, Box<dyn std::error::Error>> {
+    let path = match path {
+        Some(path) => path,
+        None => return Ok(None),
+    };
+    let path_str = path
+        .to_str()
+        .ok_or_else(|| format!("alphabet pack path is not valid UTF-8: {}", path.display()))?;
+    let pack = origin_common::phrase_pack_from_file(path_str, SEED_BYTES)?;
+    if !pack.skipped.is_empty() {
+        eprintln!(
+            "note: skipped {} unusable symbol(s) from the alphabet pack",
+            pack.skipped.len()
+        );
+    }
+    Ok(Some(pack))
+}
+
 /// The passphrase given on the command line (`--passphrase`), for
 /// non-interactive use (scripts, CI, tests). When set, every
 /// `prompt_passphrase` returns it instead of reading the TTY.
@@ -325,7 +353,7 @@ fn cmd_phrase(
     command: super::PhraseCommands,
 ) -> Result<(), Box<dyn std::error::Error>> {
     match command {
-        super::PhraseCommands::Export => {
+        super::PhraseCommands::Export { alphabet_pack } => {
             if !path.exists() {
                 return Err(format!("Wallet file not found: {}", path.display()).into());
             }
@@ -333,17 +361,25 @@ fn cmd_phrase(
             let passphrase = prompt_passphrase("Enter passphrase: ")?;
             let wallet = Wallet::open(path, &passphrase)?;
 
-            let phrase = wallet.export_phrase()?;
+            let pack = load_pack(alphabet_pack.as_deref())?;
+            let phrase = wallet.export_phrase(pack.as_ref().map(|p| &p.format))?;
 
             println!("\n⚠ Recovery Phrase (write this down!):");
             println!("═══════════════════════════════════════════════════════════════");
             println!("{}", phrase);
             println!("═══════════════════════════════════════════════════════════════");
             println!("\n⚠ This phrase can recover your wallet. Keep it secret!");
+            if pack.is_some() {
+                println!("⚠ It only decodes under the alphabet pack — keep the pack file with it!");
+            }
 
             Ok(())
         }
-        super::PhraseCommands::Recover { phrase, output } => {
+        super::PhraseCommands::Recover {
+            phrase,
+            output,
+            alphabet_pack,
+        } => {
             if output.exists() {
                 eprintln!("Warning: {} already exists", output.display());
                 print!("Overwrite? [y/N] ");
@@ -360,7 +396,9 @@ fn cmd_phrase(
             let passphrase = confirm_passphrase()?;
 
             println!("Recovering wallet from phrase...");
-            let wallet = Wallet::from_phrase(&phrase, &passphrase)?;
+            let pack = load_pack(alphabet_pack.as_deref())?;
+            let wallet =
+                Wallet::from_phrase(&phrase, &passphrase, pack.as_ref().map(|p| &p.format))?;
 
             println!("Saving wallet to {}...", output.display());
             wallet.save(&output, &passphrase)?;

@@ -71,6 +71,11 @@ pub struct KeygenArgs {
     /// output. Atomic via tmp + rename.
     #[arg(long, value_name = "FILE")]
     pub phrase_output: Option<String>,
+
+    /// Write the recovery phrase under a custom symbol pack. The pack file is
+    /// part of the backup — the phrase cannot decode without it
+    #[arg(long, value_name = "PATH")]
+    pub alphabet_pack: Option<String>,
 }
 
 #[derive(Parser, Clone, Debug)]
@@ -183,6 +188,10 @@ pub struct ImportArgs {
     /// Overwrite existing blob with same name
     #[arg(long)]
     pub force: bool,
+
+    /// The phrase was written under this custom symbol pack
+    #[arg(long, value_name = "PATH")]
+    pub alphabet_pack: Option<String>,
 }
 
 #[derive(ValueEnum, Clone, Debug)]

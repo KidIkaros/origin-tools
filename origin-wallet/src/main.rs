@@ -185,7 +185,12 @@ enum AccountCommands {
 #[derive(Subcommand)]
 enum PhraseCommands {
     /// Export wallet as recovery phrase
-    Export,
+    Export {
+        /// Write the phrase under a custom symbol pack. The pack file is part
+        /// of the backup — the phrase cannot decode without it
+        #[arg(long, value_name = "PATH")]
+        alphabet_pack: Option<PathBuf>,
+    },
 
     /// Recover wallet from recovery phrase
     Recover {
@@ -196,6 +201,10 @@ enum PhraseCommands {
         /// Output file path
         #[arg(short, long, default_value = "recovered.dat")]
         output: PathBuf,
+
+        /// The phrase was written under this custom symbol pack
+        #[arg(long, value_name = "PATH")]
+        alphabet_pack: Option<PathBuf>,
     },
 }
 

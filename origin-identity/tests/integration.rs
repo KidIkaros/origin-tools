@@ -866,6 +866,102 @@ fn keygen_phrase_output_writes_clean_phrase_then_imports_byte_exact() {
 }
 
 #[test]
+fn a_phrase_written_under_an_alphabet_pack_round_trips_and_needs_the_pack() {
+    // A pack swaps the alphabet (format v2). The pack file is part of the
+    // backup: the phrase cannot be restored without it.
+    let tmp = TempDir::new("keygen-pack-e2e");
+    write_text(&tmp.join("pw.txt"), "pack-roundtrip-pw");
+    // A pack file is just the symbols as text — 24 runes here.
+    let runes: String = (0x16A0u32..0x16B8).filter_map(char::from_u32).collect();
+    write_text(&tmp.join("pack.txt"), &runes);
+    let pack_arg = format!("--alphabet-pack={}", tmp.join("pack.txt").display());
+    let pw_arg = format!("--passphrase-file={}", tmp.join("pw.txt").display());
+
+    let (status, _out, stderr) = run(&[
+        OsString::from("keygen"),
+        OsString::from("--name=pack_alice"),
+        OsString::from(format!("--dir={}", tmp.0.display())),
+        OsString::from("--tier=nano"),
+        OsString::from("--no-phrase"),
+        OsString::from(format!(
+            "--phrase-output={}",
+            tmp.join("phrase.txt").display()
+        )),
+        OsString::from(pack_arg.clone()),
+        OsString::from(pw_arg.clone()),
+    ]);
+    assert!(
+        status.success(),
+        "keygen with a pack failed; status={status:?}\nstderr={stderr}"
+    );
+
+    let body = fs::read_to_string(&tmp.join("phrase.txt")).expect("read phrase file");
+    assert_eq!(
+        body.split_whitespace().count(),
+        63,
+        "24 runes need 63 symbols at 256-bit; body={body:?}"
+    );
+    assert!(
+        body.contains('\u{16A0}'),
+        "the phrase must use the pack's symbols, not the built-in set"
+    );
+
+    // Import under the same pack, then compare public keys: identical keys
+    // mean the phrase recovered the exact same master seed.
+    let (imp_status, _o, imp_stderr) = run(&[
+        OsString::from("import"),
+        OsString::from("--name=pack_recovered"),
+        OsString::from(format!("--dir={}", tmp.0.display())),
+        OsString::from("--tier=nano"),
+        OsString::from(format!("--phrase=@{}", tmp.join("phrase.txt").display())),
+        OsString::from(pack_arg.clone()),
+        OsString::from(pw_arg.clone()),
+    ]);
+    assert!(
+        imp_status.success(),
+        "import with the pack failed; status={imp_status:?}\nstderr={imp_stderr}"
+    );
+
+    let pubkey = |name: &str| -> serde_json::Value {
+        let (st, stdout, err) = run(&[
+            OsString::from("export-pubkey"),
+            OsString::from(format!("--name={name}")),
+            OsString::from("--tier=nano"),
+            OsString::from("--domain=origin-identity:v1"),
+            OsString::from(format!("--dir={}", tmp.0.display())),
+            OsString::from(pw_arg.clone()),
+        ]);
+        assert!(st.success(), "export-pubkey {name} failed; stderr={err}");
+        serde_json::from_str(&stdout).expect("pubkey JSON")
+    };
+    let original = pubkey("pack_alice");
+    let recovered = pubkey("pack_recovered");
+    assert_eq!(
+        original["ed25519"], recovered["ed25519"],
+        "the pack phrase must recover the same seed"
+    );
+    assert_eq!(original["falcon1024"], recovered["falcon1024"]);
+
+    // Without the pack the same phrase must be refused, not mis-decoded.
+    let (no_pack_status, _o, no_pack_err) = run(&[
+        OsString::from("import"),
+        OsString::from("--name=pack_nopack"),
+        OsString::from(format!("--dir={}", tmp.0.display())),
+        OsString::from("--tier=nano"),
+        OsString::from(format!("--phrase=@{}", tmp.join("phrase.txt").display())),
+        OsString::from(pw_arg.clone()),
+    ]);
+    assert!(
+        !no_pack_status.success(),
+        "import without the pack unexpectedly succeeded"
+    );
+    assert!(
+        no_pack_err.contains("decode failed"),
+        "the refusal should name the decode failure; got: {no_pack_err}"
+    );
+}
+
+#[test]
 fn keygen_phrase_output_suppresses_stderr_banner() {
     // When --phrase-output is set, the on-screen banner must NOT
     // appear on STDERR (the file IS the output). This test asserts no
