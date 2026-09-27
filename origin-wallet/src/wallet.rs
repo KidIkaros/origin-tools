@@ -7,6 +7,9 @@ use crate::address::{Address, AddressType, Network};
 use crate::error::{Result, WalletError};
 use crate::transaction::Transaction;
 use chrono::Datelike;
+use origin_crypto_sdk::recovery::unicode_cipher::{
+    decode_phrase, encode_phrase, PhraseLength, UnicodeWordlist,
+};
 use origin_crypto_sdk::recovery::Phrase;
 use origin_crypto_sdk::seed::SeedHandle;
 use origin_proof::mmr::MmrState;
@@ -718,9 +721,9 @@ impl Wallet {
             .ok_or(WalletError::SeedExpired)?;
 
         // Use SDK's unicode cipher to encode first 32 bytes as phrase
-        let wordlist = origin_crypto_sdk::recovery::unicode_cipher::UnicodeWordlist::default();
-        let phrase_length = origin_crypto_sdk::recovery::unicode_cipher::PhraseLength::Words24;
-        let encoded = origin_crypto_sdk::recovery::unicode_cipher::encode_phrase(
+        let wordlist = UnicodeWordlist::default();
+        let phrase_length = PhraseLength::Words24;
+        let encoded = encode_phrase(
             &seed_bytes[..32],
             &wordlist,
             phrase_length,
@@ -765,10 +768,9 @@ impl Wallet {
         // older copy may hold; collecting the raw chars rejected any phrase
         // that contained whitespace at all.
         let parsed = Phrase::parse(phrase).map_err(|e| WalletError::Recovery(e.to_string()))?;
-        let wordlist = origin_crypto_sdk::recovery::unicode_cipher::UnicodeWordlist::default();
-        let seed_bytes =
-            origin_crypto_sdk::recovery::unicode_cipher::decode_phrase(parsed.symbols(), &wordlist)
-                .map_err(|e| WalletError::Recovery(e.to_string()))?;
+        let wordlist = UnicodeWordlist::default();
+        let seed_bytes = decode_phrase(parsed.symbols(), &wordlist)
+            .map_err(|e| WalletError::Recovery(e.to_string()))?;
 
         Self::from_seed(&seed_bytes)
     }
