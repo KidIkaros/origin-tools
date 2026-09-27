@@ -13,7 +13,7 @@
 //!   format shared with `origin-common::Envelope` consumers.
 //! - Errors are typed (`SealError`), never `String`.
 
-use origin_common::{tier_from_byte, tier_to_byte, MemoryTier};
+use origin_common::{argon2_builder, tier_from_byte, tier_to_byte, MemoryTier};
 use origin_crypto_sdk::{
     aead::XChaCha20Poly1305, blake3, compression, hmac_sha3_256, sha3_256, sha3_512,
     signing::hybrid::HybridSigningKeyBundle,
@@ -62,11 +62,7 @@ pub fn hash(kind: HashKind, data: &[u8], key: Option<&[u8]>) -> Result<Vec<u8>> 
 /// Derive a key of `len` bytes from a passphrase + salt using Argon2id at the
 /// given tier. Deterministic: same (passphrase, salt, tier, len) → same key.
 pub fn kdf(passphrase: &[u8], salt: &[u8; 16], tier: MemoryTier, len: usize) -> Result<Vec<u8>> {
-    let params = tier.argon2_params(len);
-    origin_crypto_sdk::kdf::Argon2idBuilder::new()
-        .memory_kib(params.m_cost())
-        .iterations(params.t_cost())
-        .parallelism(params.p_cost())
+    argon2_builder(tier, len)
         .output_len(len)
         .derive(passphrase, salt)
         .map_err(|e| SealError::Crypto(format!("Argon2id failed: {e:?}")))
@@ -251,11 +247,7 @@ pub fn parse_envelope(envelope: &[u8]) -> Result<(EnvelopeHeader, &[u8])> {
 /// (Argon2id at `tier`, over `passphrase` and `salt`). Exposed so callers
 /// who pre-parse the envelope can derive the key once and reuse it.
 pub fn derive_key(passphrase: &[u8], salt: &[u8; 16], tier: MemoryTier) -> Result<[u8; 32]> {
-    let params = tier.argon2_params(32);
-    let key = origin_crypto_sdk::kdf::Argon2idBuilder::new()
-        .memory_kib(params.m_cost())
-        .iterations(params.t_cost())
-        .parallelism(params.p_cost())
+    let key = argon2_builder(tier, 32)
         .derive(passphrase, salt)
         .map_err(|e| SealError::Crypto(format!("Argon2id failed: {e:?}")))?;
     let mut arr = [0u8; 32];

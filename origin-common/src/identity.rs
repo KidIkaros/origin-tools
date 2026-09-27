@@ -6,7 +6,6 @@
 
 use crate::home::OriginHome;
 use origin_crypto_sdk::blob::{blob_tier, create_blob, recover_seed, BLOB_MAGIC};
-use origin_crypto_sdk::kdf::Argon2idBuilder;
 use origin_crypto_sdk::tier::MemoryTier;
 use origin_crypto_sdk::{aead::XChaCha20Poly1305, signing::hybrid::HybridSigningKeyBundle};
 
@@ -14,15 +13,6 @@ use origin_crypto_sdk::{aead::XChaCha20Poly1305, signing::hybrid::HybridSigningK
 /// ~88 bytes (v1), but we allow generous headroom for future format extensions.
 const MAX_BLOB_LEN: usize = 1024 * 1024;
 use zeroize::Zeroize;
-
-/// Build an Argon2id builder configured for the given tier.
-fn tier_argon2(tier: MemoryTier) -> Argon2idBuilder {
-    let params = tier.argon2_params(32);
-    Argon2idBuilder::new()
-        .memory_kib(params.m_cost())
-        .iterations(params.t_cost())
-        .parallelism(params.p_cost())
-}
 
 /// Set Unix file permissions (no-op on non-Unix).
 #[cfg(unix)]
@@ -94,7 +84,7 @@ impl IdentityStore {
         let tier = crate::tier_from_byte(blob[40])?;
         let ciphertext = &blob[41..];
 
-        let mut key = tier_argon2(tier)
+        let mut key = crate::tier::argon2_builder(tier, 32)
             .derive(passphrase.as_bytes(), &salt)
             .map_err(|e| format!("key derivation failed: {e}"))?;
 

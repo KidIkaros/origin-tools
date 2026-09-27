@@ -17,7 +17,6 @@ use origin_crypto_sdk::{
     blob::{create_blob, recover_seed},
     compression,
     kdf::hkdf::hkdf_blake3,
-    kdf::Argon2idBuilder,
     pqc::falcon1024,
     signing::{classical::Ed25519Signer, hybrid::HybridSigningKeyBundle},
 };
@@ -34,16 +33,6 @@ use crate::cli::{
 /// Parse a memory tier string.
 fn parse_tier(s: &str) -> Result<MemoryTier, String> {
     tier_from_str(s)
-}
-
-/// Build an Argon2id KDF configured for the given tier.
-/// Uses the SDK's canonical tier parameters.
-fn tier_argon2(tier: MemoryTier) -> Argon2idBuilder {
-    let params = tier.argon2_params(32);
-    Argon2idBuilder::new()
-        .memory_kib(params.m_cost())
-        .iterations(params.t_cost())
-        .parallelism(params.p_cost())
 }
 
 /// Read a hex key from --key or --key-file.
@@ -190,7 +179,7 @@ pub fn cmd_encrypt(args: EncryptArgs) -> Result<(), String> {
         key_from_identity("origin-seal::encrypt", args.passphrase_file.as_deref())?
     } else {
         let passphrase = resolve_passphrase(args.passphrase_file.as_deref())?;
-        let key = tier_argon2(tier)
+        let key = origin_common::argon2_builder(tier, 32)
             .derive(passphrase.as_bytes(), &salt)
             .map_err(|e| format!("Argon2id failed: {e:?}"))?;
         let mut ka = [0u8; 32];
@@ -280,7 +269,7 @@ fn cmd_encrypt_stream(
     origin_crypto_sdk::fill_random(&mut base_nonce)
         .map_err(|e| format!("nonce generation failed: {e}"))?;
 
-    let key = tier_argon2(tier)
+    let key = origin_common::argon2_builder(tier, 32)
         .derive(passphrase.as_bytes(), &salt)
         .map_err(|e| format!("Argon2id failed: {e:?}"))?;
     let mut key_arr = [0u8; 32];
@@ -408,7 +397,7 @@ pub fn cmd_decrypt(args: DecryptArgs) -> Result<(), String> {
         key_from_identity("origin-seal::encrypt", args.passphrase_file.as_deref())?
     } else {
         let passphrase = resolve_passphrase(args.passphrase_file.as_deref())?;
-        let key = tier_argon2(env_tier)
+        let key = origin_common::argon2_builder(env_tier, 32)
             .derive(passphrase.as_bytes(), &salt)
             .map_err(|e| format!("Argon2id failed: {e:?}"))?;
         let mut ka = [0u8; 32];
@@ -755,7 +744,7 @@ pub fn cmd_kdf(args: KdfArgs) -> Result<(), String> {
         }
     };
 
-    let key = tier_argon2(tier)
+    let key = origin_common::argon2_builder(tier, 32)
         .output_len(args.len)
         .derive(passphrase.as_bytes(), &salt)
         .map_err(|e| format!("Argon2id failed: {e:?}"))?;

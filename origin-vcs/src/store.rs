@@ -11,7 +11,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
-use origin_common::{atomic_write, MemoryTier};
+use origin_common::{argon2_builder, atomic_write, MemoryTier};
 
 use crate::mmr::MmrState;
 use crate::object::{
@@ -120,11 +120,7 @@ pub fn repo_storage_key(root: &Path, ks: &crate::crypto::KeySource) -> Result<[u
                 .map(|s| s.to_string())?;
             let tier = origin_common::tier_from_str(&cfg.tier)
                 .map_err(|e| format!("config tier '{}': {e}", cfg.tier))?;
-            let params = tier.argon2_params(32);
-            let builder = origin_crypto_sdk::kdf::Argon2idBuilder::new()
-                .memory_kib(params.m_cost())
-                .iterations(params.t_cost())
-                .parallelism(params.p_cost());
+            let builder = argon2_builder(tier, 32);
             let key = builder
                 .derive(passphrase.as_bytes(), &salt)
                 .map_err(|e| format!("Argon2id failed: {e:?}"))?;
