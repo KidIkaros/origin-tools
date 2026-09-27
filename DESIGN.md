@@ -1,7 +1,7 @@
 # Origin-Tools Design Specification
 
 > **Status**: Internal platform specification (v0.4.0+)  
-> **SDK dependency**: sibling `origin-crypto-sdk =0.7.1-rc.10` (exact constraint)
+> **SDK dependency**: sibling `origin-crypto-sdk =0.7.2` (exact constraint)
 > **Repository model**: reusable origin-tools workspace plus standalone sibling projects
 > **Last updated**: 2026-09-24
 

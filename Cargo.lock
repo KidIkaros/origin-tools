@@ -1853,7 +1853,7 @@ dependencies = [
 
 [[package]]
 name = "origin-crypto-sdk"
-version = "0.7.1-rc.10"
+version = "0.7.2"
 dependencies = [
  "argon2",
  "blake3",

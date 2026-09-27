@@ -49,7 +49,7 @@ runs to a log file and reading the tail rather than streaming output.
    `Ed25519VerifyingKey`, `Ed25519Signature`, `Signer`, `Verifier`,
    `x25519::X25519KeyPair`, `fill_random`) and the `try_*` fallible RNG
    variants. Gaps go in `SDK_FOLLOW_UP.md`, not into a local reimplementation.
-3. **SDK version is exact.** `origin-crypto-sdk = "=0.7.1-rc.10"` at the
+3. **SDK version is exact.** `origin-crypto-sdk = "=0.7.2"` at the
    workspace root; do not loosen the constraint or introduce a second version.
 4. **Tests must be deterministic.** Bind ports as `:0`, key temp paths by
    PID/tag, and never mutate `HOME`/`ORIGIN_HOME` without serialization.

@@ -1,14 +1,14 @@
 # origin-tools
 
 A reusable internal platform and reference workspace for interoperable CLI
-and library capabilities built on the sibling `origin-crypto-sdk` `0.7.1-rc.10`.
+and library capabilities built on the sibling `origin-crypto-sdk` `0.7.2`.
 It is a springboard: build a capability once here, then apply it to multiple
 projects without copying implementation code.
 
 > **🌐 Try it in your browser:** [kidikaros.github.io/origin-web](https://kidikaros.github.io/origin-web)
 > — a zero-server WASM demo running the same crypto, entirely client-side.
 >
-> **SDK candidate:** `origin-crypto-sdk 0.7.1-rc.10`, pinned by exact version.
+> **SDK candidate:** `origin-crypto-sdk 0.7.2`, pinned by exact version.
 > This is an evidence-backed release candidate, not an independent security
 > audit or blanket production approval for every module.
 

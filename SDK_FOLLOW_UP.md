@@ -1,12 +1,12 @@
 # Origin Crypto SDK Follow-up Ledger
 
-This ledger records SDK concerns discovered while making `origin-tools` depend on the sibling `origin-crypto-sdk` — review target now `0.7.1-rc.10` (initial review was `0.6.7`). The SDK remains the sole cryptographic implementation; origin-tools must not duplicate a primitive to work around an item in this ledger.
+This ledger records SDK concerns discovered while making `origin-tools` depend on the sibling `origin-crypto-sdk` — review target now `0.7.2` (initial review was `0.6.7`). The SDK remains the sole cryptographic implementation; origin-tools must not duplicate a primitive to work around an item in this ledger.
 
 The SDK is experimental and has not received an independent security audit. The entries below are engineering follow-ups, not claims that the SDK is unsafe. Each item requires validation in the SDK repository before being promoted to a defect.
 
 ## Review status
 
-- Reviewed SDK target: `0.7.1-rc.10`
+- Reviewed SDK target: `0.7.2`
 - Reviewed revision: `e13962e` (rc.10 — k256 migration, NIST KAT fixes, design-audit remediation); initial review at `a692cbdcf92799ef9375d6a9e906416103d3aa99` (0.6.7)
 - Origin-tools policy: use SDK APIs and report missing or unsafe ergonomics upstream
 - Confirmed critical vulnerabilities: none identified during the initial origin-tools dependency review
