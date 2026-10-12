@@ -54,7 +54,16 @@ impl Mountain {
     }
 
     /// Merge two mountains of equal height into one mountain of height h+1.
+    ///
+    /// Convenience wrapper for v2 (legacy-hash) mountains; new code should
+    /// call [`Mountain::merge_with`] with the owning state's version.
     pub fn merge(left: &Mountain, right: &Mountain) -> Mountain {
+        Self::merge_with(left, right, 2)
+    }
+
+    /// Merge two equal-height mountains, hashing the new peak with the
+    /// internal-node hash for `version` (v2 legacy or v3 domain-separated).
+    pub fn merge_with(left: &Mountain, right: &Mountain, version: u32) -> Mountain {
         assert_eq!(
             left.height, right.height,
             "can only merge equal-height mountains"
@@ -74,7 +83,7 @@ impl Mountain {
             nodes.extend_from_slice(&right.nodes[ro..ro + rc]);
         }
         // Level h: new peak = parent(left.peak, right.peak)
-        let new_peak = parent_hash(left.peak(), right.peak());
+        let new_peak = node_hash_for(version, left.peak(), right.peak());
         nodes.push(hex::encode(new_peak));
         Mountain { height: h, nodes }
     }
@@ -97,11 +106,49 @@ impl Mountain {
     }
 }
 
+/// Domain-separation tag for internal MMR node hashing (format v3+).
+///
+/// Internal nodes hash `NODE_DOMAIN ‖ left ‖ right`; leaves hash bare data.
+/// The distinct domains mean a leaf can never collide with an internal node:
+/// without this tag, a 64-byte leaf whose data equals two child hashes
+/// concatenated would hash to exactly the internal node value, enabling
+/// second-preimage forgery of membership proofs (the CVE-2012-2459 bug
+/// class, fixed in Bitcoin by prefixing depth and index).
+pub const NODE_DOMAIN: &[u8] = b"ORGN-MMR-NODE";
+
+/// v2 internal-node hash: `blake3(a ‖ b)`.
+///
+/// Retained so existing v2 state files and proofs keep verifying. Not
+/// domain-separated — see [`NODE_DOMAIN`]. Do not use for new data.
 pub fn parent_hash(a: [u8; 32], b: [u8; 32]) -> [u8; 32] {
     let mut buf = Vec::with_capacity(64);
     buf.extend_from_slice(&a);
     buf.extend_from_slice(&b);
     *origin_crypto_sdk::blake3::hash(&buf).as_bytes()
+}
+
+/// v3 internal-node hash: `blake3(NODE_DOMAIN ‖ a ‖ b)`.
+///
+/// Domain-separated from leaf hashing (`blake3(data)`), closing the
+/// leaf/internal-node collision that v2's untagged concatenation allows.
+pub fn parent_hash_v3(a: [u8; 32], b: [u8; 32]) -> [u8; 32] {
+    let mut buf = Vec::with_capacity(NODE_DOMAIN.len() + 64);
+    buf.extend_from_slice(NODE_DOMAIN);
+    buf.extend_from_slice(&a);
+    buf.extend_from_slice(&b);
+    *origin_crypto_sdk::blake3::hash(&buf).as_bytes()
+}
+
+/// Internal-node hash for a state/proof of the given format version.
+///
+/// v3+ states and proofs use the domain-separated hash; v2 uses the legacy
+/// untagged one. New states are created as v3 by [`MmrState::new`].
+pub fn node_hash_for(version: u32, a: [u8; 32], b: [u8; 32]) -> [u8; 32] {
+    if version >= 3 {
+        parent_hash_v3(a, b)
+    } else {
+        parent_hash(a, b)
+    }
 }
 
 pub fn decode_hash(s: &str) -> [u8; 32] {
@@ -114,7 +161,10 @@ pub fn decode_hash(s: &str) -> [u8; 32] {
 /// The full MMR: an ordered list of mountains (tallest first).
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct MmrState {
-    /// Format version. v2 = mountain-based with full auth paths.
+    /// Format version. v2 = mountain-based, legacy untagged node hashes;
+    /// v3 = same structure with domain-separated internal-node hashes
+    /// (see [`NODE_DOMAIN`]). New states are v3; v2 states load and verify
+    /// unchanged, and new appends to a v2 state upgrade it to v3.
     #[serde(default = "default_version")]
     pub version: u32,
     pub mountains: Vec<Mountain>,
@@ -128,19 +178,25 @@ fn default_version() -> u32 {
 impl MmrState {
     pub fn new() -> Self {
         Self {
-            version: 2,
+            version: 3,
             mountains: vec![],
             leaf_count: 0,
         }
     }
 
     pub fn append_hash(&mut self, leaf_hash: [u8; 32]) {
+        // Hashes with the state's own version throughout: a loaded v2 state
+        // stays internally v2 (mixing hash schemes in one tree would make
+        // its peaks incomparable), so appends to it continue with the legacy
+        // hash. New states created by `new()` are v3 and hash
+        // domain-separated from their first append.
+        let version = self.version;
         let mut m = Mountain::leaf(leaf_hash);
         // Merge with existing mountains of the same height (carry propagation).
         while let Some(last) = self.mountains.last() {
             if last.height == m.height {
                 let left = self.mountains.pop().unwrap();
-                m = Mountain::merge(&left, &m);
+                m = Mountain::merge_with(&left, &m, version);
             } else {
                 break;
             }
@@ -161,7 +217,7 @@ impl MmrState {
         peaks
             .iter()
             .skip(1)
-            .fold(peaks[0], |acc, &p| parent_hash(acc, p))
+            .fold(peaks[0], |acc, &p| node_hash_for(self.version, acc, p))
     }
 
     /// Find which mountain contains `leaf_index` and the index within it.
@@ -204,6 +260,11 @@ pub struct MembershipProof {
     pub peak_index: usize,
     /// All peak hashes (for root reconstruction).
     pub peaks: Vec<String>,
+    /// Format version of the state that produced this proof. Missing on
+    /// v2-era proof files (serde default) — those verify with the legacy
+    /// untagged node hash, exactly as they did when created.
+    #[serde(default = "default_version")]
+    pub version: u32,
 }
 
 impl MmrState {
@@ -226,19 +287,24 @@ impl MmrState {
                 .collect(),
             peak_index: mountain_idx,
             peaks: self.peaks().iter().map(hex::encode).collect(),
+            version: self.version,
         })
     }
 
     /// Verify a membership proof against an expected root.
+    ///
+    /// The proof's own `version` selects the internal-node hash, so proofs
+    /// from v2-era state files verify unchanged under this code.
     pub fn verify_proof(&self, proof: &MembershipProof, expected_root: &[u8; 32]) -> bool {
+        let nh = |a: [u8; 32], b: [u8; 32]| node_hash_for(proof.version, a, b);
         // Step 1: walk the auth path leaf -> peak.
         let mut current = decode_hash(&proof.leaf_hash);
         for step in &proof.auth_path {
             let sibling = decode_hash(&step.hash);
             current = if step.is_left {
-                parent_hash(current, sibling)
+                nh(current, sibling)
             } else {
-                parent_hash(sibling, current)
+                nh(sibling, current)
             };
         }
 
@@ -252,10 +318,7 @@ impl MmrState {
         let computed = if peaks.is_empty() {
             [0u8; 32]
         } else {
-            peaks
-                .iter()
-                .skip(1)
-                .fold(peaks[0], |acc, &p| parent_hash(acc, p))
+            peaks.iter().skip(1).fold(peaks[0], |acc, &p| nh(acc, p))
         };
 
         computed == *expected_root
@@ -313,5 +376,117 @@ mod tests {
         proof.leaf_hash = hex::encode(bytes);
         let root = s.root();
         assert!(!s.verify_proof(&proof, &root));
+    }
+
+    // -----------------------------------------------------------------------
+    // Domain separation (v3): leaf hashes and internal-node hashes must live
+    // in disjoint input domains. Under the legacy v2 scheme a 64-byte leaf
+    // whose data equals two 32-byte child hashes concatenated hashes to
+    // exactly the parent node's value — second-preimage forgery of membership
+    // (the CVE-2012-2459 bug class). These tests pin the fix.
+    // -----------------------------------------------------------------------
+
+    /// The forged leaf's data is `left_hash ‖ right_hash` — the same 64 bytes
+    /// a parent node hashes. Under v2 the leaf hash EQUALS the parent hash
+    /// (the collision); under v3 it must not.
+    fn collision_pair() -> ([u8; 32], [u8; 32], [u8; 32], [u8; 32]) {
+        let left = h(b"left-leaf-data");
+        let right = h(b"right-leaf-data");
+        let parent = parent_hash(left, right); // v2 node hash
+        let forged_leaf = h(&[left, right].concat()); // 64-byte leaf = a‖b
+        (left, right, parent, forged_leaf)
+    }
+
+    #[test]
+    fn v2_leaf_collides_with_internal_node_documents_the_bug() {
+        // Pins the vulnerability the fix addresses: under the legacy scheme
+        // the collision exists. If this ever stops holding, v2 is no longer
+        // the scheme we think it is and the migration story must be revisited.
+        let (_l, _r, parent, forged_leaf) = collision_pair();
+        assert_eq!(
+            forged_leaf, parent,
+            "v2 leaf/internal collision vanished — revisit the v2 compat claim"
+        );
+    }
+
+    #[test]
+    fn v3_domain_separation_breaks_the_collision() {
+        let (left, right, _v2_parent, forged_leaf) = collision_pair();
+        let v3_parent = parent_hash_v3(left, right);
+        assert_ne!(
+            forged_leaf, v3_parent,
+            "v3: a leaf hashing a‖b must not equal the internal node hash"
+        );
+        assert_ne!(v3_parent, parent_hash(left, right));
+    }
+
+    #[test]
+    fn v3_forged_membership_proof_fails() {
+        // End-to-end: a leaf whose data is the concatenation of the two real
+        // child hashes cannot pass a v3 membership proof it isn't part of.
+        let mut s = MmrState::new(); // v3
+        let a = h(b"real-leaf-A");
+        let b = h(b"real-leaf-B");
+        s.append_hash(a);
+        s.append_hash(b);
+        let root = s.root();
+
+        // The attacker's leaf: data = a_hash ‖ b_hash (64 bytes).
+        let forged = h(&[a, b].concat());
+        let mut forged_state = MmrState::new();
+        forged_state.append_hash(forged);
+        let proof = forged_state.prove(0).unwrap();
+
+        assert!(
+            !s.verify_proof(&proof, &root),
+            "forged 64-byte leaf must not verify against the real root"
+        );
+    }
+
+    #[test]
+    fn v3_round_trip_still_verifies() {
+        let s = build_mmr(100);
+        assert_eq!(s.version, 3, "new states are v3");
+        let root = s.root();
+        for i in 0..100 {
+            let proof = s.prove(i).unwrap();
+            assert!(s.verify_proof(&proof, &root), "leaf {i} in 100-leaf v3 MMR");
+        }
+    }
+
+    #[test]
+    fn v2_state_verifies_with_legacy_hash() {
+        // A state explicitly built as v2 (simulating a loaded legacy file)
+        // must keep verifying under the legacy hash.
+        let mut s = MmrState {
+            version: 2,
+            ..MmrState::new()
+        };
+        for i in 0..10u64 {
+            s.append_hash(h(&i.to_le_bytes()));
+        }
+        let root = s.root();
+        let proof = s.prove(5).unwrap();
+        assert_eq!(proof.version, 2, "proof inherits the state's version");
+        assert!(s.verify_proof(&proof, &root));
+    }
+
+    #[test]
+    fn v2_proof_json_without_version_verifies_as_v2() {
+        // Simulates an on-disk v2-era proof file: JSON predating the
+        // `version` field. serde default (2) must route it to legacy hashing.
+        let mut s = MmrState {
+            version: 2,
+            ..MmrState::new()
+        };
+        s.append_hash(h(b"x"));
+        s.append_hash(h(b"y"));
+        let root = s.root();
+        let proof = s.prove(0).unwrap();
+        let mut json: serde_json::Value = serde_json::to_value(&proof).unwrap();
+        json.as_object_mut().unwrap().remove("version");
+        let legacy: MembershipProof = serde_json::from_value(json).unwrap();
+        assert_eq!(legacy.version, 2, "missing version defaults to 2");
+        assert!(s.verify_proof(&legacy, &root));
     }
 }
