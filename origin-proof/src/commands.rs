@@ -9,7 +9,7 @@
 use std::path::Path;
 
 use crate::cli::{AppendArgs, Commands, ProveArgs, RootArgs, VerifyArgs};
-use crate::mmr::{decode_hash, parent_hash, MembershipProof, MmrState};
+use crate::mmr::{decode_hash, node_hash_for, MembershipProof, MmrState};
 
 // ---------------------------------------------------------------------------
 // State I/O
@@ -20,9 +20,9 @@ fn load_state(path: &str) -> Result<MmrState, String> {
         std::fs::read_to_string(path).map_err(|e| format!("cannot read '{path}': {e}"))?;
     let state: MmrState =
         serde_json::from_str(&content).map_err(|e| format!("cannot parse state: {e}"))?;
-    if state.version != 2 {
+    if state.version != 2 && state.version != 3 {
         return Err(format!(
-            "unsupported state version {} (expected 2)",
+            "unsupported state version {} (expected 2 or 3)",
             state.version
         ));
     }
@@ -111,13 +111,16 @@ fn cmd_verify(args: VerifyArgs) -> Result<(), String> {
     }
 
     // Walk the auth path from leaf to peak, then reconstruct root from peaks.
+    // The proof's version selects the node hash, so v2-era proof files
+    // (version absent → serde default 2) verify with the legacy hash.
+    let nh = |a: [u8; 32], b: [u8; 32]| node_hash_for(proof.version, a, b);
     let mut current = decode_hash(&proof.leaf_hash);
     for step in &proof.auth_path {
         let sibling = decode_hash(&step.hash);
         current = if step.is_left {
-            parent_hash(current, sibling)
+            nh(current, sibling)
         } else {
-            parent_hash(sibling, current)
+            nh(sibling, current)
         };
     }
 
@@ -134,10 +137,7 @@ fn cmd_verify(args: VerifyArgs) -> Result<(), String> {
     let computed_root = if peaks.is_empty() {
         [0u8; 32]
     } else {
-        peaks
-            .iter()
-            .skip(1)
-            .fold(peaks[0], |acc, &p| parent_hash(acc, p))
+        peaks.iter().skip(1).fold(peaks[0], |acc, &p| nh(acc, p))
     };
 
     if computed_root == expected_root[..] {
@@ -161,6 +161,7 @@ fn cmd_verify(args: VerifyArgs) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::mmr::node_hash_for;
 
     fn h(data: &[u8]) -> [u8; 32] {
         *origin_crypto_sdk::blake3::hash(data).as_bytes()
@@ -185,9 +186,9 @@ mod tests {
             for step in &proof.auth_path {
                 let sibling = decode_hash(&step.hash);
                 current = if step.is_left {
-                    parent_hash(current, sibling)
+                    node_hash_for(proof.version, current, sibling)
                 } else {
-                    parent_hash(sibling, current)
+                    node_hash_for(proof.version, sibling, current)
                 };
             }
             let mut peaks: Vec<[u8; 32]> = proof.peaks.iter().map(|p| decode_hash(p)).collect();
@@ -198,7 +199,7 @@ mod tests {
                 peaks
                     .iter()
                     .skip(1)
-                    .fold(peaks[0], |acc, &p| parent_hash(acc, p))
+                    .fold(peaks[0], |acc, &p| node_hash_for(proof.version, acc, p))
             };
             assert_eq!(computed, root, "leaf {i}");
         }

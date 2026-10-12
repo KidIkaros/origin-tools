@@ -42,7 +42,17 @@ origin proof verify --proof proof.json --root <hex>
 ## Security Notes
 
 - Full MMR auth-path verification replaced the earlier peak-only stub.
-- Each leaf is hashed with its position to prevent second-preimage attacks.
+- **Domain-separated hashing (format v3):** internal nodes hash
+  `blake3("ORGN-MMR-NODE" ‖ left ‖ right)`, keeping leaf hashes
+  (`blake3(data)`) and node hashes in disjoint input domains. Without this
+  separation a 64-byte leaf whose data equals two child hashes concatenated
+  collides with the internal node value — second-preimage forgery of
+  membership (CVE-2012-2459 class).
+- **Format versions:** new states are v3. States and proof files created by
+  earlier versions (v2, untagged `blake3(a ‖ b)` node hashing; proof files
+  with no `version` field) load and verify unchanged — the proof's own
+  `version` field selects the hash. Appending to a loaded v2 state keeps it
+  internally v2; start a new state file to move to v3.
 
 ## License
 

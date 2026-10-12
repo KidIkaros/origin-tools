@@ -50,6 +50,15 @@ _Corrected evidence-backed origin-crypto-sdk 0.7.1-rc.2 integration candidate._
   KDF tier used at creation so loading is independent of current config.
 - **Config tier resolution** now warns on stderr instead of silently
   downgrading when `config.toml` contains an unrecognized tier string.
+- **`origin-proof` MMR: domain-separated internal-node hashing (state/proof
+  format v3)**. Internal nodes now hash `blake3("ORGN-MMR-NODE" ‖ left ‖
+  right)` instead of the untagged `blake3(left ‖ right)`. Under v2 a 64-byte
+  leaf whose data equals two child hashes concatenated hashed to exactly the
+  internal node's value — second-preimage forgery of membership proofs (the
+  CVE-2012-2459 bug class). New states are created as v3; v2 states and v2-era
+  proof files (which carry no `version` field) load and verify unchanged
+  under the legacy hash, so no existing data breaks. `Mountain::merge` keeps
+  its legacy behavior; `Mountain::merge_with` takes the state's version.
 
 ### Removed
 - Dead envelope flag constants `FLAG_STREAMED` / `FLAG_DUAL_SIGNED` (defined
