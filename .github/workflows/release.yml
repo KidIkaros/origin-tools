@@ -16,6 +16,9 @@ on:
     tags:
       - "v*"
 
+permissions:
+  contents: write
+
 env:
   CARGO_TERM_COLOR: always
 
@@ -62,18 +65,13 @@ jobs:
             printf 'linker = "aarch64-linux-gnu-gcc"\n' >> ~/.cargo/config.toml
           fi
 
-      - name: Cache cargo
-        uses: actions/cache@v4
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
         with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-${{ matrix.target }}-cargo-${{ hashFiles('Cargo.lock') }}
-          restore-keys: ${{ runner.os }}-${{ matrix.target }}-cargo-
+          targets: ${{ matrix.target }}
 
       - name: Build release binaries
-        run: cargo build --release --target ${{ matrix.target }} --workspace
+        run: cargo build --release --locked --target ${{ matrix.target }} --workspace
 
       - name: Package binaries
         shell: bash
@@ -85,9 +83,10 @@ jobs:
           mkdir -p "${STAGE}"
 
           # Unified binary + all standalone tools, including the product CLI.
-          BINS="origin origin-identity origin-pass origin-seal origin-seed \
-                origin-shard origin-proof origin-stealth origin-entropy origin-schnorr \
-                origin-secrets"
+          BINS="origin origin-archive origin-canary origin-channel origin-crawler \
+                origin-entropy origin-identity origin-pass origin-payments origin-proof \
+                origin-provenance origin-relay origin-schnorr origin-seal origin-secrets \
+                origin-seed origin-shard origin-stealth origin-vcs origin-wallet"
           for b in ${BINS}; do
             cp "target/${{ matrix.target }}/release/${b}" "${STAGE}/"
           done

@@ -1854,6 +1854,8 @@ dependencies = [
 [[package]]
 name = "origin-crypto-sdk"
 version = "0.7.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "23ddeaebd1f6a0ea0c0441b1757e9d392c2df2197e1e633ae5384f4a23d14456"
 dependencies = [
  "argon2",
  "blake3",

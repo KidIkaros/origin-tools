@@ -7,6 +7,13 @@ on:
   pull_request:
     branches: [main]
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
 env:
   CARGO_TERM_COLOR: always
 
@@ -21,26 +28,19 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Cache cargo
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-cargo-${{ hashFiles('Cargo.lock') }}
-          restore-keys: ${{ runner.os }}-cargo-
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
 
       - name: Build all binaries
         # Integration tests (e.g. origin-proof) spawn sibling origin-* binaries.
         # Build them first so `cargo test` never races to run a test before its
         # sibling binary exists.
-        run: cargo build --workspace --bins
+        run: cargo build --locked --workspace --bins
 
       - name: Run tests
         # `timeout` fails the job if the suite hangs (e.g. a spawned sibling
         # binary spinning) instead of burning CI minutes indefinitely.
-        run: timeout 600 cargo test --workspace
+        run: timeout 600 cargo test --locked --workspace
 
   clippy:
     name: Clippy
@@ -54,21 +54,14 @@ jobs:
         with:
           components: clippy
 
-      - name: Cache cargo
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-cargo-clippy-${{ hashFiles('Cargo.lock') }}
-          restore-keys: ${{ runner.os }}-cargo-clippy-
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
 
       - name: Run clippy (origin-secrets, deny warnings)
-        run: cargo clippy -p origin-secrets --all-targets -- -D warnings
+        run: cargo clippy --locked -p origin-secrets --all-targets -- -D warnings
 
       - name: Run clippy (workspace, visibility only)
-        run: cargo clippy --workspace --all-targets
+        run: cargo clippy --locked --workspace --all-targets
 
   fmt:
     name: Format
@@ -91,6 +84,6 @@ jobs:
           set -euo pipefail
           package_version="$(sed -n 's/^version = "\(.*\)"/\1/p' origin-secrets/Cargo.toml | head -n 1)"
           man_version="$(sed -n 's/.*Origin Secrets v\([0-9.]*\).*/\1/p' origin-secrets/man/origin-secrets.1 | head -n 1)"
-          binary_version="$(cargo run -q -p origin-secrets -- --version)"
+          binary_version="$(cargo run --locked -q -p origin-secrets -- --version)"
           test "${package_version}" = "${man_version}"
           test "${binary_version}" = "origin-secrets ${package_version}"
